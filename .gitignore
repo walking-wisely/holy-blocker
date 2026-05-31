@@ -1,0 +1,15 @@
+node_modules/
+dist/
+out/
+build/
+build-mingw/
+.turbo/
+.venv/
+__pycache__/
+*.pyc
+*.onnx
+*.tflite
+*.pt
+*.pth
+data/raw/
+data/processed/

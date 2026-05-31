@@ -1,0 +1,22 @@
+[project]
+name = "holy-blocker-ml"
+version = "0.1.0"
+description = "Local ML pipeline for Holy Blocker baseline classifiers."
+requires-python = ">=3.11"
+dependencies = [
+  "torch>=2.3",
+  "torchvision>=0.18",
+  "onnx>=1.16",
+  "tensorflow>=2.16"
+]
+
+[project.scripts]
+holy-blocker-train = "holy_blocker_ml.train:main"
+holy-blocker-export = "holy_blocker_ml.export:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/holy_blocker_ml"]
