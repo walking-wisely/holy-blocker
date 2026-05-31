@@ -1,5 +1,6 @@
 {
   "C_Cpp.default.configurationProvider": "ms-vscode.cmake-tools",
   "cmake.buildDirectory": "${workspaceFolder}/native-modules/win-daemon/build-mingw",
-  "cmake.sourceDirectory": "D:/code/personal/holy-blocker/native-modules/win-daemon"
+  "cmake.sourceDirectory": "D:/code/personal/holy-blocker/native-modules/win-daemon",
+  "rust-analyzer.linkedProjects": ["./packages/text-policy/Cargo.toml"]
 }
