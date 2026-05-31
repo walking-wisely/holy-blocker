@@ -3,6 +3,15 @@ use super::steps::{common, english};
 
 pub type NormalizationStep = fn(&str) -> String;
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NormalizedText {
+    pub raw: String,
+    pub normalized: String,
+    pub separator_tokens: Vec<String>,
+    pub compact: String,
+    pub leet_compact: String,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct NormalizationPipeline {
     language: Language,
@@ -22,6 +31,7 @@ impl NormalizationPipeline {
         Self {
             language: Language::English,
             steps: &[
+                common::normalize_nfkc,
                 common::trim_text,
                 common::collapse_whitespace,
                 english::lowercase,
@@ -32,14 +42,22 @@ impl NormalizationPipeline {
     pub fn ukrainian() -> Self {
         Self {
             language: Language::Ukrainian,
-            steps: &[common::trim_text, common::collapse_whitespace],
+            steps: &[
+                common::normalize_nfkc,
+                common::trim_text,
+                common::collapse_whitespace,
+            ],
         }
     }
 
     pub fn unknown() -> Self {
         Self {
             language: Language::Unknown,
-            steps: &[common::trim_text],
+            steps: &[
+                common::normalize_nfkc,
+                common::trim_text,
+                common::collapse_whitespace,
+            ],
         }
     }
 
@@ -59,6 +77,23 @@ impl NormalizationPipeline {
         self.steps
             .iter()
             .fold(text.to_string(), |current, step| step(&current))
+    }
+
+    pub fn normalize_views(&self, text: &str) -> NormalizedText {
+        let normalized = self.normalize(text);
+        let compact = common::compact(&normalized);
+        let leet_compact = match self.language {
+            Language::English => english::leet_compact(&normalized),
+            Language::Ukrainian | Language::Unknown => compact.clone(),
+        };
+
+        NormalizedText {
+            raw: text.to_string(),
+            separator_tokens: common::separator_tokens(&normalized),
+            normalized,
+            compact,
+            leet_compact,
+        }
     }
 }
 
@@ -88,6 +123,11 @@ impl NormalizationPipelines {
         self.pipeline_for(language)
             .map(|pipeline| pipeline.normalize(text))
     }
+
+    pub fn normalize_views(&self, language: Language, text: &str) -> Option<NormalizedText> {
+        self.pipeline_for(language)
+            .map(|pipeline| pipeline.normalize_views(text))
+    }
 }
 
 impl Default for NormalizationPipelines {
@@ -102,6 +142,10 @@ pub fn normalize_text(text: &str) -> String {
 
 pub fn normalize_text_for_language(text: &str, language: Language) -> String {
     NormalizationPipeline::for_language(language).normalize(text)
+}
+
+pub fn normalize_text_views_for_language(text: &str, language: Language) -> NormalizedText {
+    NormalizationPipeline::for_language(language).normalize_views(text)
 }
 
 pub fn normalization_pipeline_for(language: Language) -> NormalizationPipeline {
@@ -138,7 +182,7 @@ mod tests {
         );
         assert_eq!(
             pipelines.normalize(Language::Unknown, "  Keep\t   Spacing  "),
-            Some("Keep\t   Spacing".to_string())
+            Some("Keep Spacing".to_string())
         );
     }
 
@@ -164,7 +208,47 @@ mod tests {
         );
         assert_eq!(
             NormalizationPipeline::for_language(Language::Unknown).normalize("  Keep   Spacing  "),
-            "Keep   Spacing"
+            "Keep Spacing"
+        );
+    }
+
+    #[test]
+    fn english_pipeline_builds_all_text_views_from_normalized_text() {
+        assert_eq!(
+            NormalizationPipeline::english().normalize_views("  P-0.R_N  H U B  "),
+            NormalizedText {
+                raw: "  P-0.R_N  H U B  ".to_string(),
+                normalized: "p-0.r_n h u b".to_string(),
+                separator_tokens: vec![
+                    "p".to_string(),
+                    "0".to_string(),
+                    "r".to_string(),
+                    "n".to_string(),
+                    "h".to_string(),
+                    "u".to_string(),
+                    "b".to_string(),
+                ],
+                compact: "p0rnhub".to_string(),
+                leet_compact: "pornhub".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn non_english_pipeline_uses_compact_as_leet_compact() {
+        assert_eq!(
+            NormalizationPipeline::ukrainian().normalize_views("  Привіт-світе 123  "),
+            NormalizedText {
+                raw: "  Привіт-світе 123  ".to_string(),
+                normalized: "Привіт-світе 123".to_string(),
+                separator_tokens: vec![
+                    "Привіт".to_string(),
+                    "світе".to_string(),
+                    "123".to_string(),
+                ],
+                compact: "Привітсвіте123".to_string(),
+                leet_compact: "Привітсвіте123".to_string(),
+            }
         );
     }
 }
