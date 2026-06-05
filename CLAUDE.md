@@ -10,13 +10,13 @@ Holy Blocker is an on-device content blocking project. Keep the privacy and loca
 
 The packages below **exist in the repo today** and are actively being built:
 
-| Package                     | Language                      | Status                                                              |
-| --------------------------- | ----------------------------- | ------------------------------------------------------------------- |
-| `apps/desktop`              | TypeScript / Electron + React | Skeleton — BrowserWindow, one IPC stub, status UI                   |
-| `packages/text-policy`      | Rust                          | normalize + lexicon done; scorer/evaluator/policy not yet started   |
-| `packages/mitm-proxy`       | Rust                          | Plain HTTP forwarding works; HTTPS CONNECT returns 501              |
-| `native-modules/win-daemon` | C++20                         | WinEvent hooks + message loop; no capture/OCR/IPC yet               |
-| `machine-learning`          | Python                        | MobileNetV3 model + ONNX export skeleton; no real training loop yet |
+| Package | Language | Status |
+|---|---|---|
+| `apps/desktop` | TypeScript / Electron + React | Skeleton — BrowserWindow, one IPC stub, status UI |
+| `packages/text-policy` | Rust | normalize + lexicon done; scorer/evaluator/policy not yet started |
+| `packages/mitm-proxy` | Rust | Plain HTTP forwarding works; HTTPS CONNECT returns 501 |
+| `native-modules/win-daemon` | C++20 | WinEvent hooks + message loop; no capture/OCR/IPC yet |
+| `machine-learning` | Python | MobileNetV3 model + ONNX export skeleton; no real training loop yet |
 
 The packages below are **planned but not yet created** — do not assume they exist:
 
