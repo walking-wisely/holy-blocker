@@ -61,7 +61,8 @@ impl TlsState {
         Ok(cfg)
     }
 
-    fn make_server_config(&self, sni: &str) -> Result<ServerConfig> {
+    /// Generate a signed leaf certificate DER for `sni` without caching.
+    pub fn generate_leaf_cert_der(&self, sni: &str) -> Result<(CertificateDer<'static>, KeyPair)> {
         let leaf_key = KeyPair::generate().context("generating leaf key pair")?;
 
         let mut params =
@@ -80,6 +81,11 @@ impl TlsState {
             .context("signing leaf certificate")?;
 
         let cert_der: CertificateDer<'static> = leaf_cert.der().clone().into();
+        Ok((cert_der, leaf_key))
+    }
+
+    fn make_server_config(&self, sni: &str) -> Result<ServerConfig> {
+        let (cert_der, leaf_key) = self.generate_leaf_cert_der(sni)?;
         let key_der: PrivateKeyDer<'static> =
             PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(leaf_key.serialize_der()));
 
@@ -137,28 +143,17 @@ mod tests {
         }
     }
 
-    /// Verify that the leaf cert generated for a hostname contains the correct SAN.
+    /// Verify that the leaf cert produced by the real `server_config` path
+    /// contains the correct SAN (exercises `generate_leaf_cert_der` via
+    /// `make_server_config`, not a hand-rolled duplicate).
     #[test]
     fn leaf_cert_has_correct_san() {
         let state = make_test_state();
         let sni = "example.com";
 
-        // Re-use make_server_config's signing logic by generating the cert
-        // directly so we can inspect the DER without needing a ClientHello.
-        let leaf_key = KeyPair::generate().unwrap();
-        let mut params = CertificateParams::new(vec![sni.to_owned()]).unwrap();
-        params.distinguished_name = {
-            let mut dn = DistinguishedName::new();
-            dn.push(DnType::CommonName, sni);
-            dn
-        };
-        params.subject_alt_names = vec![SanType::DnsName(sni.to_owned().try_into().unwrap())];
-        let leaf_cert = params
-            .signed_by(&leaf_key, &state.ca_cert, &state.ca_key)
-            .unwrap();
-
+        let (cert_der, _key) = state.generate_leaf_cert_der(sni).unwrap();
         let (_, parsed) =
-            x509_parser::parse_x509_certificate(leaf_cert.der()).expect("parse leaf DER");
+            x509_parser::parse_x509_certificate(&cert_der).expect("parse leaf DER");
 
         let san_ext = parsed
             .subject_alternative_name()
