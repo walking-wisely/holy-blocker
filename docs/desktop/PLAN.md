@@ -11,7 +11,7 @@ The package at `apps/desktop/` already has:
 - `src/preload/preload.ts` — exposes a single `getDaemonStatus()` call through `contextBridge`, bridging `daemon:get-status` to the renderer.
 - `src/renderer/src/App.tsx` — renders a two-item sidebar (Monitor / Local Data), a status pill, a metrics grid (Daemon state, Watched windows, Model name), and an empty events panel. Calls `getDaemonStatus` on mount via `window.holyBlocker`.
 
-What is missing: real named pipe IPC to the daemon, a policy threshold settings UI, local event persistence, and the renderer views that consume live data.
+What is missing: real named pipe IPC to the daemon, a policy threshold settings UI, local event persistence, the renderer views that consume live data, the accountability/sobriety features, and the override gate.
 
 ## What to add
 
@@ -51,6 +51,11 @@ Responsibilities:
 - `daemon:get-events` — return the last N `scan_event` messages from a ring buffer (capped at 500 entries) held in the main process. N is caller-supplied, defaulting to 100.
 - `policy:get-thresholds` — read `{ blockThreshold, warnThreshold }` from a JSON config file at `path.join(app.getPath("userData"), "policy.json")`. Return defaults `{ blockThreshold: 80, warnThreshold: 50 }` if the file does not exist.
 - `policy:set-thresholds` — validate (`warnThreshold < blockThreshold`, both in `0..100`) and write the config file atomically (write to a `.tmp` sibling, then rename).
+- `stats:get-summary` — return lifetime and weekly event counts, total blocked-content tally, and the install timestamp (used by the sobriety counter).
+- `accountability:get-config` — read `{ partnerEmail: string | null }` from `userData/accountability.json`.
+- `accountability:set-config` — write partner email; validate it is a well-formed address.
+- `accountability:notify-override-attempt` — send an email notification to the partner (if configured) recording the timestamp of an override attempt. Called regardless of whether the gate ultimately passes or fails.
+- `override:attempt` — invoked by the renderer when the user tries to disable protection. Triggers the voice gate flow and returns `{ granted: boolean }`. If granted, emits a `protection:disabled` event on the main process bus and records an override event in the stats store.
 
 Export a single `registerIpcHandlers(daemonIpc: DaemonIpc): void` function called from `main.ts` during app startup.
 
@@ -68,54 +73,153 @@ type ScanEvent = {
   score: number
   windowTitle: string
   at: string
+  flaggedAsFalsePositive?: boolean
 }
 
 type PolicyThresholds = {
   blockThreshold: number   // 0..100, default 80
   warnThreshold: number    // 0..100, default 50
 }
+
+type StatsSummary = {
+  installTimestamp: string   // ISO-8601; set once on first launch, never overwritten
+  lifetimeBlocked: number
+  lifetimeWarned: number
+  weeklyBlocked: number
+  weeklyWarned: number
+  scoreHistogram: number[]   // 20 buckets covering 0..100
+  topWindows: { title: string; count: number }[]  // top 5 by event count
+}
 ```
+
+### `src/main/stats-store.ts`
+
+Persists event counts and the install timestamp across sessions.
+
+Responsibilities:
+
+- On first launch, record `installTimestamp` in `userData/stats.json` and never overwrite it.
+- Increment `lifetimeBlocked` / `lifetimeWarned` each time a `scan_event` arrives from the daemon.
+- Maintain a rolling 7-day event log for weekly counts (entries older than 7 days are pruned on startup).
+- Maintain a score histogram (20 equal-width buckets across 0–100) for the score distribution chart.
+- Maintain a window-title frequency map for the "top offending windows" list; cap at 100 unique titles.
+- Expose `getSummary(): StatsSummary` consumed by `stats:get-summary`.
+- Write to disk atomically (`.tmp` + rename) after each update.
 
 ### `src/preload/preload.ts` (extend)
 
-Add three new calls to the existing `contextBridge.exposeInMainWorld` object alongside `getDaemonStatus`. No Node APIs should be accessible in the renderer beyond these explicit bridge methods.
+Add new calls to the existing `contextBridge.exposeInMainWorld` object. No Node APIs should be accessible in the renderer beyond these explicit bridge methods.
 
 - `getEvents: () => Promise<ScanEvent[]>` — invokes `daemon:get-events`.
+- `flagFalsePositive: (at: string) => Promise<void>` — marks the event at the given timestamp as a false positive in the ring buffer and stats store.
 - `getThresholds: () => Promise<PolicyThresholds>` — invokes `policy:get-thresholds`.
 - `setThresholds: (t: PolicyThresholds) => Promise<void>` — invokes `policy:set-thresholds`.
+- `getStatsSummary: () => Promise<StatsSummary>` — invokes `stats:get-summary`.
+- `getAccountabilityConfig: () => Promise<{ partnerEmail: string | null }>` — invokes `accountability:get-config`.
+- `setAccountabilityConfig: (cfg: { partnerEmail: string | null }) => Promise<void>` — invokes `accountability:set-config`.
+- `attemptOverride: () => Promise<{ granted: boolean }>` — invokes `override:attempt`.
 
-Also extend the `Window.holyBlocker` declaration in `App.tsx` (or a shared `src/renderer/src/types.ts`) to include these three methods so the renderer has full type coverage without importing from the main-process module.
+Also extend the `Window.holyBlocker` declaration in a shared `src/renderer/src/types.ts` to include all methods so the renderer has full type coverage.
 
-### `src/renderer/src/views/EventsView.tsx`
+### `src/renderer/src/views/MonitorView.tsx`
 
 Replaces the `emptyState` placeholder in `App.tsx` when the Monitor nav item is active.
 
 Responsibilities:
 
-- On mount, call `getEvents()` and populate a list.
-- Poll `getEvents()` on a configurable interval (default 2 s) to surface new events until a push mechanism (future IPC event bridge) is available.
-- Render each event as a row: window title, a verdict badge coloured by verdict (`block` → red, `warn` → amber, `allow` → green), numeric score, and a relative or absolute timestamp.
+- Render the sobriety header: a large "Clean since" counter showing days (and hours for the
+  first 48 h) derived from `StatsSummary.installTimestamp`. Display milestone text at 7, 30,
+  90, and 365 days as a quiet banner above the event list — not a modal, just an inline note.
+- Show a weekly summary card: blocked this week, warned this week, vs. last week's counts.
+- Show a score distribution histogram using the 20-bucket data from `StatsSummary.scoreHistogram`.
+  A small bar chart (CSS only, no charting library) is sufficient. This helps the user see
+  whether their thresholds are calibrated correctly.
+- Show a "top offending windows" list: up to 5 window titles with their event counts.
+- Below the summary, render the live event list (previously the `EventsView` scope):
+  - On mount, call `getEvents()` and populate the list.
+  - Poll every 2 s until a push mechanism is available.
+  - Each row: window title, a verdict badge (`block` → red, `warn` → amber, `allow` → green),
+    numeric score, relative timestamp, and a "false positive" flag button.
+  - The flag button calls `flagFalsePositive(event.at)` and immediately greys the row to
+    confirm the action. False positives are excluded from the score histogram and top-windows
+    list going forward.
 - Show the existing empty-state message when the event list is empty.
-- Keep the "Flag missed item" button from `App.tsx` visible in the panel header (behaviour to be wired later).
 
 ### `src/renderer/src/views/PolicyView.tsx`
 
-Shown when the "Local Data" nav item is active.
+Shown when the "Settings" nav item is active (rename "Local Data" → "Settings" to better
+reflect the combined content of this view).
 
 Responsibilities:
 
-- On mount, call `getThresholds()` and populate two number inputs: `blockThreshold` and `warnThreshold`.
-- On submit, validate client-side (`warnThreshold < blockThreshold`, both `0..100`) and call `setThresholds()`. Display a success confirmation or an inline error.
-- Show the current effective values read back from `getThresholds()` after a successful save so the user can confirm the write was persisted.
+- **Threshold editor**: on mount, call `getThresholds()` and populate two number inputs.
+  On submit, validate client-side and call `setThresholds()`. Confirm the written values
+  by re-reading after a successful save.
+- **Accountability partner**: on mount, call `getAccountabilityConfig()` and display the
+  current partner email (or empty). A text input + save button writes via
+  `setAccountabilityConfig()`. A short explanation tells the user what the partner receives
+  (a notification on every override attempt, regardless of whether the gate passes).
+
+### `src/renderer/src/views/OverrideGateView.tsx`
+
+A full-screen modal overlay shown when the user attempts to disable protection (any path that
+calls `attemptOverride()`). It should not be dismissable by clicking outside — the only exit
+is completing the gate or killing the app.
+
+Responsibilities:
+
+- Display the verse the user must read, sourced from `packages/voice-gate`'s `VoiceGate.currentVerse()`.
+- Show a "Start reading" button that activates the microphone and begins recording via the
+  voice adapter.
+- While recording, show a simple animated indicator (not a countdown — the user should not
+  be able to time themselves to stop at exactly the right moment).
+- On completion, call `attemptOverride()` via IPC. The main process runs the full voice gate
+  (transcript match + rate check + liveness check) and returns `{ granted: boolean }`.
+- On failure, display which check failed and offer one retry with a fresh verse.
+- On success, close the overlay and proceed with the action the user requested.
+- The accountability partner notification is sent by the main process on every attempt
+  (pass or fail) — the renderer does not need to handle this separately.
+
+### `src/main/voice-adapter-electron.ts`
+
+Implements the `VoiceAdapter` interface from `packages/voice-gate` for the Electron main
+process. The renderer captures audio and runs speech recognition; results are sent to the
+main process via a dedicated IPC channel rather than crossing the node/renderer boundary
+at the adapter level.
+
+Responsibilities:
+
+- Expose IPC channels `voice:start`, `voice:stop` so the renderer can signal recording state.
+- The renderer uses `MediaRecorder` for audio and the Web Speech API for transcription,
+  sending the final `{ audioBuffer, transcript, durationMs }` back via `voice:result`.
+- The adapter collects this result and fulfils the `VoiceAdapter.stopRecording()` promise.
+
+## System tray integration
+
+The main process should register a tray icon that:
+
+- Shows green when protection is active and no events in the last hour.
+- Shows amber when one or more `warn` events occurred in the last hour.
+- Shows red when one or more `block` events occurred in the last hour, or when the daemon
+  is disconnected.
+- Right-click menu: "Open Holy Blocker", separator, "Disable protection…" (triggers the
+  override gate), separator, "Quit".
+
+The tray icon is the user's ambient signal that the app is running. Without it, there is no
+visible feedback when the window is closed.
 
 ## Implementation order
 
 1. `ipc-handlers.ts` — extract the existing `daemon:get-status` handler out of `main.ts` and add `daemon:get-events` with an empty ring buffer. Wire `registerIpcHandlers` into `main.ts`. No daemon connection yet; stubs are fine at this step.
 2. `daemon-ipc.ts` — named pipe client with the reconnect loop. Write a Vitest test against a mock `net.Server` before wiring it into the app.
 3. Wire `DaemonIpc` into `ipc-handlers.ts` so `daemon:get-status` returns live connection state and `daemon:get-events` drains the ring buffer populated by `scan_event` messages.
-4. Extend `preload.ts` with `getEvents`, `getThresholds`, and `setThresholds`, and update the renderer-side type declaration.
-5. `EventsView.tsx` — render live events from the main process; replace the empty-state div in `App.tsx`.
-6. `PolicyView.tsx` — threshold editor wired to `getThresholds` / `setThresholds`; wire the "Local Data" nav item to render this view.
+4. `stats-store.ts` — event persistence and install timestamp. Add `stats:get-summary` to `ipc-handlers.ts`.
+5. Extend `preload.ts` with all new bridge methods and update `src/renderer/src/types.ts`.
+6. `MonitorView.tsx` — sobriety counter, weekly summary, score histogram, top windows, live event list with false-positive flagging.
+7. `PolicyView.tsx` — threshold editor and accountability partner config.
+8. `voice-adapter-electron.ts` + wire `packages/voice-gate` into `ipc-handlers.ts` for `override:attempt`.
+9. `OverrideGateView.tsx` — full-screen verse-reading overlay.
+10. System tray icon and right-click menu.
 
 ## What this does not cover
 
@@ -123,3 +227,4 @@ Responsibilities:
 - Rule bundle management UI (deferred until `packages/text-policy` defines a bundle serialisation format).
 - Android companion app (separate `apps/mobile/`).
 - Packaging, code signing, and auto-update (deferred to a later iteration).
+- Streak calendar heatmap (good future addition once the rolling event log in `stats-store.ts` exists — the data model already supports it).
