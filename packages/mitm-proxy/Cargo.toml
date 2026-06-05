@@ -13,6 +13,14 @@ bytes = "1"
 http-body-util = "0.1"
 hyper = { version = "1", features = ["http1", "server", "client"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
+pem = "3"
+rcgen = { version = "0.13", features = ["x509-parser"] }
+rustls = { version = "0.23", features = ["ring"] }
+rustls-native-certs = "0.8"
 tokio = { version = "1", features = ["full"] }
+tokio-rustls = "0.26"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+[dev-dependencies]
+x509-parser = "0.16"
