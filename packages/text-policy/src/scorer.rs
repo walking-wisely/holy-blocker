@@ -1,4 +1,4 @@
-use crate::lexicon::types::{Category, LexiconMatch, MatchMode, Severity};
+use crate::lexicon::{Category, LexiconMatch, MatchMode, Severity};
 use crate::verdict::EvidenceItem;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -89,7 +89,7 @@ pub fn score(matches: &[LexiconMatch], source: SourceKind) -> ScoreResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lexicon::types::{MatchSpan, LexiconMatch};
+    use crate::lexicon::{MatchSpan, LexiconMatch};
 
     fn make_match(
         category: Category,

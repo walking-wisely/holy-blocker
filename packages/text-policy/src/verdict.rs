@@ -1,4 +1,4 @@
-use crate::lexicon::types::{Category, MatchSpan, Severity};
+use crate::lexicon::{Category, MatchSpan, Severity};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Action {
