@@ -138,8 +138,8 @@ impl PolicyEngine {
 
 1. ~~`verdict.rs` — types only, no logic; tests are trivial.~~ **Done.**
 2. ~~`scorer.rs` — pure function; test with synthetic matches and known expected scores.~~ **Done.**
-3. `evaluator.rs` — pure function; test all three bands and edge cases at thresholds.
-4. `policy.rs` — integration; test end-to-end from raw text to `Verdict`.
+3. ~~`evaluator.rs` — pure function; test all three bands and edge cases at thresholds.~~ **Done.**
+4. ~~`policy.rs` — integration; test end-to-end from raw text to `Verdict`.~~ **Done.**
 5. FFI surface — once `PolicyEngine` is stable, add a thin `#[no_mangle]` wrapper or UniFFI descriptor so the daemon and proxy can call it. Keep FFI in a separate `src/ffi.rs` or a sibling crate.
 
 ## What this does not cover
