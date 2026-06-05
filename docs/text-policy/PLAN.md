@@ -9,8 +9,10 @@ The package already has:
 
 - `normalize` — multi-step, language-aware normalization pipeline producing multiple text views (normalized, leet-compact, separator-tokens, raw).
 - `lexicon` — dictionary-based term matching across all four match modes (ExactPhrase, TokenSequence, Compact, UrlTokenSequence). Produces `LexiconMatch` results carrying term id, category, severity, match mode, surface, and span. Internally split into sub-modules: `types`, `builder`, `automaton`, `matcher`, and `url` (URL token-sequence matching).
+- `verdict` — output types: `Action`, `Verdict`, and `EvidenceItem`. No logic, just shapes (step 1 complete).
+- `scorer` — pure scoring function: takes `&[LexiconMatch]` and `SourceKind`, returns `ScoreResult { score: u32, evidence: Vec<EvidenceItem> }`. Applies base-score-per-severity, match-quality multiplier, source-confidence multiplier, and safe-context exception reductions. Fully tested (step 2 complete).
 
-What is missing is everything above the lexicon: aggregating matches into a score, mapping the score to a verdict, and exposing the result to callers.
+What is missing is the decision layer and top-level entry point:
 
 ## Modules to add
 
@@ -134,8 +136,8 @@ impl PolicyEngine {
 
 ## Implementation order
 
-1. `verdict.rs` — types only, no logic; tests are trivial.
-2. `scorer.rs` — pure function; test with synthetic matches and known expected scores.
+1. ~~`verdict.rs` — types only, no logic; tests are trivial.~~ **Done.**
+2. ~~`scorer.rs` — pure function; test with synthetic matches and known expected scores.~~ **Done.**
 3. `evaluator.rs` — pure function; test all three bands and edge cases at thresholds.
 4. `policy.rs` — integration; test end-to-end from raw text to `Verdict`.
 5. FFI surface — once `PolicyEngine` is stable, add a thin `#[no_mangle]` wrapper or UniFFI descriptor so the daemon and proxy can call it. Keep FFI in a separate `src/ffi.rs` or a sibling crate.

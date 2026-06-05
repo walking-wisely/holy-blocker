@@ -13,8 +13,8 @@ The packages below **exist in the repo today** and are actively being built:
 | Package | Language | Status |
 |---|---|---|
 | `apps/desktop` | TypeScript / Electron + React | Skeleton — BrowserWindow, one IPC stub, status UI |
-| `packages/text-policy` | Rust | normalize + lexicon done; scorer/evaluator/policy not yet started |
-| `packages/mitm-proxy` | Rust | Plain HTTP forwarding works; HTTPS CONNECT returns 501 |
+| `packages/text-policy` | Rust | normalize + lexicon + verdict + scorer done; evaluator/policy not yet started |
+| `packages/mitm-proxy` | Rust | Plain HTTP forwarding + TLS state/cert generation done; CONNECT handler not yet written |
 | `native-modules/win-daemon` | C++20 | WinEvent hooks + message loop; no capture/OCR/IPC yet |
 | `machine-learning` | Python | MobileNetV3 model + ONNX export skeleton; no real training loop yet |
 
@@ -85,6 +85,8 @@ When a test framework is missing, add the smallest appropriate test setup for th
 Docs are plain Markdown under `docs/`. Keep them generator-neutral and use relative links between pages. Do not add sensitive blocklists, private datasets, explicit evaluation samples, generated adult-content screenshots, or other private moderation artifacts to documentation.
 
 Update docs when changing architecture, daemon responsibilities, classification flow, evaluation strategy, or public development workflows.
+
+When a planned step in any `docs/<package>/PLAN.md` is completed, mark it done in that file (strike the item through and add **Done.**) and update the corresponding status row in the **Current State** table above. If the user asks to revert a completion marker, remove the strike-through and restore the original wording. This keeps the plans accurate without needing a separate sync pass.
 
 ## Verification Expectations
 

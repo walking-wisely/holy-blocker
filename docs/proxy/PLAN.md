@@ -10,16 +10,16 @@ The package at `packages/mitm-proxy/` already has:
 - `forward.rs` — plain HTTP forwarding: opens a TCP connection to the origin, rewrites the request to origin-form, strips hop-by-hop headers, sends the request, and returns the response.
 - `proxy.rs` — connection dispatcher: serves HTTP/1.1 connections via hyper, routes plain HTTP to `forward_http`, and returns `501 Not Implemented` for CONNECT requests.
 - `main.rs` — `tokio` TCP listener that spawns a `proxy::handle` task per accepted connection.
+- `tls.rs` — certificate generation and TLS state (step 1 complete). Loads a local root CA from PEM files, generates per-SNI leaf certificates on demand with `rcgen`, caches them in a `Mutex<HashMap<String, Arc<ServerConfig>>>`, and builds a `ClientConfig` backed by the system root store. `rcgen`, `rustls`, `tokio-rustls`, and `rustls-native-certs` are in `Cargo.toml`. Tests cover SAN correctness and cache-hit behaviour.
 - Unit tests for hop-by-hop header stripping (both the fixed set and `Connection`-named extensions).
 
-What is missing is everything required to handle HTTPS traffic and to route responses through the filter phases defined in [../network-pipeline.md](../network-pipeline.md):
+What is missing is everything required to complete HTTPS interception and route responses through the filter phases:
 
-- No TLS termination (Phase 2): CONNECT tunnels return 501.
-- No certificate generation or per-SNI cert cache.
+- No CONNECT handler (Phase 2): CONNECT tunnels still return 501 — `connect.rs` not yet written.
+- No HTTP loop over decrypted streams: `tunnel.rs` not yet written.
 - No text-policy integration (Phase 3): URL, metadata, and body are never scanned.
 - No image interception hook (Phase 4): image responses pass through unexamined.
 - No video segment tee (Phase 5): video segments pass through unexamined.
-- No `rcgen` or `tokio-rustls` in `Cargo.toml`.
 
 ## Modules to add
 
@@ -167,7 +167,7 @@ Tests to write:
 
 ## Implementation order
 
-1. `tls.rs` — cert generation and two-leg TLS setup; add `rcgen`, `tokio-rustls`, `rustls`, and `rustls-native-certs` to `Cargo.toml`; test with a synthetic CA and SNI round-trip.
+1. ~~`tls.rs` — cert generation and two-leg TLS setup; add `rcgen`, `tokio-rustls`, `rustls`, and `rustls-native-certs` to `Cargo.toml`; test with a synthetic CA and SNI round-trip.~~ **Done.**
 2. `connect.rs` — CONNECT handler replacing the current 501 branch; test SNI extraction from a raw `ClientHello` byte sequence.
 3. `tunnel.rs` — HTTP loop with phase 3/4/5 hook call sites (all stubs, always Allow for now); test header forwarding and block-on-URL-scan behavior using injected hook closures.
 4. `scan.rs` — policy hook stub with correct types; unit test the stub contracts.
