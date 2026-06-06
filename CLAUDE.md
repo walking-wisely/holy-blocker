@@ -13,7 +13,7 @@ The packages below **exist in the repo today** and are actively being built:
 | Package | Language | Status |
 |---|---|---|
 | `apps/desktop` | TypeScript / Electron + React | Skeleton — BrowserWindow, one IPC stub, status UI |
-| `packages/text-policy` | Rust | normalize + lexicon + verdict + scorer done; evaluator/policy not yet started |
+| `packages/text-policy` | Rust | normalize + lexicon + verdict + scorer + evaluator + policy done; FFI surface next |
 | `packages/mitm-proxy` | Rust | Plain HTTP forwarding + TLS state/cert generation + CONNECT handler done; tunnel HTTP loop not yet written |
 | `native-modules/win-daemon` | C++20 | WinEvent hooks + message loop; no capture/OCR/IPC yet |
 | `machine-learning` | Python | MobileNetV3 model + ONNX export skeleton; no real training loop yet |
