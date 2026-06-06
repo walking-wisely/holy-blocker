@@ -8,6 +8,7 @@ name = "mitm-proxy"
 path = "src/main.rs"
 
 [dependencies]
+text-policy = { path = "../text-policy" }
 anyhow = "1"
 bytes = "1"
 http-body-util = "0.1"
