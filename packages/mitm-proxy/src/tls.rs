@@ -15,6 +15,7 @@ pub struct TlsState {
     ca_cert: rcgen::Certificate,
     ca_key: KeyPair,
     cache: Mutex<HashMap<String, Arc<ServerConfig>>>,
+    client_cfg: Arc<ClientConfig>,
 }
 
 impl TlsState {
@@ -36,10 +37,12 @@ impl TlsState {
             .self_signed(&ca_key)
             .context("reconstructing CA cert object")?;
 
+        let client_cfg = Self::build_client_config()?;
         Ok(Self {
             ca_cert,
             ca_key,
             cache: Mutex::new(HashMap::new()),
+            client_cfg,
         })
     }
 
@@ -100,9 +103,15 @@ impl TlsState {
         Ok(cfg)
     }
 
-    /// Build a `ClientConfig` that validates origin certificates against the
-    /// system root store.
-    pub fn client_config() -> Result<Arc<ClientConfig>> {
+    /// Return the pre-built `ClientConfig` for origin TLS connections.
+    ///
+    /// The config is built once at startup (in [`TlsState::load`]) to avoid
+    /// re-reading the system root store on every CONNECT request.
+    pub fn client_config(&self) -> Arc<ClientConfig> {
+        Arc::clone(&self.client_cfg)
+    }
+
+    fn build_client_config() -> Result<Arc<ClientConfig>> {
         let mut root_store = rustls::RootCertStore::empty();
 
         let native = load_native_certs();
@@ -140,6 +149,7 @@ mod tests {
             ca_cert,
             ca_key,
             cache: Mutex::new(HashMap::new()),
+            client_cfg: TlsState::build_client_config().unwrap(),
         }
     }
 

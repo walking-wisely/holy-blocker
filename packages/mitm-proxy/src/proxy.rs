@@ -1,6 +1,7 @@
 use crate::connect;
 use crate::forward;
 use crate::tls::TlsState;
+use crate::tunnel::ScanHooks;
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full, combinators::BoxBody};
 use hyper::{Method, Request, Response, StatusCode, body::Incoming};
@@ -19,14 +20,15 @@ pub fn text(s: &'static str) -> ResBody {
 }
 
 /// Accepts one HTTP/1.1 connection and serves all requests on it.
-pub async fn handle(stream: TcpStream, tls: Arc<TlsState>) -> anyhow::Result<()> {
+pub async fn handle(stream: TcpStream, tls: Arc<TlsState>, scan: Arc<ScanHooks>) -> anyhow::Result<()> {
     let io = TokioIo::new(stream);
     hyper::server::conn::http1::Builder::new()
         .serve_connection(
             io,
             hyper::service::service_fn(move |req| {
                 let tls = Arc::clone(&tls);
-                async move { dispatch(req, tls).await }
+                let scan = Arc::clone(&scan);
+                async move { dispatch(req, tls, scan).await }
             }),
         )
         .with_upgrades()
@@ -34,7 +36,7 @@ pub async fn handle(stream: TcpStream, tls: Arc<TlsState>) -> anyhow::Result<()>
     Ok(())
 }
 
-async fn dispatch(req: Request<Incoming>, tls: Arc<TlsState>) -> Result<Response<ResBody>, Infallible> {
+async fn dispatch(req: Request<Incoming>, tls: Arc<TlsState>, scan: Arc<ScanHooks>) -> Result<Response<ResBody>, Infallible> {
     let res = if req.method() == Method::CONNECT {
         let authority = req.uri().authority().cloned();
         match authority {
@@ -44,7 +46,7 @@ async fn dispatch(req: Request<Incoming>, tls: Arc<TlsState>) -> Result<Response
                     match upgrade.await {
                         Ok(upgraded) => {
                             if let Err(e) =
-                                connect::handle_connect(authority, TokioIo::new(upgraded), tls)
+                                connect::handle_connect(authority, TokioIo::new(upgraded), tls, scan)
                                     .await
                             {
                                 tracing::warn!("CONNECT tunnel error: {e:#}");

@@ -169,9 +169,9 @@ Tests to write:
 
 1. ~~`tls.rs` — cert generation and two-leg TLS setup; add `rcgen`, `tokio-rustls`, `rustls`, and `rustls-native-certs` to `Cargo.toml`; test with a synthetic CA and SNI round-trip.~~ **Done.**
 2. ~~`connect.rs` — CONNECT handler replacing the current 501 branch; test SNI extraction from a raw `ClientHello` byte sequence.~~ **Done.**
-3. `tunnel.rs` — HTTP loop with phase 3/4/5 hook call sites (all stubs, always Allow for now); test header forwarding and block-on-URL-scan behavior using injected hook closures.
-4. `scan.rs` — policy hook stub with correct types; unit test the stub contracts.
-5. Wire phase 4 image stub and phase 5 tee stub into `tunnel`; confirm existing tests still pass with no real inference running.
+3. ~~`tunnel.rs` — HTTP loop with phase 3/4/5 hook call sites (all stubs, always Allow for now); test header forwarding and block-on-URL-scan behavior using injected hook closures.~~ **Done.**
+4. ~~`scan.rs` — policy hook stub with correct types; unit test the stub contracts.~~ **Done.**
+5. ~~Wire phase 4 image stub and phase 5 tee stub into `tunnel`; confirm existing tests still pass with no real inference running.~~ **Done.**
 
 ## What this does not cover
 

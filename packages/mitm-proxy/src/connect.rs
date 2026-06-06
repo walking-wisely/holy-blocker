@@ -1,5 +1,5 @@
 use crate::tls::TlsState;
-use crate::tunnel;
+use crate::tunnel::{self, ScanHooks};
 use anyhow::{Context, Result};
 use hyper::http::uri::Authority;
 use hyper::upgrade::Upgraded;
@@ -8,6 +8,10 @@ use std::sync::Arc;
 use tokio::net::TcpStream;
 
 /// Parse a TLS 1.x ClientHello record and return the SNI hostname, if present.
+///
+/// The production path uses `tokio_rustls::LazyConfigAcceptor` for SNI
+/// extraction; this function exists only to test the hand-rolled parser.
+#[cfg(test)]
 ///
 /// Returns `None` when the buffer is too short, does not start with a TLS
 /// handshake record, or contains no SNI extension — without panicking.
@@ -102,6 +106,7 @@ pub async fn handle_connect(
     target: Authority,
     upgraded: TokioIo<Upgraded>,
     tls: Arc<TlsState>,
+    scan: Arc<ScanHooks>,
 ) -> Result<()> {
     let acceptor = tokio_rustls::LazyConfigAcceptor::new(
         rustls::server::Acceptor::default(),
@@ -127,7 +132,7 @@ pub async fn handle_connect(
         .await
         .with_context(|| format!("connecting to {host}:{port}"))?;
 
-    let client_cfg = TlsState::client_config()?;
+    let client_cfg = tls.client_config();
     let connector = tokio_rustls::TlsConnector::from(client_cfg);
     let server_name = rustls::pki_types::ServerName::try_from(sni.clone())
         .with_context(|| format!("invalid server name: {sni}"))?
@@ -137,7 +142,7 @@ pub async fn handle_connect(
         .await
         .context("TLS handshake with origin")?;
 
-    tunnel::run(browser_tls, origin_tls).await
+    tunnel::run(browser_tls, origin_tls, scan).await
 }
 
 #[cfg(test)]

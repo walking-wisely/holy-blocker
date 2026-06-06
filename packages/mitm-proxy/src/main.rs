@@ -18,6 +18,7 @@ async fn main() -> Result<()> {
 
     let ca_dir = std::path::PathBuf::from("data/ca");
     let tls = Arc::new(tls::TlsState::load(&ca_dir)?);
+    let scan = Arc::new(tunnel::ScanHooks::default());
 
     let addr = "127.0.0.1:8080";
     let listener = TcpListener::bind(addr).await?;
@@ -26,8 +27,9 @@ async fn main() -> Result<()> {
     loop {
         let (stream, peer_addr) = listener.accept().await?;
         let tls = Arc::clone(&tls);
+        let scan = Arc::clone(&scan);
         tokio::spawn(async move {
-            if let Err(e) = proxy::handle(stream, tls).await {
+            if let Err(e) = proxy::handle(stream, tls, scan).await {
                 tracing::warn!(%peer_addr, "connection closed with error: {e}");
             }
         });
