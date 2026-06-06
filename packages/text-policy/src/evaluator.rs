@@ -111,28 +111,38 @@ mod tests {
     }
 
     #[test]
-    fn custom_thresholds_respected() {
+    fn custom_block_threshold_scores_below_it_warn() {
+        // score 85 is above the default block (80) but below custom block (90) → Warn
         let t = Thresholds { block: 90, warn: 60 };
-        // score 85: above default block but below custom block → Warn
         let v = evaluate(85, vec![], &t, None, None);
         assert_eq!(v.action, Action::Warn);
+    }
 
-        // score 90: at custom block → Block
+    #[test]
+    fn custom_block_threshold_score_at_boundary_blocks() {
+        let t = Thresholds { block: 90, warn: 60 };
         let v = evaluate(90, vec![], &t, None, None);
         assert_eq!(v.action, Action::Block);
+    }
 
-        // score 59: below custom warn → Allow
+    #[test]
+    fn custom_warn_threshold_score_below_it_allows() {
+        let t = Thresholds { block: 90, warn: 60 };
         let v = evaluate(59, vec![], &t, None, None);
         assert_eq!(v.action, Action::Allow);
     }
 
     #[test]
-    fn block_threshold_equal_to_warn_threshold_no_warn_band() {
-        // degenerate: warn == block → nothing can be Warn
+    fn equal_block_and_warn_thresholds_score_at_boundary_blocks() {
+        // degenerate: warn == block collapses the warn band; at the threshold it blocks
         let t = Thresholds { block: 50, warn: 50 };
         let v = evaluate(50, vec![], &t, None, None);
         assert_eq!(v.action, Action::Block);
+    }
 
+    #[test]
+    fn equal_block_and_warn_thresholds_score_below_boundary_allows() {
+        let t = Thresholds { block: 50, warn: 50 };
         let v = evaluate(49, vec![], &t, None, None);
         assert_eq!(v.action, Action::Allow);
     }

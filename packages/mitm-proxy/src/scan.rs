@@ -113,8 +113,12 @@ mod tests {
     }
 
     #[test]
-    fn scan_image_allows_any_input() {
+    fn scan_image_allows_jpeg_bytes() {
         assert!(matches!(scan_image(&[0xFF, 0xD8, 0xFF]), ScanResult::Allow));
+    }
+
+    #[test]
+    fn scan_image_allows_empty_input() {
         assert!(matches!(scan_image(&[]), ScanResult::Allow));
     }
 }
