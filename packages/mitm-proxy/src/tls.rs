@@ -14,6 +14,7 @@ use std::{
 pub struct TlsState {
     ca_cert: rcgen::Certificate,
     ca_key: KeyPair,
+    leaf_key: Arc<KeyPair>,
     cache: Mutex<HashMap<String, Arc<ServerConfig>>>,
     client_cfg: Arc<ClientConfig>,
 }
@@ -22,9 +23,11 @@ impl TlsState {
     /// Construct a `TlsState` directly from an in-memory CA — used by benchmarks
     /// and tests that don't want to touch the filesystem.
     pub fn from_parts(ca_cert: rcgen::Certificate, ca_key: KeyPair) -> Self {
+        let leaf_key = Arc::new(KeyPair::generate().expect("generating shared leaf key pair"));
         Self {
             ca_cert,
             ca_key,
+            leaf_key,
             cache: Mutex::new(HashMap::new()),
             client_cfg: Self::build_client_config().unwrap(),
         }
@@ -48,10 +51,12 @@ impl TlsState {
             .self_signed(&ca_key)
             .context("reconstructing CA cert object")?;
 
+        let leaf_key = Arc::new(KeyPair::generate().context("generating shared leaf key pair")?);
         let client_cfg = Self::build_client_config()?;
         Ok(Self {
             ca_cert,
             ca_key,
+            leaf_key,
             cache: Mutex::new(HashMap::new()),
             client_cfg,
         })
@@ -75,10 +80,14 @@ impl TlsState {
         Ok(cfg)
     }
 
-    /// Generate a signed leaf certificate DER for `sni` without caching.
-    pub fn generate_leaf_cert_der(&self, sni: &str) -> Result<(CertificateDer<'static>, KeyPair)> {
-        let leaf_key = KeyPair::generate().context("generating leaf key pair")?;
-
+    /// Generate a signed leaf certificate DER for `sni`, using the provided `key_pair`.
+    /// Pass `self.leaf_key` (the shared key) for production use; pass a freshly
+    /// generated key only in tests that need unique per-cert keys.
+    pub fn generate_leaf_cert_der(
+        &self,
+        sni: &str,
+        key_pair: &KeyPair,
+    ) -> Result<CertificateDer<'static>> {
         let mut params =
             CertificateParams::new(vec![sni.to_owned()]).context("building leaf cert params")?;
         params.distinguished_name = {
@@ -91,17 +100,16 @@ impl TlsState {
         )];
 
         let leaf_cert = params
-            .signed_by(&leaf_key, &self.ca_cert, &self.ca_key)
+            .signed_by(key_pair, &self.ca_cert, &self.ca_key)
             .context("signing leaf certificate")?;
 
-        let cert_der: CertificateDer<'static> = leaf_cert.der().clone().into();
-        Ok((cert_der, leaf_key))
+        Ok(leaf_cert.der().clone().into())
     }
 
     fn make_server_config(&self, sni: &str) -> Result<ServerConfig> {
-        let (cert_der, leaf_key) = self.generate_leaf_cert_der(sni)?;
+        let cert_der = self.generate_leaf_cert_der(sni, &self.leaf_key)?;
         let key_der: PrivateKeyDer<'static> =
-            PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(leaf_key.serialize_der()));
+            PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(self.leaf_key.serialize_der()));
 
         let provider = Arc::new(rustls::crypto::ring::default_provider());
         let cfg = ServerConfig::builder_with_provider(provider)
@@ -114,12 +122,46 @@ impl TlsState {
         Ok(cfg)
     }
 
+    /// Replace the outbound `ClientConfig` used for origin TLS connections.
+    ///
+    /// Intended for integration tests that need the proxy to trust a local
+    /// test CA instead of the system root store.
+    pub fn with_client_config(mut self, cfg: Arc<ClientConfig>) -> Self {
+        self.client_cfg = cfg;
+        self
+    }
+
     /// Return the pre-built `ClientConfig` for origin TLS connections.
     ///
     /// The config is built once at startup (in [`TlsState::load`]) to avoid
     /// re-reading the system root store on every CONNECT request.
     pub fn client_config(&self) -> Arc<ClientConfig> {
         Arc::clone(&self.client_cfg)
+    }
+
+    /// Build a `ClientConfig` that trusts the system roots plus any `extra`
+    /// DER-encoded certificates.  Pass an empty slice for the default config.
+    pub fn build_client_config_with_extra_roots(
+        extra: &[rustls::pki_types::CertificateDer<'static>],
+    ) -> Result<Arc<ClientConfig>> {
+        let mut root_store = rustls::RootCertStore::empty();
+        let native = load_native_certs();
+        if !native.errors.is_empty() {
+            tracing::warn!("some native certs failed to load: {:?}", native.errors);
+        }
+        for cert in native.certs {
+            root_store.add(cert).context("adding native root cert")?;
+        }
+        for cert in extra {
+            root_store.add(cert.clone()).context("adding extra root cert")?;
+        }
+        let provider = Arc::new(rustls::crypto::ring::default_provider());
+        let cfg = ClientConfig::builder_with_provider(provider)
+            .with_safe_default_protocol_versions()
+            .context("choosing protocol versions")?
+            .with_root_certificates(root_store)
+            .with_no_client_auth();
+        Ok(Arc::new(cfg))
     }
 
     fn build_client_config() -> Result<Arc<ClientConfig>> {
@@ -156,12 +198,7 @@ mod tests {
         let mut ca_params = CertificateParams::new(vec![]).unwrap();
         ca_params.is_ca = IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
         let ca_cert = ca_params.self_signed(&ca_key).unwrap();
-        TlsState {
-            ca_cert,
-            ca_key,
-            cache: Mutex::new(HashMap::new()),
-            client_cfg: TlsState::build_client_config().unwrap(),
-        }
+        TlsState::from_parts(ca_cert, ca_key)
     }
 
     /// Verify that the leaf cert produced by the real `server_config` path
@@ -172,7 +209,7 @@ mod tests {
         let state = make_test_state();
         let sni = "example.com";
 
-        let (cert_der, _key) = state.generate_leaf_cert_der(sni).unwrap();
+        let cert_der = state.generate_leaf_cert_der(sni, &state.leaf_key).unwrap();
         let (_, parsed) =
             x509_parser::parse_x509_certificate(&cert_der).expect("parse leaf DER");
 

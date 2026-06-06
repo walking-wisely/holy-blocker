@@ -13,12 +13,36 @@ fn make_state() -> TlsState {
 
 fn bench_cert_cold(c: &mut Criterion) {
     c.bench_function("tls/cert_generation_cold", |b| {
+        // State is created once; each iteration is a cache miss for a new hostname.
+        // This isolates the signing cost from the one-time startup keygen.
+        let state = make_state();
+        let mut counter: u64 = 0;
         b.iter(|| {
-            // Fresh state each iteration so every call is a cache miss.
-            let state = make_state();
-            state.server_config("bench.example.com").unwrap();
+            counter += 1;
+            state
+                .server_config(&format!("host{counter}.example.com"))
+                .unwrap();
         });
     });
+}
+
+fn assert_cold_miss_under_2ms(_c: &mut Criterion) {
+    use std::time::Instant;
+    let iterations = 20;
+    let mut total = std::time::Duration::ZERO;
+    for i in 0..iterations {
+        let state = make_state();
+        let t = Instant::now();
+        state
+            .server_config(&format!("host{i}.example.com"))
+            .unwrap();
+        total += t.elapsed();
+    }
+    let mean = total / iterations;
+    assert!(
+        mean < std::time::Duration::from_millis(2),
+        "cold cert generation mean {mean:?} exceeded 2 ms — leaf key reuse may be broken"
+    );
 }
 
 fn bench_cert_cache_hit(c: &mut Criterion) {
@@ -33,5 +57,5 @@ fn bench_cert_cache_hit(c: &mut Criterion) {
     });
 }
 
-criterion_group!(benches, bench_cert_cold, bench_cert_cache_hit);
+criterion_group!(benches, bench_cert_cold, bench_cert_cache_hit, assert_cold_miss_under_2ms);
 criterion_main!(benches);
