@@ -297,7 +297,7 @@ Minimum Windows SDK: 10.0.19041.0 (required for `SetInterfaceDnsSettings`).
 ## Implementation order
 
 1. ~~**Scaffold CMakeLists.txt** — targets, compiler flags (`/W4 /WX`, C++20), GoogleTest dependency via FetchContent, `fake_win32` shim lib.~~ **Done.**
-2. **`wintun_adapter`** — implement registry persistence and `Open`/`Install`/`Close`. Unit-test with a stub `wintun.dll` loader that records calls.
+2. ~~**`wintun_adapter`** — implement registry persistence and `Open`/`Install`/`Close`. Unit-test with a stub `wintun.dll` loader that records calls.~~ **Done.**
 3. **`routing`** — implement `AddDefaultRoute` / `RemoveDefaultRoute` / DNS setters against the IP Helper API. Unit-test with `fake_win32` shims that record `CreateIpForwardEntry2` calls.
 4. **`ipc_server`** — implement the pipe listener and JSON dispatch against the `CommandHandler` interface. Unit-test command parsing and response serialization without opening a real pipe.
 5. **`service_host`** — wire `WintunAdapter`, `RoutingManager`, `IpcServer`, and SCM callbacks together. Smoke-test by installing the service on a dev machine and issuing `{"cmd":"start"}` from a test client.
