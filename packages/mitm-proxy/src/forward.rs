@@ -121,4 +121,24 @@ mod tests {
         assert!(!map.contains_key(header::CONNECTION));
         assert!(map.contains_key(header::CONTENT_TYPE));
     }
+
+    #[test]
+    fn strips_multiple_comma_separated_connection_extensions() {
+        let mut map = hyper::HeaderMap::new();
+        map.insert(
+            header::CONNECTION,
+            "keep-alive, x-foo, x-bar".parse().unwrap(),
+        );
+        map.insert("x-foo", "1".parse().unwrap());
+        map.insert("x-bar", "2".parse().unwrap());
+        map.insert(header::CONTENT_LENGTH, "42".parse().unwrap());
+
+        strip_hop_by_hop(&mut map);
+
+        assert!(!map.contains_key(header::CONNECTION));
+        assert!(!map.contains_key("keep-alive"));
+        assert!(!map.contains_key("x-foo"));
+        assert!(!map.contains_key("x-bar"));
+        assert!(map.contains_key(header::CONTENT_LENGTH));
+    }
 }
