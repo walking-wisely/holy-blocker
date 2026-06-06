@@ -4,6 +4,10 @@ This directory contains the project documentation for Holy Blocker. The files ar
 
 ## Documentation Layout
 
+### Foundation
+
+- [Foundation](foundation.md) explains why Holy Blocker exists, the Christian rationale behind its design decisions, and what "covenant with my eyes" requires technically.
+
 ### Design documents
 
 - [Architecture](architecture.md) describes the product shape, local-first privacy model, and major runtime components including the proposed workspace layout.
