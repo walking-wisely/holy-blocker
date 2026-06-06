@@ -21,6 +21,7 @@ The packages below **exist in the repo today** and are actively being built:
 The packages below are **planned but not yet created** — do not assume they exist:
 
 - `packages/net-shield` — TUN adapter + domain/IP radix filter
+- `native-modules/win-network` — Windows Service: Wintun driver install, routing rules, named-pipe IPC for net-shield
 - `packages/image-sandbox` — perceptual hashing + ONNX image classifier
 - `packages/video-watchdog` — async HLS/DASH segment sampler
 
