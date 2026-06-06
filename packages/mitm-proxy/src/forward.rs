@@ -1,8 +1,10 @@
-use crate::proxy::ResBody;
-use http_body_util::BodyExt;
+use bytes::Bytes;
+use http_body_util::{BodyExt, combinators::BoxBody};
 use hyper::{Request, Response, body::Incoming, header};
 use hyper_util::rt::TokioIo;
 use tokio::net::TcpStream;
+
+pub type ResBody = BoxBody<Bytes, hyper::Error>;
 
 /// Headers that must not be forwarded between hops (RFC 7230 §6.1).
 static HOP_BY_HOP: &[&str] = &[
@@ -72,7 +74,7 @@ pub async fn forward_http(req: Request<Incoming>) -> anyhow::Result<Response<Res
     Ok(Response::from_parts(res_parts, res_body.boxed()))
 }
 
-fn strip_hop_by_hop(headers: &mut hyper::HeaderMap) {
+pub fn strip_hop_by_hop(headers: &mut hyper::HeaderMap) {
     // First collect extra names listed in the Connection header.
     let extra: Vec<String> = headers
         .get_all(header::CONNECTION)

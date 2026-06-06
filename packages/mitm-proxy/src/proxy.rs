@@ -1,17 +1,14 @@
 use crate::connect;
-use crate::forward;
+use crate::forward::{self, ResBody};
 use crate::tls::TlsState;
 use crate::tunnel::ScanHooks;
 use bytes::Bytes;
-use http_body_util::{BodyExt, Full, combinators::BoxBody};
+use http_body_util::{BodyExt, Full};
 use hyper::{Method, Request, Response, StatusCode, body::Incoming};
 use hyper_util::rt::TokioIo;
 use std::convert::Infallible;
 use std::sync::Arc;
 use tokio::net::TcpStream;
-
-/// Unified response body type used throughout the proxy.
-pub type ResBody = BoxBody<Bytes, hyper::Error>;
 
 pub fn text(s: &'static str) -> ResBody {
     Full::new(Bytes::from_static(s.as_bytes()))
