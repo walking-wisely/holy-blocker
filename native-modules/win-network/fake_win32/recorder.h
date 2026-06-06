@@ -84,8 +84,8 @@ struct CallLog {
     static void     Reset();
 };
 
-    // Reset the in-memory registry (separate from CallLog so tests can clear
-    // each independently).
-    void ResetRegistry();
+// Clears the in-memory registry independently of CallLog so tests can choose
+// which state to reset between cases.
+void ResetRegistry();
 
 } // namespace FakeWin32
