@@ -3,6 +3,13 @@
 The overall system architecture and component responsibilities are described in [../architecture.md](../architecture.md).
 This document is the build plan: what modules to add to `apps/desktop/`, in what order, and what each one is responsible for.
 
+## Related flows
+
+- [../flows/block.md](../flows/block.md) — how block events reach the desktop ring buffer and tray
+- [../flows/warn-interstitial.md](../flows/warn-interstitial.md) — warn events and future native overlay
+- [../flows/protection-mode-change.md](../flows/protection-mode-change.md) — mode selector → policy.json → daemon/proxy propagation
+- [../flows/override-gate.md](../flows/override-gate.md) — voice gate triggered when switching to Off
+
 ## Current state
 
 The package at `apps/desktop/` already has:
@@ -51,6 +58,8 @@ Responsibilities:
 - `daemon:get-events` — return the last N `scan_event` messages from a ring buffer (capped at 500 entries) held in the main process. N is caller-supplied, defaulting to 100.
 - `policy:get-thresholds` — read `{ blockThreshold, warnThreshold }` from a JSON config file at `path.join(app.getPath("userData"), "policy.json")`. Return defaults `{ blockThreshold: 80, warnThreshold: 50 }` if the file does not exist.
 - `policy:set-thresholds` — validate (`warnThreshold < blockThreshold`, both in `0..100`) and write the config file atomically (write to a `.tmp` sibling, then rename).
+- `protection:get-mode` — read `protectionMode` from `policy.json`. Return default `"full"` if unset.
+- `protection:set-mode` — validate value ∈ `{ "full", "warn", "off" }`. If `"off"`, run the override gate first (see `override:attempt`). Write atomically to `policy.json`, then push `config_update` to daemon over named pipe. See [../flows/protection-mode-change.md](../flows/protection-mode-change.md).
 - `stats:get-summary` — return lifetime and weekly event counts, total blocked-content tally, and the install timestamp (used by the sobriety counter).
 - `accountability:get-config` — read `{ partnerEmail: string | null }` from `userData/accountability.json`.
 - `accountability:set-config` — write partner email; validate it is a well-formed address.
@@ -75,6 +84,11 @@ type ScanEvent = {
   at: string
   flaggedAsFalsePositive?: boolean
 }
+
+type ProtectionMode = "full" | "warn" | "off"
+// full   — Block verdicts block; Warn verdicts are recorded but traffic passes.
+// warn   — Block and Warn verdicts are downgraded; traffic always passes, events recorded.
+// off    — Scanning disabled; all traffic passes. Requires voice gate to activate.
 
 type PolicyThresholds = {
   blockThreshold: number   // 0..100, default 80
@@ -114,6 +128,8 @@ Add new calls to the existing `contextBridge.exposeInMainWorld` object. No Node 
 - `flagFalsePositive: (at: string) => Promise<void>` — marks the event at the given timestamp as a false positive in the ring buffer and stats store.
 - `getThresholds: () => Promise<PolicyThresholds>` — invokes `policy:get-thresholds`.
 - `setThresholds: (t: PolicyThresholds) => Promise<void>` — invokes `policy:set-thresholds`.
+- `getProtectionMode: () => Promise<ProtectionMode>` — invokes `protection:get-mode`.
+- `setProtectionMode: (mode: ProtectionMode) => Promise<void>` — invokes `protection:set-mode`. The main process gates the `"off"` transition behind the voice gate before writing and propagating the change.
 - `getStatsSummary: () => Promise<StatsSummary>` — invokes `stats:get-summary`.
 - `getAccountabilityConfig: () => Promise<{ partnerEmail: string | null }>` — invokes `accountability:get-config`.
 - `setAccountabilityConfig: (cfg: { partnerEmail: string | null }) => Promise<void>` — invokes `accountability:set-config`.
@@ -152,9 +168,15 @@ reflect the combined content of this view).
 
 Responsibilities:
 
+- **Protection mode selector**: on mount, call `getProtectionMode()` and render a
+  three-option segmented control or radio group:
+  - **Full protection** — blocks content that exceeds the block threshold; the normal operating mode.
+  - **Warn only** — scans still run and events are recorded, but nothing is ever blocked; traffic always passes.
+  - **Off** — scanning is disabled entirely. Selecting this option immediately triggers the voice gate overlay; if the gate fails, the mode is not changed.
+  A short description under each option explains what the user will and won't see. The current mode is highlighted; changing it calls `setProtectionMode()`.
 - **Threshold editor**: on mount, call `getThresholds()` and populate two number inputs.
   On submit, validate client-side and call `setThresholds()`. Confirm the written values
-  by re-reading after a successful save.
+  by re-reading after a successful save. Grey out the threshold inputs when mode is `"off"` since thresholds have no effect in that state.
 - **Accountability partner**: on mount, call `getAccountabilityConfig()` and display the
   current partner email (or empty). A text input + save button writes via
   `setAccountabilityConfig()`. A short explanation tells the user what the partner receives
@@ -196,14 +218,28 @@ Responsibilities:
 
 ## System tray integration
 
-The main process should register a tray icon that:
+The main process should register a tray icon. See [../flows/protection-mode-change.md](../flows/protection-mode-change.md) for how mode changes update the icon.
 
-- Shows green when protection is active and no events in the last hour.
-- Shows amber when one or more `warn` events occurred in the last hour.
-- Shows red when one or more `block` events occurred in the last hour, or when the daemon
-  is disconnected.
-- Right-click menu: "Open Holy Blocker", separator, "Disable protection…" (triggers the
-  override gate), separator, "Quit".
+Icon colour by condition (evaluated in priority order):
+
+| Condition | Colour |
+|---|---|
+| Mode `"off"` | Grey |
+| Daemon disconnected | Red |
+| `block` event in last hour | Red |
+| `warn` event in last hour | Amber |
+| Mode `"warn"`, no recent events | Blue |
+| Mode `"full"`, no recent events | Green |
+
+Right-click menu items:
+- "Open Holy Blocker"
+- *(separator)*
+- Current mode as a non-clickable label: `"Full protection ✓"` / `"Warn only ✓"` / `"Off"`
+- "Switch to Warn only" or "Switch to Full" (toggles between `full` and `warn`, no gate)
+- "Disable protection…" (triggers override gate) — hidden when already `"off"`
+- "Re-enable protection" (instant, no gate) — shown only when mode is `"off"`
+- *(separator)*
+- "Quit"
 
 The tray icon is the user's ambient signal that the app is running. Without it, there is no
 visible feedback when the window is closed.
@@ -216,7 +252,7 @@ visible feedback when the window is closed.
 4. `stats-store.ts` — event persistence and install timestamp. Add `stats:get-summary` to `ipc-handlers.ts`.
 5. Extend `preload.ts` with all new bridge methods and update `src/renderer/src/types.ts`.
 6. `MonitorView.tsx` — sobriety counter, weekly summary, score histogram, top windows, live event list with false-positive flagging.
-7. `PolicyView.tsx` — threshold editor and accountability partner config.
+7. `PolicyView.tsx` — protection mode selector, threshold editor, and accountability partner config.
 8. `voice-adapter-electron.ts` + wire `packages/voice-gate` into `ipc-handlers.ts` for `override:attempt`.
 9. `OverrideGateView.tsx` — full-screen verse-reading overlay.
 10. System tray icon and right-click menu.
