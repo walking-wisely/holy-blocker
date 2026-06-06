@@ -89,6 +89,28 @@ Update docs when changing architecture, daemon responsibilities, classification 
 
 When a planned step in any `docs/<package>/PLAN.md` is completed, mark it done in that file (strike the item through and add **Done.**) and update the corresponding status row in the **Current State** table above. If the user asks to revert a completion marker, remove the strike-through and restore the original wording. This keeps the plans accurate without needing a separate sync pass.
 
+## Branch and Commit Conventions
+
+Branch names follow the pattern `<prefix>/<short-slug>` where the slug is a brief kebab-case description of the work. The fuller description lives in the first commit message. Use these prefixes:
+
+| Prefix | When to use |
+|---|---|
+| `feat` | new feature or capability |
+| `fix` | bug fix |
+| `refactor` | restructuring without behaviour change |
+| `infra` | build system, CI, tooling, scaffolding |
+
+Examples:
+- `feat/net-shield-basic-impl`
+- `fix/mitm-proxy-tls-cert-chain`
+- `refactor/text-policy-scorer-module`
+- `infra/cargo-workspace`
+
+Commit messages follow the same prefix convention with the conventional-commits format:
+`<prefix>(<scope>): <imperative summary>`
+
+The body should explain *why* the change was made — the what is visible in the diff. Keep the subject line under 72 characters.
+
 ## Verification Expectations
 
 Before finishing a code change, run the narrowest relevant checks:
