@@ -2,11 +2,11 @@
 
 #include <optional>
 
-static constexpr LPCWSTR kRegKey      = L"SOFTWARE\\HolyBlocker\\NetSvc";
-static constexpr LPCWSTR kValueGuid   = L"AdapterGUID";
-static constexpr LPCWSTR kValueName   = L"AdapterName";
-static constexpr LPCWSTR kTunnelType  = L"HolyBlocker";
-static constexpr DWORD   kRingBytes   = 4u * 1024u * 1024u;
+static constexpr LPCWSTR kRegKey     = L"SOFTWARE\\HolyBlocker\\NetSvc";
+static constexpr LPCWSTR kValueGuid  = L"AdapterGUID";
+static constexpr LPCWSTR kValueName  = L"AdapterName";
+static constexpr LPCWSTR kTunnelType = L"HolyBlocker";
+static constexpr DWORD   kRingBytes  = 4u * 1024u * 1024u;
 
 // Fixed GUID assigned to the HolyBlocker virtual adapter.  Using a fixed GUID
 // lets the service reclaim the adapter across restarts without extra bookkeeping.
