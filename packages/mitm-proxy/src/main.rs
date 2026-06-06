@@ -18,7 +18,17 @@ async fn main() -> Result<()> {
 
     let ca_dir = std::path::PathBuf::from("data/ca");
     let tls = Arc::new(tls::TlsState::load(&ca_dir)?);
-    let scan = Arc::new(tunnel::ScanHooks::default());
+
+    let engine = Arc::new(scan::build_default_engine());
+    let scan = {
+        let url_engine = Arc::clone(&engine);
+        let body_engine = Arc::clone(&engine);
+        Arc::new(tunnel::ScanHooks {
+            url_scanner: Box::new(move |url| scan::scan_url(&url_engine, url)),
+            body_scanner: Box::new(move |html| scan::scan_body(&body_engine, html)),
+            ..tunnel::ScanHooks::default()
+        })
+    };
 
     let addr = "127.0.0.1:8080";
     let listener = TcpListener::bind(addr).await?;

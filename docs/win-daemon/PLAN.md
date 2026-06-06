@@ -3,6 +3,12 @@
 The intended daemon responsibilities and scan cadence are defined in [edge-daemons.md](../edge-daemons.md).
 This document is the build plan: what modules to add, in what order, and what each one is responsible for.
 
+## Related flows
+
+- [../flows/block.md](../flows/block.md) — daemon scan_event on Block verdict
+- [../flows/warn-interstitial.md](../flows/warn-interstitial.md) — future full-screen native overlay on Warn verdict
+- [../flows/protection-mode-change.md](../flows/protection-mode-change.md) — how config_update updates ScanLoop mode at runtime
+
 ## Current state
 
 The package at `native-modules/win-daemon/` already has:
@@ -56,9 +62,10 @@ enum class ScanAction { Allow, Warn, Block };
 enum class ScanSource { OCR, Image, Text };
 
 struct ScanVerdict {
-    ScanAction action;
-    float      score;   // 0.0–1.0
+    ScanAction action;       // effective action after applying ProtectionMode
+    float      score;        // 0.0–1.0
     ScanSource source;
+    ScanAction raw_action;   // action as returned by IScanner, before mode downgrade
 };
 
 class IScanner {
@@ -90,9 +97,12 @@ src/scan_loop.cpp
 The scan loop is the scheduler that bridges WinEvent callbacks and the scanner interface:
 
 ```cpp
+enum class ProtectionMode { Full, WarnOnly, Off };
+
 struct ScanLoopConfig {
     std::chrono::milliseconds debounce_ms{200};
     std::chrono::milliseconds scan_interval_ms{500};
+    std::atomic<ProtectionMode> protection_mode{ProtectionMode::Full};
 };
 
 class ScanLoop {
@@ -161,7 +171,18 @@ Outbound message payloads:
 | `scan_event`    | `{"action": "block\|warn\|allow", "score": 0.0, "source": "ocr\|image\|text", "ts": "<iso8601>"}` |
 | `status_update` | `{"state": "idle\|scanning\|acting"}`                   |
 
-Inbound `config_update` payload: `{"block_threshold": 0.8, "warn_threshold": 0.5, "enabled": true}`.
+Inbound `config_update` payload:
+```json
+{
+  "block_threshold": 0.8,
+  "warn_threshold": 0.5,
+  "protection_mode": "full"
+}
+```
+`protection_mode` ∈ `{ "full", "warn", "off" }`. See [../flows/protection-mode-change.md](../flows/protection-mode-change.md)
+for the full propagation flow and [../decisions/protection-modes.md](../decisions/protection-modes.md)
+for rationale. The mode is stored in `ScanLoopConfig::protection_mode` as a
+`std::atomic<ProtectionMode>` and updated on receipt without restarting the loop.
 
 Responsibilities:
 

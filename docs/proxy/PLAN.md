@@ -3,6 +3,12 @@
 The design rationale and phase definitions live in [../network-pipeline.md](../network-pipeline.md).
 This document is the build plan: what modules to add, in what order, and what each one is responsible for.
 
+## Related flows
+
+- [../flows/block.md](../flows/block.md) — what happens when a scan returns Block
+- [../flows/warn-interstitial.md](../flows/warn-interstitial.md) — HTML overlay injection on Warn verdict
+- [../flows/protection-mode-change.md](../flows/protection-mode-change.md) — how ProtectionMode propagates to the proxy at runtime
+
 ## Current state
 
 The package at `packages/mitm-proxy/` already has:
@@ -142,8 +148,11 @@ src/scan.rs
 Responsibilities:
 
 - Define `ScanResult` and expose the three hook functions that `tunnel.rs` calls.
-- Stub all three functions to return `Allow` unconditionally until `packages/text-policy` exposes a stable library interface or FFI surface.
-- This module is the only place in the proxy that knows about `text-policy`. Replacing the stubs with real calls is isolated to this file.
+- ~~Stub all three functions to return `Allow` unconditionally until `packages/text-policy` exposes a stable library interface or FFI surface.~~
+- Wire `scan_url` and `scan_body` to a `PolicyEngine` from `packages/text-policy` (path dep). Expose `build_default_engine()` so `main.rs` can construct an `Arc<PolicyEngine>` at startup.
+- Map `Action::Block → ScanResult::Block { score }` and all other actions to `ScanResult::Allow`. The mapping is mediated by `ProtectionMode` (see step 6 below).
+- `scan_image` remains a stub returning `Allow` until `packages/image-sandbox` is ready.
+- This module is the only place in the proxy that knows about `text-policy`. Replacing the dictionary with a config-loaded one is isolated to this file.
 
 Key types and signatures:
 
@@ -153,17 +162,55 @@ pub enum ScanResult {
     Block { score: u32 },
 }
 
-pub fn scan_url(url: &str) -> ScanResult
-pub fn scan_body(html: &str) -> ScanResult
-pub fn scan_image(bytes: &[u8]) -> ScanResult   // Phase 4 hook
+pub fn build_default_engine() -> PolicyEngine
+pub fn scan_url(engine: &PolicyEngine, url: &str) -> ScanResult
+pub fn scan_body(engine: &PolicyEngine, html: &str) -> ScanResult
+pub fn scan_image(bytes: &[u8]) -> ScanResult   // Phase 4 hook, still stub
 ```
 
 Tests to write:
 
-- Assert `scan_url` returns `Allow` for any input (stub contract test).
-- Assert `scan_body` returns `Allow` for any input.
+- Assert `scan_url` returns `Allow` for a clean URL.
+- Assert `scan_url` returns `Block` when the URL contains a high-severity term.
+- Assert `scan_body` returns `Allow` for innocuous HTML.
+- Assert `scan_body` returns `Block` for HTML containing a high-severity term.
 - Assert `scan_image` returns `Allow` for any input.
-- These tests are intentionally trivial; they exist so that replacing a stub with a real implementation forces a test update.
+
+### 6. `ProtectionMode` — mode-aware verdict mapping
+
+See [../flows/protection-mode-change.md](../flows/protection-mode-change.md) for the
+end-to-end flow and [../decisions/protection-modes.md](../decisions/protection-modes.md)
+for rationale.
+
+Add `ProtectionMode` to `scan.rs` and thread it through `ScanHooks` construction in
+`main.rs`.
+
+```rust
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProtectionMode { Full, WarnOnly, Off }
+
+pub fn apply_mode(mode: ProtectionMode, action: Action, score: u32) -> ScanResult
+```
+
+Mode mapping:
+
+| Engine `Action` | `Full`           | `WarnOnly` | `Off`   |
+|-----------------|------------------|------------|---------|
+| `Block`         | `Block { score }`| `Allow`    | `Allow` |
+| any other       | `Allow`          | `Allow`    | `Allow` |
+
+In `WarnOnly` the scan still runs and events are still emitted; only the HTTP verdict
+is downgraded. In `Off` the scan closures short-circuit before calling the engine.
+
+`main.rs` wraps the mode in `Arc<AtomicU8>` so it can be updated at runtime from a
+desktop `config_update` without rebuilding `ScanHooks`.
+
+Tests to write:
+
+- `apply_mode(Full, Block, 90)` → `Block { score: 90 }`.
+- `apply_mode(WarnOnly, Block, 90)` → `Allow`.
+- `apply_mode(Off, Block, 90)` → `Allow`.
+- `apply_mode(Full, Action::Warn, 60)` → `Allow`.
 
 ## Implementation order
 
@@ -172,6 +219,8 @@ Tests to write:
 3. ~~`tunnel.rs` — HTTP loop with phase 3/4/5 hook call sites (all stubs, always Allow for now); test header forwarding and block-on-URL-scan behavior using injected hook closures.~~ **Done.**
 4. ~~`scan.rs` — policy hook stub with correct types; unit test the stub contracts.~~ **Done.**
 5. ~~Wire phase 4 image stub and phase 5 tee stub into `tunnel`; confirm existing tests still pass with no real inference running.~~ **Done.**
+6. ~~Wire `text-policy` into `scan.rs`; replace stubs with real `PolicyEngine` calls; test clean/blocked URL and body paths.~~ **Done.**
+7. `ProtectionMode` — add enum and `apply_mode` to `scan.rs`; thread an `Arc<AtomicU8>` through `ScanHooks` closures in `main.rs` so mode can be changed at runtime without rebuilding hooks.
 
 ## What this does not cover
 
