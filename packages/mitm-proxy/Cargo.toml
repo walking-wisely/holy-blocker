@@ -3,6 +3,10 @@ name = "mitm-proxy"
 version = "0.1.0"
 edition = "2024"
 
+[lib]
+name = "mitm_proxy"
+path = "src/lib.rs"
+
 [[bin]]
 name = "mitm-proxy"
 path = "src/main.rs"
@@ -24,4 +28,17 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 
 [dev-dependencies]
+criterion = { version = "0.5", features = ["async_tokio"] }
 x509-parser = "0.16"
+
+[[bench]]
+name = "tunnel"
+harness = false
+
+[[bench]]
+name = "tls_cert"
+harness = false
+
+[[bench]]
+name = "headers"
+harness = false

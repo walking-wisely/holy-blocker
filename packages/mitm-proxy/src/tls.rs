@@ -19,6 +19,17 @@ pub struct TlsState {
 }
 
 impl TlsState {
+    /// Construct a `TlsState` directly from an in-memory CA — used by benchmarks
+    /// and tests that don't want to touch the filesystem.
+    pub fn from_parts(ca_cert: rcgen::Certificate, ca_key: KeyPair) -> Self {
+        Self {
+            ca_cert,
+            ca_key,
+            cache: Mutex::new(HashMap::new()),
+            client_cfg: Self::build_client_config().unwrap(),
+        }
+    }
+
     /// Load the root CA from PEM files `ca.crt` and `ca.key` in `ca_dir`.
     pub fn load(ca_dir: &Path) -> Result<Self> {
         let cert_pem =
