@@ -2,8 +2,8 @@ mod connect;
 mod forward;
 mod proxy;
 mod scan;
-mod tunnel;
 mod tls;
+mod tunnel;
 
 use anyhow::Result;
 use std::sync::Arc;
