@@ -1,0 +1,20 @@
+[package]
+name = "net-shield"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "net_shield"
+path = "src/lib.rs"
+
+[[bin]]
+name = "net-shield"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+# wintun will be added when src/tun/windows.rs is implemented
+
+[dev-dependencies]
