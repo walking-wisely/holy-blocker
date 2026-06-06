@@ -15,12 +15,11 @@ The packages below **exist in the repo today** and are actively being built:
 | `apps/desktop` | TypeScript / Electron + React | Skeleton — BrowserWindow, one IPC stub, status UI |
 | `packages/text-policy` | Rust | normalize + lexicon + verdict + scorer + evaluator + policy done; FFI surface next |
 | `packages/mitm-proxy` | Rust | Plain HTTP forwarding + TLS state/cert generation + CONNECT handler + HTTP/1.1 tunnel loop with phase 3/4/5 scan hooks done; text-policy wired into scan_url/scan_body; ProtectionMode next |
+| `packages/net-shield` | Rust | radix domain/IP filter done; SNI parser done; tun adapter + NetShield loop next |
 | `native-modules/win-daemon` | C++20 | WinEvent hooks + message loop; no capture/OCR/IPC yet |
 | `machine-learning` | Python | MobileNetV3 model + ONNX export skeleton; no real training loop yet |
 
 The packages below are **planned but not yet created** — do not assume they exist:
-
-- `packages/net-shield` — TUN adapter + domain/IP radix filter
 - `native-modules/win-network` — Windows Service: Wintun driver install, routing rules, named-pipe IPC for net-shield
 - `packages/image-sandbox` — perceptual hashing + ONNX image classifier
 - `packages/video-watchdog` — async HLS/DASH segment sampler

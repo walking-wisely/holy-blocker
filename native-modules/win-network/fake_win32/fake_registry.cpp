@@ -7,6 +7,10 @@
 // In-memory registry: path → (value_name → raw bytes)
 static std::map<std::wstring, std::map<std::wstring, std::vector<uint8_t>>> g_reg;
 
+namespace FakeWin32 {
+void ResetRegistry() { g_reg.clear(); }
+} // namespace FakeWin32
+
 // Fake HKEY: we use the key path as the identity by encoding a pointer to a
 // heap-allocated string.  Tests don't need to inspect handles — they check the
 // CallLog instead.
