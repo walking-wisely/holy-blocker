@@ -16,6 +16,24 @@ static constexpr GUID kAdapterGuid = {
 };
 
 // ──────────────────────────────────────────────────────────────────────────────
+// Wintun DLL function pointers
+//
+// Wintun does not ship an import library.  The API is loaded at runtime from
+// wintun.dll via GetProcAddress.  The fake_win32 shim covers these names with
+// #defines, so this block is compiled only in production mode.
+// ──────────────────────────────────────────────────────────────────────────────
+#ifndef HOLY_BLOCKER_FAKE_WIN32
+static HMODULE                      g_wintun_dll         = nullptr;
+static WINTUN_CREATE_ADAPTER_FUNC   WintunCreateAdapter  = nullptr;
+static WINTUN_OPEN_ADAPTER_FUNC     WintunOpenAdapter    = nullptr;
+static WINTUN_CLOSE_ADAPTER_FUNC    WintunCloseAdapter   = nullptr;
+static WINTUN_DELETE_ADAPTER_FUNC   WintunDeleteAdapter  = nullptr;
+static WINTUN_START_SESSION_FUNC    WintunStartSession   = nullptr;
+static WINTUN_END_SESSION_FUNC      WintunEndSession     = nullptr;
+static WINTUN_GET_ADAPTER_LUID_FUNC WintunGetAdapterLuid = nullptr;
+#endif
+
+// ──────────────────────────────────────────────────────────────────────────────
 // Registry helpers
 // ──────────────────────────────────────────────────────────────────────────────
 
@@ -59,12 +77,44 @@ static std::error_code win_error(DWORD code) {
 // WintunAdapter
 // ──────────────────────────────────────────────────────────────────────────────
 
+std::error_code WintunAdapter::LoadWintunDll() {
+#ifndef HOLY_BLOCKER_FAKE_WIN32
+    g_wintun_dll = LoadLibraryExW(L"wintun.dll", nullptr,
+                                   LOAD_LIBRARY_SEARCH_SYSTEM32 |
+                                   LOAD_LIBRARY_SEARCH_APPLICATION_DIR);
+    if (!g_wintun_dll) return win_error(GetLastError());
+
+    // Resolve all function pointers in one pass; any missing export is fatal.
+#define GET(name) reinterpret_cast<decltype(name)>(GetProcAddress(g_wintun_dll, #name))
+    WintunCreateAdapter  = GET(WintunCreateAdapter);
+    WintunOpenAdapter    = GET(WintunOpenAdapter);
+    WintunCloseAdapter   = GET(WintunCloseAdapter);
+    WintunDeleteAdapter  = GET(WintunDeleteAdapter);
+    WintunStartSession   = GET(WintunStartSession);
+    WintunEndSession     = GET(WintunEndSession);
+    WintunGetAdapterLuid = GET(WintunGetAdapterLuid);
+#undef GET
+
+    if (!WintunCreateAdapter || !WintunOpenAdapter || !WintunCloseAdapter ||
+        !WintunDeleteAdapter || !WintunStartSession || !WintunEndSession  ||
+        !WintunGetAdapterLuid)
+        return win_error(ERROR_PROC_NOT_FOUND);
+#endif
+    return {};
+}
+
 std::expected<WintunAdapter, std::error_code>
 WintunAdapter::Install(std::wstring_view name) {
     GUID guid = kAdapterGuid;
     WINTUN_ADAPTER_HANDLE h =
         WintunCreateAdapter(name.data(), kTunnelType, &guid);
-    if (!h) return std::unexpected(win_error(ERROR_NOT_FOUND));
+    if (!h) {
+#ifdef HOLY_BLOCKER_FAKE_WIN32
+        return std::unexpected(win_error(ERROR_NOT_FOUND));
+#else
+        return std::unexpected(win_error(GetLastError()));
+#endif
+    }
 
     if (!SaveToRegistry(guid, name)) {
         WintunCloseAdapter(h);

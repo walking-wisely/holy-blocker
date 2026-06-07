@@ -3,19 +3,15 @@
 
 void InitializeIpForwardEntry(MIB_IPFORWARD_ROW2* row) {
     if (!row) return;
+    // Match the real API exactly: zero the struct, then set only the three
+    // fields that the real InitializeIpForwardEntry leaves non-zero.
+    // Metric, Protocol, SitePrefixLength, Loopback, Publish, and Immortal all
+    // start at 0/FALSE so callers that forget to set them get the same behavior
+    // here as they would from the real OS.
     *row = {};
-    // Mirror the real API: set lifetime to infinite and boolean flags to TRUE.
-    // Metric, Protocol, SitePrefixLength are set to 0xFFFFFFFF / 0xFF ("illegal")
-    // so callers are forced to overwrite them explicitly.
-    row->ValidLifetime         = 0xFFFFFFFFu;
-    row->PreferredLifetime     = 0xFFFFFFFFu;
-    row->Loopback              = TRUE;
-    row->AutoconfigureAddress  = TRUE;
-    row->Publish               = TRUE;
-    row->Immortal              = TRUE;
-    row->Metric                = 0xFFFFFFFFu;
-    row->Protocol              = 0xFFFFFFFFu;
-    row->SitePrefixLength      = 0xFFu;
+    row->ValidLifetime        = 0xFFFFFFFFu;
+    row->PreferredLifetime    = 0xFFFFFFFFu;
+    row->AutoconfigureAddress = TRUE;
 }
 
 DWORD CreateIpForwardEntry2(const MIB_IPFORWARD_ROW2* row) {

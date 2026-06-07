@@ -32,8 +32,9 @@ using SC_HANDLE = void*;
 #define FALSE 0
 #define NO_ERROR 0UL
 #define WINAPI
-#define ERROR_ALREADY_EXISTS 183UL
+#define ERROR_ALREADY_EXISTS  183UL
 #define ERROR_NOT_FOUND      1168UL
+#define ERROR_PROC_NOT_FOUND  127UL
 
 // ──────────────────────────────────────────────────────────────────────────────
 // GUID
