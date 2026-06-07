@@ -1,0 +1,21 @@
+[package]
+name = "net-shield"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "net_shield"
+path = "src/lib.rs"
+
+[[bin]]
+name = "net-shield"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+tokio = { version = "1", features = ["full"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+wintun = "0.4"
+
+[dev-dependencies]
