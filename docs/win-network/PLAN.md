@@ -22,7 +22,15 @@ For the overall packet pipeline, see [network-pipeline.md](../network-pipeline.m
 
 ## Current state
 
-`native-modules/win-network/` does not exist. Nothing has been scaffolded — no CMakeLists.txt, no source files, no tests. This plan describes building it from scratch.
+`native-modules/win-network/` is scaffolded and partially implemented:
+
+- `CMakeLists.txt`, `fake_win32/` shim, `vendor/wintun/` — **Done.**
+- `src/wintun_adapter.cpp / .h` — **Done.**
+- `src/routing.cpp / .h` — **Done.**
+- `src/ipc_server.cpp / .h` — skeleton only; JSON dispatch not yet implemented.
+- `src/service_host.cpp / .h`, `src/main.cpp` — skeleton only; SCM wiring not yet implemented.
+- `src/installer_actions.cpp / .h` — skeleton only; not yet implemented.
+- Layer 0 + Layer 1 tests (`test_logic.cpp`, `test_routing.cpp`, `test_wintun_adapter.cpp`, `test_ipc_server.cpp`) — present; coverage grows with each step.
 
 ## Architecture: Windows Service + named pipe IPC
 

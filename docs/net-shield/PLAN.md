@@ -10,8 +10,8 @@ The package `packages/net-shield/` is scaffolded and partially implemented:
 - `Cargo.toml`, `src/lib.rs`, `src/main.rs` — exist.
 - `src/radix.rs` — `DomainFilter`, `IpFilter`, `FilterAction` — **Done.**
 - `src/sni.rs` — `extract_sni` — **Done.**
-- `src/tun.rs` — not yet created.
-- `NetShield` struct / async run loop — not yet created.
+- `src/tun.rs` — `PacketSink` trait, `RawPacket`, `TunAdapter` (Windows Wintun path) — **Done.**
+- `NetShield` struct / async run loop — **Done.**
 
 What the design calls for (per [network-pipeline.md](../network-pipeline.md) Phase 1 and [architecture.md](../architecture.md)):
 
