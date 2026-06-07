@@ -1,0 +1,49 @@
+name: CI Rust
+
+on:
+  pull_request:
+    paths:
+      - "packages/text-policy/**"
+      - "packages/mitm-proxy/**"
+      - "packages/net-shield/**"
+  push:
+    branches:
+      - main
+    paths:
+      - "packages/text-policy/**"
+      - "packages/mitm-proxy/**"
+      - "packages/net-shield/**"
+
+concurrency:
+  group: ci-rust-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    name: Rust packages
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        package:
+          - packages/text-policy
+          - packages/mitm-proxy
+          - packages/net-shield
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.85.1
+          components: clippy, rustfmt
+
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ${{ matrix.package }}
+
+      - name: Test
+        working-directory: ${{ matrix.package }}
+        run: cargo test
