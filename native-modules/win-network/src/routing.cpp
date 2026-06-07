@@ -48,10 +48,10 @@ RoutingManager::SetDnsServers(NET_LUID adapter_luid,
     DWORD err = ConvertInterfaceLuidToGuid(&adapter_luid, &guid);
     if (err != NO_ERROR) return std::unexpected(win_error(err));
 
-    // Build semicolon-delimited nameserver string
+    // Build space-delimited nameserver string (Windows accepts comma or space)
     std::wstring ns_list;
     for (std::size_t i = 0; i < servers.size(); ++i) {
-        if (i) ns_list += L';';
+        if (i) ns_list += L' ';
         ns_list += servers[i];
     }
 

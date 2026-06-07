@@ -117,7 +117,8 @@ TEST(RoutingManager, SetDnsServersCallsSetInterfaceDnsSettings) {
     auto& calls = FakeWin32::CallLog::Get();
     ASSERT_EQ(calls.SetInterfaceDnsSettings.size(), 1u);
     EXPECT_EQ(calls.SetInterfaceDnsSettings[0].adapter_guid, expected_guid);
-    EXPECT_EQ(calls.SetInterfaceDnsSettings[0].name_server, L"1.1.1.1;8.8.8.8");
+    EXPECT_EQ(calls.SetInterfaceDnsSettings[0].name_server, L"1.1.1.1 8.8.8.8");
+    EXPECT_EQ(calls.SetInterfaceDnsSettings[0].settings.Flags, DNS_SETTING_NAMESERVER);
 }
 
 TEST(RoutingManager, SetDnsServersFailsWhenLuidConversionFails) {
