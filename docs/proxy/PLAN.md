@@ -19,13 +19,13 @@ The package at `packages/mitm-proxy/` already has:
 - `tls.rs` — certificate generation and TLS state (step 1 complete). Loads a local root CA from PEM files, generates per-SNI leaf certificates on demand with `rcgen`, caches them in a `Mutex<HashMap<String, Arc<ServerConfig>>>`, and builds a `ClientConfig` backed by the system root store. `rcgen`, `rustls`, `tokio-rustls`, and `rustls-native-certs` are in `Cargo.toml`. Tests cover SAN correctness and cache-hit behaviour.
 - Unit tests for hop-by-hop header stripping (both the fixed set and `Connection`-named extensions).
 
-What is missing is everything required to complete HTTPS interception and route responses through the filter phases:
+Additional modules are now complete:
 
-- No CONNECT handler (Phase 2): CONNECT tunnels still return 501 — `connect.rs` not yet written.
-- No HTTP loop over decrypted streams: `tunnel.rs` not yet written.
-- No text-policy integration (Phase 3): URL, metadata, and body are never scanned.
-- No image interception hook (Phase 4): image responses pass through unexamined.
-- No video segment tee (Phase 5): video segments pass through unexamined.
+- `connect.rs` — CONNECT handler: sends `200 Connection Established`, peeks the TLS ClientHello for SNI, performs the two-leg TLS handshake, and hands streams to `tunnel::run`. **Done.**
+- `tunnel.rs` — HTTP/1.1 loop over decrypted HTTPS with phase 3 URL/body scan call sites, phase 4 image hook, and phase 5 video tee. **Done.**
+- `scan.rs` — policy hook wiring real `PolicyEngine` calls for URL and body scans; image and video hooks are stubs returning `Allow` until `image-sandbox` and `video-watchdog` are ready. **Done.**
+
+What remains is `ProtectionMode` runtime switching (step 7 in the implementation order).
 
 ## Modules to add
 
