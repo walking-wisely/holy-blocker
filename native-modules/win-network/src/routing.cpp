@@ -4,8 +4,9 @@ static std::error_code win_error(DWORD code) {
     return std::error_code(static_cast<int>(code), std::system_category());
 }
 
-// Metric added on top of the current default gateway metric so our route is
-// preferred without removing internet access on the real adapter.
+// Absolute metric for the injected default route.  Lower value = higher
+// priority; 1 is the smallest valid non-zero metric, ensuring this route is
+// preferred over any real default gateway without removing it from the table.
 static constexpr ULONG kRouteMetric = 1;
 
 std::expected<void, std::error_code>
