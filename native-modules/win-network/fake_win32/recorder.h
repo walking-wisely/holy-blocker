@@ -88,6 +88,8 @@ struct CallLog {
     DWORD next_ConvertInterfaceLuidToGuid_result   = NO_ERROR;
     // GUID returned by ConvertInterfaceLuidToGuid (when result is NO_ERROR)
     GUID  next_ConvertInterfaceLuidToGuid_guid     = {};
+    // false makes CreateNamedPipeW return INVALID_HANDLE_VALUE; true returns a fake handle.
+    bool next_CreateNamedPipe_ok = true;
 
     static CallLog& Get();
     static void     Reset();

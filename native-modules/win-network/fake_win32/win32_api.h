@@ -135,6 +135,50 @@ struct DNS_INTERFACE_SETTINGS {
 #define SERVICE_ALL_ACCESS    0xF01FFUL
 
 // ──────────────────────────────────────────────────────────────────────────────
+// Named pipe / event / OVERLAPPED stubs
+// ──────────────────────────────────────────────────────────────────────────────
+#define INVALID_HANDLE_VALUE reinterpret_cast<HANDLE>(-1LL)
+
+#define PIPE_ACCESS_DUPLEX              0x00000003UL
+#define FILE_FLAG_OVERLAPPED            0x40000000UL
+#define FILE_FLAG_FIRST_PIPE_INSTANCE   0x00080000UL
+#define PIPE_TYPE_BYTE                  0x00000000UL
+#define PIPE_READMODE_BYTE              0x00000000UL
+#define PIPE_WAIT                       0x00000000UL
+#define GENERIC_READ                    0x80000000UL
+#define GENERIC_WRITE                   0x40000000UL
+
+#define ERROR_IO_PENDING        997UL
+#define ERROR_PIPE_CONNECTED    535UL
+#define ERROR_BROKEN_PIPE       109UL
+
+#define WAIT_OBJECT_0   0x00000000UL
+#define WAIT_TIMEOUT    0x00000102UL
+#define WAIT_ABANDONED  0x00000080UL
+#define INFINITE        0xFFFFFFFFUL
+
+#define SDDL_REVISION_1 1
+
+struct OVERLAPPED {
+    uintptr_t Internal;
+    uintptr_t InternalHigh;
+    DWORD     Offset;
+    DWORD     OffsetHigh;
+    HANDLE    hEvent;
+};
+
+using LPOVERLAPPED = OVERLAPPED*;
+using PSECURITY_DESCRIPTOR = void*;
+
+struct SECURITY_ATTRIBUTES {
+    DWORD  nLength;
+    LPVOID lpSecurityDescriptor;
+    BOOL   bInheritHandle;
+};
+
+using LPSECURITY_ATTRIBUTES = SECURITY_ATTRIBUTES*;
+
+// ──────────────────────────────────────────────────────────────────────────────
 // Wintun types (re-declared here so wintun.h is not needed under the shim)
 // ──────────────────────────────────────────────────────────────────────────────
 using WINTUN_ADAPTER_HANDLE = void*;
@@ -202,3 +246,30 @@ void                  FakeWintunGetAdapterLuid(WINTUN_ADAPTER_HANDLE Adapter,
 #define WintunStartSession   FakeWintunStartSession
 #define WintunEndSession     FakeWintunEndSession
 #define WintunGetAdapterLuid FakeWintunGetAdapterLuid
+
+// Named pipe / event / wait (implemented in fake_pipe.cpp)
+HANDLE CreateNamedPipeW(LPCWSTR lpName, DWORD dwOpenMode, DWORD dwPipeMode,
+                        DWORD nMaxInstances, DWORD nOutBufferSize,
+                        DWORD nInBufferSize, DWORD nDefaultTimeOut,
+                        LPSECURITY_ATTRIBUTES lpSecurityAttributes);
+BOOL   ConnectNamedPipe(HANDLE hNamedPipe, LPOVERLAPPED lpOverlapped);
+BOOL   DisconnectNamedPipe(HANDLE hNamedPipe);
+BOOL   ReadFile(HANDLE hFile, void* lpBuffer, DWORD nNumberOfBytesToRead,
+                DWORD* lpNumberOfBytesRead, LPOVERLAPPED lpOverlapped);
+BOOL   WriteFile(HANDLE hFile, const void* lpBuffer, DWORD nNumberOfBytesToWrite,
+                 DWORD* lpNumberOfBytesWritten, LPOVERLAPPED lpOverlapped);
+BOOL   CloseHandle(HANDLE hObject);
+HANDLE CreateEventW(LPSECURITY_ATTRIBUTES lpEventAttributes, BOOL bManualReset,
+                    BOOL bInitialState, LPCWSTR lpName);
+BOOL   SetEvent(HANDLE hEvent);
+BOOL   ResetEvent(HANDLE hEvent);
+DWORD  WaitForSingleObject(HANDLE hHandle, DWORD dwMilliseconds);
+DWORD  WaitForMultipleObjects(DWORD nCount, const HANDLE* lpHandles,
+                               BOOL bWaitAll, DWORD dwMilliseconds);
+BOOL   GetOverlappedResult(HANDLE hFile, LPOVERLAPPED lpOverlapped,
+                            DWORD* lpNumberOfBytesTransferred, BOOL bWait);
+DWORD  GetLastError();
+BOOL   ConvertStringSecurityDescriptorToSecurityDescriptorW(
+           LPCWSTR StringSecurityDescriptor, DWORD StringSDRevision,
+           PSECURITY_DESCRIPTOR* SecurityDescriptor, DWORD* SecurityDescriptorSize);
+void*  LocalFree(void* hMem);
