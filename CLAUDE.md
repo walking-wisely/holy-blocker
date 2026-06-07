@@ -15,12 +15,12 @@ The packages below **exist in the repo today** and are actively being built:
 | `apps/desktop` | TypeScript / Electron + React | Skeleton — BrowserWindow, one IPC stub, status UI |
 | `packages/text-policy` | Rust | normalize + lexicon + verdict + scorer + evaluator + policy done; FFI surface next |
 | `packages/mitm-proxy` | Rust | Plain HTTP forwarding + TLS state/cert generation + CONNECT handler + HTTP/1.1 tunnel loop with phase 3/4/5 scan hooks done; text-policy wired into scan_url/scan_body; ProtectionMode next |
+| `packages/net-shield` | Rust | radix domain/IP filter done; SNI parser done; tun adapter + PacketSink dispatch done; NetShield struct + run loop done (Windows Wintun path); step 5 (smoke-test) next |
 | `native-modules/win-daemon` | C++20 | WinEvent hooks + message loop; no capture/OCR/IPC yet |
 | `machine-learning` | Python | MobileNetV3 model + ONNX export skeleton; no real training loop yet |
 
 The packages below are **planned but not yet created** — do not assume they exist:
 
-- `packages/net-shield` — TUN adapter + domain/IP radix filter
 - `native-modules/win-network` — Windows Service: Wintun driver install, routing rules, named-pipe IPC for net-shield
 - `packages/image-sandbox` — perceptual hashing + ONNX image classifier
 - `packages/video-watchdog` — async HLS/DASH segment sampler
@@ -80,6 +80,21 @@ When a test framework is missing, add the smallest appropriate test setup for th
 - In Rust, keep policy logic in testable modules instead of burying it in `main`.
 - In Python, keep training/export orchestration thin and move reusable behavior into importable functions.
 - In C++, keep Win32 callback glue small and move decision logic into testable helpers when the daemon grows.
+
+## Specification References
+
+Any code that implements a network protocol, binary wire format, or OS-level interface must be traceable to its authoritative specification. This applies to packet parsers, TLS record handling, IP/TCP header field offsets, IANA registry values, Win32 API contracts, and similar low-level work.
+
+**In code:** every magic number, byte offset, or field layout must have an inline comment citing the document and section it comes from — for example `// RFC 791 §3.1` or `// Wintun API docs — Session::receive_blocking`. Name constants instead of repeating literals, and put the citation on the constant.
+
+**In plan files (`docs/<package>/PLAN.md`):** each module section that touches wire formats or OS interfaces must include a "Reference documents" subsection listing the specs an implementer needs to read. Link to the canonical online version of each document so it can be consulted directly:
+
+- IETF RFCs: `https://www.rfc-editor.org/rfc/rfcNNNN` (the RFC Editor HTML version is easier to navigate than the plain-text original).
+- IANA registries: link the specific registry page, not just the top-level site.
+- Microsoft Win32/WinRT docs: link the specific `learn.microsoft.com` page for the API or concept.
+- Wintun: `https://www.wintun.net` and the repository README at `https://github.com/WireGuard/wintun`.
+
+When in doubt about a field value or offset, consult the linked document rather than inferring from existing code. The web versions of RFCs are searchable and have anchor links per section.
 
 ## Documentation
 
