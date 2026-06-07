@@ -163,7 +163,7 @@ The loop runs until an unrecoverable adapter error occurs or the returned `Futur
 2. ~~`sni.rs` — pure byte parsing with no I/O or network state. Test with hand-constructed TLS record buffers covering: well-formed ClientHello with SNI, ClientHello without SNI extension, truncated buffers at each length-field boundary, and records with malformed extension lists.~~ **Done.**
 3. ~~`src/lib.rs` — public re-exports and the `NetShield` struct shell. At this point `run` can be a stub returning `Ok(())`.~~ **Done.**
 4. ~~`tun.rs` — `PacketSink` trait and `RawPacket` type first; test the routing dispatch logic using a fake sink against pre-built packet buffers. Then add the Wintun `TunAdapter` implementation behind `#[cfg(target_os = "windows")]`.~~ **Done.**
-5. Wire `NetShield::run()` to the full loop: integrate `TunAdapter`, `DomainFilter`, `IpFilter`, and `extract_sni`; smoke-test by routing a known-block domain and confirming the packet is dropped.
+5. ~~Wire `NetShield::run()` to the full loop: integrate `TunAdapter`, `DomainFilter`, `IpFilter`, and `extract_sni`; smoke-test by routing a known-block domain and confirming the packet is dropped.~~ **Done.**
 
 ## Reference documents
 

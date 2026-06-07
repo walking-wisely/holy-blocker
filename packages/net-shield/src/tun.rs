@@ -136,7 +136,7 @@ pub fn parse_ipv6_packet(buf: &[u8]) -> Option<RawPacket> {
 /// Dispatch a parsed packet to `sink` based on `action`.
 ///
 /// `proxy_port` is only used when the action is `Proxy`.
-pub fn dispatch<S: PacketSink>(
+pub fn dispatch<S: PacketSink + ?Sized>(
     sink: &mut S,
     pkt: &RawPacket,
     action: crate::FilterAction,
