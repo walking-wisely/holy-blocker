@@ -65,7 +65,11 @@ impl DomainFilter {
 
 // ---------------------------------------------------------------------------
 // IpFilter — sorted vec of (prefix_as_u128, mask_as_u128, action) for both
-//             IPv4 and IPv6. Binary search finds the longest matching prefix.
+//             IPv4 and IPv6.
+//
+// Entries are sorted by prefix length descending (most-specific first) so a
+// linear scan returns the longest-prefix match on the first hit.  O(n) is
+// acceptable for Phase 1 rule counts; a Patricia trie can replace this later.
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
