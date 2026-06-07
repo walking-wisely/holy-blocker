@@ -1,10 +1,21 @@
 #include "win32_api.h"
 #include "recorder.h"
 
-DWORD InitializeIpForwardEntry(MIB_IPFORWARD_ROW2* row) {
-    if (!row) return ERROR_NOT_FOUND;
+void InitializeIpForwardEntry(MIB_IPFORWARD_ROW2* row) {
+    if (!row) return;
     *row = {};
-    return NO_ERROR;
+    // Mirror the real API: set lifetime to infinite and boolean flags to TRUE.
+    // Metric, Protocol, SitePrefixLength are set to 0xFFFFFFFF / 0xFF ("illegal")
+    // so callers are forced to overwrite them explicitly.
+    row->ValidLifetime         = 0xFFFFFFFFu;
+    row->PreferredLifetime     = 0xFFFFFFFFu;
+    row->Loopback              = TRUE;
+    row->AutoconfigureAddress  = TRUE;
+    row->Publish               = TRUE;
+    row->Immortal              = TRUE;
+    row->Metric                = 0xFFFFFFFFu;
+    row->Protocol              = 0xFFFFFFFFu;
+    row->SitePrefixLength      = 0xFFu;
 }
 
 DWORD CreateIpForwardEntry2(const MIB_IPFORWARD_ROW2* row) {
