@@ -1,0 +1,100 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      desktop: ${{ steps.filter.outputs.desktop }}
+      text_policy: ${{ steps.filter.outputs.text_policy }}
+      mitm_proxy: ${{ steps.filter.outputs.mitm_proxy }}
+      net_shield: ${{ steps.filter.outputs.net_shield }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: filter
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            desktop:
+              - 'apps/desktop/**'
+              - 'package.json'
+              - 'pnpm-lock.yaml'
+              - 'pnpm-workspace.yaml'
+              - 'turbo.json'
+            text_policy:
+              - 'packages/text-policy/**'
+            mitm_proxy:
+              - 'packages/mitm-proxy/**'
+            net_shield:
+              - 'packages/net-shield/**'
+
+  desktop:
+    needs: changes
+    if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.desktop == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck desktop
+        run: pnpm --filter @holy-blocker/desktop typecheck
+
+      - name: Build desktop
+        run: pnpm --filter @holy-blocker/desktop build
+
+  text-policy:
+    needs: changes
+    if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.text_policy == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Test text-policy
+        working-directory: packages/text-policy
+        run: cargo test
+
+  mitm-proxy:
+    needs: changes
+    if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.mitm_proxy == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Test mitm-proxy
+        working-directory: packages/mitm-proxy
+        run: cargo test
+
+  net-shield:
+    needs: changes
+    if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.net_shield == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Test net-shield
+        working-directory: packages/net-shield
+        run: cargo test

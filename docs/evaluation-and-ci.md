@@ -109,6 +109,30 @@ Tier 3: release or nightly eval
   - comparison against previous release
 ```
 
+## Current Tier 1 Coverage
+
+The public Tier 1 workflow is intentionally narrow for the current state of the repository:
+
+```text
+GitHub Actions workflow: .github/workflows/ci.yml
+
+- desktop:
+  - pnpm --filter @holy-blocker/desktop typecheck
+  - pnpm --filter @holy-blocker/desktop build
+
+- text-policy:
+  - cargo test
+
+- mitm-proxy:
+  - cargo test
+
+- net-shield:
+  - cargo test
+```
+
+On pull requests and pushes to `main`, each job runs only when its package paths change.
+The same workflow also exposes `workflow_dispatch` so maintainers can run the full suite on demand.
+
 ## Private Eval Packs
 
 Do not store large explicit blocklists, sensitive multilingual rules, or full OCR screenshot corpora in the public repository.
