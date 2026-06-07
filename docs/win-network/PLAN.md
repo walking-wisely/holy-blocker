@@ -332,15 +332,8 @@ Links are grouped by the module that uses them. Read these before implementing e
 - [`CreateService` (winsvc.h)](https://learn.microsoft.com/en-us/windows/win32/api/winsvc/nf-winsvc-createservicea) — registers the service. Note `SERVICE_AUTO_START` vs `SERVICE_DEMAND_START`, the `lpServiceStartName` field (`NULL` = LocalSystem), and the failure action struct (`SERVICE_FAILURE_ACTIONS`) for restart-on-crash behaviour.
 - [Service Control Programs](https://learn.microsoft.com/en-us/windows/win32/services/service-control-programs) — covers the `ServiceMain` entry point, `RegisterServiceCtrlHandlerEx`, `SetServiceStatus`, and the `SERVICE_CONTROL_POWEREVENT` handler used for sleep/wake recovery.
 
-### Future: WFP callout driver (not Phase 1)
-
-- [Windows Filtering Platform — start page](https://learn.microsoft.com/en-us/windows/win32/fwp/windows-filtering-platform-start-page)
-- [WFP Architecture overview](https://learn.microsoft.com/en-us/windows/win32/fwp/windows-filtering-platform-architecture-overview) — understand Base Filtering Engine, shims, and callout drivers before writing any WFP code.
-- [WFP API sets](https://learn.microsoft.com/en-us/windows/win32/fwp/api-sets) — index of all WFP functions grouped by area (filter management, session management, callout registration, etc.).
-
 ## What this does not cover
 
-- **WFP callout driver** — kernel-mode packet filtering via Windows Filtering Platform is a future phase. The Wintun + userspace splice path in `net-shield` is sufficient for Phase 1.
 - **QUIC / UDP blocking** — blocking QUIC traffic to force HTTP/2 fallback is a policy decision documented in [decisions/](../decisions/). Implementation is deferred.
 - **macOS `NEPacketTunnelProvider`** — handled in `native-modules/mac-network/`. Same `PacketSink` trait from `net-shield` applies; the adapter layer is Swift.
 - **Android VpnService** — handled in `native-modules/android-service/`. Out of scope here.
