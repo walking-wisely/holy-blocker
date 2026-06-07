@@ -13,8 +13,9 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = "1"
+tokio = { version = "1", features = ["full"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
-# wintun will be added when src/tun/windows.rs is implemented
+wintun = "0.4"
 
 [dev-dependencies]

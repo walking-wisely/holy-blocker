@@ -5,7 +5,13 @@ This document is the build plan for `packages/net-shield/`: what modules to add,
 
 ## Current state
 
-The package `packages/net-shield/` does not exist yet. Nothing has been scaffolded — no `Cargo.toml`, no source files, no tests. This plan describes building it from scratch.
+The package `packages/net-shield/` is scaffolded and partially implemented:
+
+- `Cargo.toml`, `src/lib.rs`, `src/main.rs` — exist.
+- `src/radix.rs` — `DomainFilter`, `IpFilter`, `FilterAction` — **Done.**
+- `src/sni.rs` — `extract_sni` — **Done.**
+- `src/tun.rs` — not yet created.
+- `NetShield` struct / async run loop — not yet created.
 
 What the design calls for (per [network-pipeline.md](../network-pipeline.md) Phase 1 and [architecture.md](../architecture.md)):
 
@@ -13,8 +19,6 @@ What the design calls for (per [network-pipeline.md](../network-pipeline.md) Pha
 - An in-memory domain and IP filter (radix tree / CIDR matcher) that classifies each outbound connection as block, allow, or proxy.
 - A TLS ClientHello parser that extracts the SNI extension without completing the handshake.
 - A top-level `NetShield` struct that wires the three pieces into a running filter loop.
-
-None of these exist. The entire package is new work.
 
 ## Modules to add
 
@@ -97,7 +101,7 @@ Responsibilities:
 - For TCP SYN packets to port 80 or 443: runs the extracted destination through `DomainFilter` / `IpFilter` (after SNI is available on 443) and routes the result:
   - `FilterAction::Block` — drop the packet.
   - `FilterAction::Allow` — pass the packet back to the OS network stack unchanged.
-  - `FilterAction::Proxy` — redirect the TCP stream to the local mitm-proxy listener port via a userspace splice (connect a new socket to the proxy and relay bytes). The full WFP callout path is deferred.
+  - `FilterAction::Proxy` — redirect the TCP stream to the local mitm-proxy listener port via a userspace splice (connect a new socket to the proxy and relay bytes).
 - `PacketSink` — a trait that decouples the routing logic from the real Wintun device so it can be tested with a fake in-memory sink:
 
 ```rust
@@ -155,15 +159,41 @@ The loop runs until an unrecoverable adapter error occurs or the returned `Futur
 
 ## Implementation order
 
-1. `radix.rs` — pure data structures with no I/O. Build `DomainFilter` first (label trie), then `IpFilter` (sorted CIDR vec). Test both with synthetic rule sets covering exact matches, subdomain inheritance, CIDR containment, and default-allow behaviour.
-2. `sni.rs` — pure byte parsing with no I/O or network state. Test with hand-constructed TLS record buffers covering: well-formed ClientHello with SNI, ClientHello without SNI extension, truncated buffers at each length-field boundary, and records with malformed extension lists.
-3. `src/lib.rs` — public re-exports and the `NetShield` struct shell. At this point `run` can be a stub returning `Ok(())`.
-4. `tun.rs` — `PacketSink` trait and `RawPacket` type first; test the routing dispatch logic using a fake sink against pre-built packet buffers. Then add the Wintun `TunAdapter` implementation behind `#[cfg(target_os = "windows")]`.
+1. ~~`radix.rs` — pure data structures with no I/O. Build `DomainFilter` first (label trie), then `IpFilter` (sorted CIDR vec). Test both with synthetic rule sets covering exact matches, subdomain inheritance, CIDR containment, and default-allow behaviour.~~ **Done.**
+2. ~~`sni.rs` — pure byte parsing with no I/O or network state. Test with hand-constructed TLS record buffers covering: well-formed ClientHello with SNI, ClientHello without SNI extension, truncated buffers at each length-field boundary, and records with malformed extension lists.~~ **Done.**
+3. ~~`src/lib.rs` — public re-exports and the `NetShield` struct shell. At this point `run` can be a stub returning `Ok(())`.~~ **Done.**
+4. ~~`tun.rs` — `PacketSink` trait and `RawPacket` type first; test the routing dispatch logic using a fake sink against pre-built packet buffers. Then add the Wintun `TunAdapter` implementation behind `#[cfg(target_os = "windows")]`.~~ **Done.**
 5. Wire `NetShield::run()` to the full loop: integrate `TunAdapter`, `DomainFilter`, `IpFilter`, and `extract_sni`; smoke-test by routing a known-block domain and confirming the packet is dropped.
+
+## Reference documents
+
+Everything in this package operates directly on wire formats and OS-level APIs. Read the relevant sections before writing or reviewing code — the HTML versions of RFCs are searchable and have per-section anchor links.
+
+### IP packet headers
+
+- [RFC 791 — Internet Protocol (IPv4)](https://www.rfc-editor.org/rfc/rfc791) — §3.1 defines the header layout: Version (bits 0–3), IHL (bits 4–7), Protocol (byte 9), Source Address (bytes 12–15), Destination Address (bytes 16–19). IHL is in 32-bit words, so `ihl = (byte[0] & 0x0f) * 4`; minimum value is 5 (20 bytes).
+- [RFC 8200 — Internet Protocol Version 6 (IPv6)](https://www.rfc-editor.org/rfc/rfc8200) — §3 defines the fixed 40-byte header: Next Header (byte 6), Source Address (bytes 8–23), Destination Address (bytes 24–39). No variable-length header field; extension headers follow separately.
+- [IANA Protocol Numbers registry](https://www.iana.org/assignments/protocol-numbers/protocol-numbers.xhtml) — canonical list of IP protocol numbers. TCP = 6, UDP = 17.
+
+### TCP / UDP port fields
+
+- [RFC 9293 — Transmission Control Protocol (TCP)](https://www.rfc-editor.org/rfc/rfc9293) — §3.1 defines the TCP segment header: Source Port (bytes 0–1), Destination Port (bytes 2–3), Data Offset (high nibble of byte 12, in 32-bit words). These fields appear immediately after the IP header at offset `ihl`.
+- [RFC 768 — User Datagram Protocol (UDP)](https://www.rfc-editor.org/rfc/rfc768) — same Source Port / Destination Port layout as TCP for the first four bytes.
+- [IANA Service Name and Port Number registry](https://www.iana.org/assignments/service-names-port-numbers/) — canonical port assignments. HTTP = 80, HTTPS = 443.
+
+### TLS record layer and ClientHello
+
+- [RFC 8446 — TLS 1.3](https://www.rfc-editor.org/rfc/rfc8446) — §5.1 defines the TLS record header (content type `0x16` = Handshake, 2-byte legacy version, 2-byte length). §4 defines the Handshake header (1-byte msg_type `0x01` = ClientHello, 3-byte length). §4.1.2 defines the ClientHello body order: 2-byte legacy_version, 32-byte random, 1-byte session_id_len + session_id, 2-byte cipher_suites_len + cipher_suites, 1-byte compression_methods_len + compression_methods, 2-byte extensions_len + extensions.
+- [RFC 6066 — TLS Extensions](https://www.rfc-editor.org/rfc/rfc6066) — §3 defines the Server Name Indication extension: extension type `0x0000`, ServerNameList wire format (`list_len(2) + name_type(1) + name_len(2) + name(var)`), name_type `0x00` = host_name.
+
+### Wintun (TUN adapter)
+
+- [Wintun project page](https://www.wintun.net) — overview, download, and driver signing notes.
+- [Wintun GitHub repository](https://github.com/WireGuard/wintun) — C header (`wintun.h`) is the authoritative API reference: `WintunOpenAdapter`, `WintunCreateAdapter`, `WintunStartSession`, `WintunReceivePacket`, `WintunSendPacket`, `WintunEndSession`, `WintunCloseAdapter`.
+- [wintun Rust crate (crates.io)](https://crates.io/crates/wintun) — safe Rust wrapper used by this package. Check the crate version in `Cargo.toml` against the docs for that exact version; the API surface changed between 0.4 and 0.5.
 
 ## What this does not cover
 
-- **WFP callout driver** — kernel-level packet interception via Windows Filtering Platform is deferred. Phase 1 uses userspace TUN routing (Wintun + socket splice). The `PacketSink` trait is the seam where a WFP-backed sink can be dropped in later without changing the routing logic.
 - **macOS `NetworkExtension`** (`NEPacketTunnelProvider`) — handled separately in `native-modules/mac-network/`. The `PacketSink` trait can be reused, but the adapter layer is Swift and out of scope here.
 - **DNS-over-HTTPS and DNS blocking** — not part of Phase 1. Domain lookup operates on SNI / Host header values extracted from live connections, not on DNS queries.
 - **QUIC / HTTP3** — UDP port 443 QUIC handling requires a separate policy decision (block entirely to force HTTP/2 fallback, or allow selectively). This is deferred pending the QUIC policy design.

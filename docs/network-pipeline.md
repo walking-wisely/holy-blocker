@@ -273,7 +273,7 @@ packages/
 
 native-modules/
   win-daemon/         (existing) Win32 screen-capture daemon
-  win-network/        Wintun driver binding, Windows routing policy (netsh / WFP)
+  win-network/        Wintun driver binding, Windows routing policy (netsh)
   mac-network/        macOS NetworkExtension NEPacketTunnelProvider
 
 data/                 (gitignored — private runtime assets)
