@@ -34,3 +34,16 @@ DWORD SetInterfaceDnsSettings(GUID adapter_guid,
     log.SetInterfaceDnsSettings.push_back(std::move(rec));
     return result;
 }
+
+DWORD ConvertInterfaceLuidToGuid(const NET_LUID* luid, GUID* guid) {
+    auto& log = FakeWin32::CallLog::Get();
+    DWORD result = log.next_ConvertInterfaceLuidToGuid_result;
+    FakeWin32::ConvertInterfaceLuidToGuidCall rec{};
+    rec.luid = *luid;
+    if (result == NO_ERROR) {
+        *guid    = log.next_ConvertInterfaceLuidToGuid_guid;
+        rec.out_guid = *guid;
+    }
+    log.ConvertInterfaceLuidToGuid.push_back(rec);
+    return result;
+}
