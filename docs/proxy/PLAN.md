@@ -225,8 +225,6 @@ Tests to write:
 9. ~~Optimize `TlsState::server_config` cold miss — reuse a single pre-generated leaf `KeyPair` instead of calling `KeyPair::generate()` on every cache miss. Benchmarks showed cold cert generation at ~13.6 ms (dominated by ECDSA key generation); reusing the leaf `KeyPair` drops it below 2 ms.~~ **Done.**
 10. ~~Add end-to-end integration tests (`tests/proxy_integration.rs`): spin up real TCP listeners on ephemeral ports and drive them with a `reqwest` client. Covers plain HTTP forwarding and the full CONNECT → TLS interception → tunnel → origin round trip.~~ **Done.**
 
-8. ~~Add end-to-end integration tests (`tests/proxy_integration.rs`): spin up real TCP listeners on ephemeral ports and drive them with a `reqwest` client configured to use the proxy. Covers plain HTTP forwarding and the full CONNECT → TLS interception → tunnel → origin round trip. Add `reqwest` (rustls-tls) to dev-dependencies; expose `proxy` and `connect` modules from `lib.rs` so integration tests can import `proxy::handle`.~~ **Done.**
-
 ## What this does not cover
 
 - Actual text-policy scoring — deferred until `packages/text-policy` has a stable library surface or FFI wrapper (`src/ffi.rs`); see the text-policy plan for that work.
