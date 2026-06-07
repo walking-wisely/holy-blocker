@@ -161,6 +161,8 @@ mod tests {
     use super::*;
     use std::net::{IpAddr, Ipv4Addr};
 
+    // --- DomainFilter ---
+
     #[test]
     fn domain_exact_match_block() {
         let f = DomainFilter::from_rules(&[("ads.example.com", FilterAction::Block)]);
@@ -170,6 +172,7 @@ mod tests {
     #[test]
     fn domain_subdomain_inherits_rule() {
         let f = DomainFilter::from_rules(&[("evil.com", FilterAction::Block)]);
+        // sub.evil.com should inherit the block on evil.com
         assert_eq!(f.lookup("sub.evil.com"), FilterAction::Block);
         assert_eq!(f.lookup("deep.sub.evil.com"), FilterAction::Block);
     }
@@ -189,6 +192,7 @@ mod tests {
         ]);
         assert_eq!(f.lookup("example.com"), FilterAction::Block);
         assert_eq!(f.lookup("safe.example.com"), FilterAction::Allow);
+        // other subdomains still inherit the block
         assert_eq!(f.lookup("evil.example.com"), FilterAction::Block);
     }
 
@@ -214,6 +218,8 @@ mod tests {
         assert_eq!(f.lookup("adult"), FilterAction::Block);
         assert_eq!(f.lookup("site.adult"), FilterAction::Block);
     }
+
+    // --- IpFilter ---
 
     #[test]
     fn ip_exact_ipv4_block() {

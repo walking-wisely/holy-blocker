@@ -8,3 +8,5 @@ changing it.
 |---|---|
 | [protection-modes.md](protection-modes.md) | Why three modes (Full / Warn / Off), why warn passes through, why Off requires a gate |
 | [verse-selection.md](verse-selection.md) | Category-to-verse mapping, pool format, why verses instead of generic warnings |
+| [verse-pools.md](verse-pools.md) | Curated NIV verse text for the warn interstitial and override gate pools |
+| [accountability.md](accountability.md) | Partner notifications, why the notification fires on attempt, counts-only weekly summary |
