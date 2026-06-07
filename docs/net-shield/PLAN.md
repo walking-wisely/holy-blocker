@@ -15,9 +15,9 @@ The package `packages/net-shield/` is scaffolded and partially implemented:
 
 What the design calls for (per [network-pipeline.md](../network-pipeline.md) Phase 1 and [architecture.md](../architecture.md)):
 
+- ~~An in-memory domain and IP filter (radix tree / CIDR matcher) that classifies each outbound connection as block, allow, or proxy.~~ **Done** (`src/radix.rs`).
+- ~~A TLS ClientHello parser that extracts the SNI extension without completing the handshake.~~ **Done** (`src/sni.rs`).
 - A TUN adapter that reads raw IP packets from a Wintun virtual device.
-- An in-memory domain and IP filter (radix tree / CIDR matcher) that classifies each outbound connection as block, allow, or proxy.
-- A TLS ClientHello parser that extracts the SNI extension without completing the handshake.
 - A top-level `NetShield` struct that wires the three pieces into a running filter loop.
 
 ## Modules to add

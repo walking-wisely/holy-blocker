@@ -19,6 +19,7 @@ The packages below **exist in the repo today** and are actively being built:
 | `native-modules/win-daemon` | C++20 | WinEvent hooks + message loop; no capture/OCR/IPC yet |
 
 The packages below are **planned but not yet created** — do not assume they exist:
+
 - `native-modules/win-network` — Windows Service: Wintun driver install, routing rules, named-pipe IPC for net-shield
 - `packages/image-sandbox` — perceptual hashing + ONNX image classifier
 - `packages/video-watchdog` — async HLS/DASH segment sampler
