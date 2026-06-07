@@ -51,6 +51,7 @@ add_library(fake_win32 STATIC
   fake_win32/fake_iphelper.cpp
   fake_win32/fake_registry.cpp
   fake_win32/fake_scm.cpp
+  fake_win32/fake_pipe.cpp
 )
 
 target_include_directories(fake_win32 PUBLIC
