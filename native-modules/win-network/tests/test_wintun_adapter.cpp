@@ -91,7 +91,6 @@ TEST_F(WintunAdapterTest, Open_WhenRegistryEmpty_FallsBackToInstall) {
     auto result = WintunAdapter::Open();
     ASSERT_TRUE(result.has_value());
 
-    // Should have installed (created) an adapter, not tried to open one.
     auto& log = FakeWin32::CallLog::Get();
     EXPECT_EQ(log.WintunCreateAdapter.size(), 1u);
     EXPECT_EQ(log.WintunOpenAdapter.size(), 0u);

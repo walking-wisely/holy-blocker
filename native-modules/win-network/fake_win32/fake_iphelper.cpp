@@ -1,10 +1,17 @@
 #include "win32_api.h"
 #include "recorder.h"
 
-DWORD InitializeIpForwardEntry(MIB_IPFORWARD_ROW2* row) {
-    if (!row) return ERROR_NOT_FOUND;
+void InitializeIpForwardEntry(MIB_IPFORWARD_ROW2* row) {
+    if (!row) return;
+    // Match the real API exactly: zero the struct, then set only the three
+    // fields that the real InitializeIpForwardEntry leaves non-zero.
+    // Metric, Protocol, SitePrefixLength, Loopback, Publish, and Immortal all
+    // start at 0/FALSE so callers that forget to set them get the same behavior
+    // here as they would from the real OS.
     *row = {};
-    return NO_ERROR;
+    row->ValidLifetime        = 0xFFFFFFFFu;
+    row->PreferredLifetime    = 0xFFFFFFFFu;
+    row->AutoconfigureAddress = TRUE;
 }
 
 DWORD CreateIpForwardEntry2(const MIB_IPFORWARD_ROW2* row) {
@@ -32,5 +39,18 @@ DWORD SetInterfaceDnsSettings(GUID adapter_guid,
         rec.name_server = settings->NameServer;
     }
     log.SetInterfaceDnsSettings.push_back(std::move(rec));
+    return result;
+}
+
+DWORD ConvertInterfaceLuidToGuid(const NET_LUID* luid, GUID* guid) {
+    auto& log = FakeWin32::CallLog::Get();
+    DWORD result = log.next_ConvertInterfaceLuidToGuid_result;
+    FakeWin32::ConvertInterfaceLuidToGuidCall rec{};
+    rec.luid = *luid;
+    if (result == NO_ERROR) {
+        *guid    = log.next_ConvertInterfaceLuidToGuid_guid;
+        rec.out_guid = *guid;
+    }
+    log.ConvertInterfaceLuidToGuid.push_back(rec);
     return result;
 }
