@@ -25,6 +25,11 @@ struct SetInterfaceDnsSettingsCall {
     std::wstring          name_server;  // copy of settings.NameServer
 };
 
+struct ConvertInterfaceLuidToGuidCall {
+    NET_LUID luid;
+    GUID     out_guid;
+};
+
 struct RegSetValueCall {
     std::wstring key_path;
     std::wstring value_name;
@@ -65,9 +70,10 @@ struct WintunDeleteAdapterCall {
 // CallLog singleton — tests inspect and reset between cases
 // ──────────────────────────────────────────────────────────────────────────────
 struct CallLog {
-    std::vector<CreateIpForwardEntry2Call>    CreateIpForwardEntry2;
-    std::vector<DeleteIpForwardEntry2Call>    DeleteIpForwardEntry2;
-    std::vector<SetInterfaceDnsSettingsCall>  SetInterfaceDnsSettings;
+    std::vector<CreateIpForwardEntry2Call>        CreateIpForwardEntry2;
+    std::vector<DeleteIpForwardEntry2Call>        DeleteIpForwardEntry2;
+    std::vector<SetInterfaceDnsSettingsCall>      SetInterfaceDnsSettings;
+    std::vector<ConvertInterfaceLuidToGuidCall>   ConvertInterfaceLuidToGuid;
     std::vector<RegSetValueCall>              RegSetValue;
     std::vector<RegGetValueCall>              RegGetValue;
     std::vector<CreateServiceCall>            CreateService;
@@ -76,16 +82,19 @@ struct CallLog {
     std::vector<WintunDeleteAdapterCall>      WintunDeleteAdapter;
 
     // Configurable return values for next call
-    DWORD next_CreateIpForwardEntry2_result = NO_ERROR;
-    DWORD next_DeleteIpForwardEntry2_result = NO_ERROR;
-    DWORD next_SetInterfaceDnsSettings_result = NO_ERROR;
+    DWORD next_CreateIpForwardEntry2_result        = NO_ERROR;
+    DWORD next_DeleteIpForwardEntry2_result        = NO_ERROR;
+    DWORD next_SetInterfaceDnsSettings_result      = NO_ERROR;
+    DWORD next_ConvertInterfaceLuidToGuid_result   = NO_ERROR;
+    // GUID returned by ConvertInterfaceLuidToGuid (when result is NO_ERROR)
+    GUID  next_ConvertInterfaceLuidToGuid_guid     = {};
 
     static CallLog& Get();
     static void     Reset();
 };
 
-    // Reset the in-memory registry (separate from CallLog so tests can clear
-    // each independently).
-    void ResetRegistry();
+// Clears the in-memory registry independently of CallLog so tests can choose
+// which state to reset between cases.
+void ResetRegistry();
 
 } // namespace FakeWin32

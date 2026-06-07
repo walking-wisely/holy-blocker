@@ -12,6 +12,7 @@
 // Basic Windows type aliases
 // ──────────────────────────────────────────────────────────────────────────────
 using BOOL     = int;
+using BOOLEAN  = uint8_t;   // distinct from BOOL; used in BOOLEAN fields of Win32 structs
 using DWORD    = uint32_t;
 using DWORD64  = uint64_t;
 using HANDLE   = void*;
@@ -31,8 +32,9 @@ using SC_HANDLE = void*;
 #define FALSE 0
 #define NO_ERROR 0UL
 #define WINAPI
-#define ERROR_ALREADY_EXISTS 183UL
+#define ERROR_ALREADY_EXISTS  183UL
 #define ERROR_NOT_FOUND      1168UL
+#define ERROR_PROC_NOT_FOUND  127UL
 
 // ──────────────────────────────────────────────────────────────────────────────
 // GUID
@@ -76,26 +78,29 @@ struct IP_ADDRESS_PREFIX {
 
 struct MIB_IPFORWARD_ROW2 {
     NET_LUID          InterfaceLuid;
-    ULONG             InterfaceIndex;
+    ULONG             InterfaceIndex;      // NET_IFINDEX
     IP_ADDRESS_PREFIX DestinationPrefix;
     SOCKADDR_INET     NextHop;
-    BYTE              SitePrefixLength;
+    BYTE              SitePrefixLength;    // UCHAR in real header
     ULONG             ValidLifetime;
     ULONG             PreferredLifetime;
     ULONG             Metric;
-    ULONG             Protocol;
-    BOOL              Loopback;
-    BOOL              AutoconfigureAddress;
-    BOOL              Publish;
-    BOOL              Immortal;
+    ULONG             Protocol;            // NL_ROUTE_PROTOCOL enum
+    BOOLEAN           Loopback;
+    BOOLEAN           AutoconfigureAddress;
+    BOOLEAN           Publish;
+    BOOLEAN           Immortal;
     ULONG             Age;
-    ULONG             Origin;
+    ULONG             Origin;              // NL_ROUTE_ORIGIN enum
 };
 
 // ──────────────────────────────────────────────────────────────────────────────
 // DNS settings stub
 // ──────────────────────────────────────────────────────────────────────────────
 #define DNS_INTERFACE_SETTINGS_VERSION1 1
+#define DNS_SETTING_IPV6                0x0001ULL
+#define DNS_SETTING_NAMESERVER          0x0002ULL   // matches netioapi.h
+#define DNS_SETTING_SEARCHLIST          0x0004ULL
 
 struct DNS_INTERFACE_SETTINGS {
     ULONG    Version;
@@ -140,11 +145,12 @@ using WINTUN_SESSION_HANDLE = void*;
 // ──────────────────────────────────────────────────────────────────────────────
 
 // IP Helper
-DWORD InitializeIpForwardEntry(MIB_IPFORWARD_ROW2* row);
+void  InitializeIpForwardEntry(MIB_IPFORWARD_ROW2* row);  // real API returns VOID
 DWORD CreateIpForwardEntry2(const MIB_IPFORWARD_ROW2* row);
 DWORD DeleteIpForwardEntry2(const MIB_IPFORWARD_ROW2* row);
 DWORD SetInterfaceDnsSettings(GUID adapter_guid,
                                const DNS_INTERFACE_SETTINGS* settings);
+DWORD ConvertInterfaceLuidToGuid(const NET_LUID* luid, GUID* guid);
 
 // Registry
 LONG RegCreateKeyExW(HKEY hKey, LPCWSTR lpSubKey, DWORD Reserved,
