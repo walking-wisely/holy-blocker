@@ -19,6 +19,11 @@ public:
 
     static std::expected<WintunAdapter, std::error_code> Open();
 
+    // Loads wintun.dll and resolves all function pointers.  Must be called
+    // once by the service host before Install() or Open().  No-op under the
+    // fake_win32 shim.
+    static std::error_code LoadWintunDll();
+
     WINTUN_SESSION_HANDLE StartSession();
     void                  Close();
     static void           Uninstall();
