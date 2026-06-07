@@ -163,7 +163,38 @@ strategy:
 
 ---
 
-## 9. Cache Cargo artifacts correctly for Rust
+## 9. Use `--locked` for Cargo builds and tests
+
+Without `--locked`, Cargo can silently update `Cargo.lock` during CI if any dependency resolution drifts, hiding problems until later. Always pass `--locked` to keep builds deterministic.
+
+```yaml
+- run: cargo test --locked
+- run: cargo build --locked
+```
+
+---
+
+## 10. Only install Rust components you actually use
+
+Installing `clippy` and `rustfmt` in the toolchain step adds download time. Only include components that are explicitly invoked in the workflow steps.
+
+```yaml
+# If you only run cargo test — no components needed
+- uses: dtolnay/rust-toolchain@...
+  with:
+    toolchain: 1.85.1
+    # components: clippy, rustfmt  ← only add if steps below run cargo clippy / cargo fmt
+
+# If you run clippy and fmt checks:
+- uses: dtolnay/rust-toolchain@...
+  with:
+    toolchain: 1.85.1
+    components: clippy, rustfmt
+```
+
+---
+
+## 11. Cache Cargo artifacts correctly for Rust
 
 Always scope the cache to the workspace being built, not the repo root (unless all packages are in one Cargo workspace at the root).
 

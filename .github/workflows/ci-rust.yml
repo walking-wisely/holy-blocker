@@ -24,6 +24,9 @@ jobs:
   rust:
     name: Rust packages
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -39,7 +42,6 @@ jobs:
         uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # stable
         with:
           toolchain: 1.85.1
-          components: clippy, rustfmt
 
       - name: Cache Cargo artifacts
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
@@ -48,4 +50,4 @@ jobs:
 
       - name: Test
         working-directory: ${{ matrix.package }}
-        run: cargo test
+        run: cargo test --locked
