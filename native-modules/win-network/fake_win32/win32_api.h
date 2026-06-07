@@ -96,6 +96,7 @@ struct MIB_IPFORWARD_ROW2 {
 // DNS settings stub
 // ──────────────────────────────────────────────────────────────────────────────
 #define DNS_INTERFACE_SETTINGS_VERSION1 1
+#define DNS_SETTING_NAMESERVER          0x0001ULL
 
 struct DNS_INTERFACE_SETTINGS {
     ULONG    Version;
@@ -145,6 +146,7 @@ DWORD CreateIpForwardEntry2(const MIB_IPFORWARD_ROW2* row);
 DWORD DeleteIpForwardEntry2(const MIB_IPFORWARD_ROW2* row);
 DWORD SetInterfaceDnsSettings(GUID adapter_guid,
                                const DNS_INTERFACE_SETTINGS* settings);
+DWORD ConvertInterfaceLuidToGuid(const NET_LUID* luid, GUID* guid);
 
 // Registry
 LONG RegCreateKeyExW(HKEY hKey, LPCWSTR lpSubKey, DWORD Reserved,
