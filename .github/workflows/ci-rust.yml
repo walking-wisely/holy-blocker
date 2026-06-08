@@ -3,6 +3,7 @@ name: CI Rust
 on:
   pull_request:
     paths:
+      - ".github/workflows/ci-rust.yml"
       - "packages/text-policy/**"
       - "packages/mitm-proxy/**"
       - "packages/net-shield/**"
@@ -10,6 +11,7 @@ on:
     branches:
       - main
     paths:
+      - ".github/workflows/ci-rust.yml"
       - "packages/text-policy/**"
       - "packages/mitm-proxy/**"
       - "packages/net-shield/**"
@@ -22,6 +24,9 @@ jobs:
   rust:
     name: Rust packages
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -31,19 +36,20 @@ jobs:
           - packages/net-shield
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
 
       - name: Setup Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # stable
         with:
-          toolchain: 1.85.1
-          components: clippy, rustfmt
+          toolchain: 1.88.0
 
       - name: Cache Cargo artifacts
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           workspaces: ${{ matrix.package }}
 
       - name: Test
         working-directory: ${{ matrix.package }}
-        run: cargo test
+        run: cargo test --locked
