@@ -169,6 +169,7 @@ Each active package has a step-by-step implementation plan in `docs/<package>/PL
 - [Edge Daemons](docs/edge-daemons.md) — Windows and Android daemon strategy
 - [Content Classification](docs/content-classification.md) — image, OCR, and text policy decisions
 - [Evaluation and CI](docs/evaluation-and-ci.md) — how to test the blocker without sensitive corpora in the public repo
+- [Changelog](CHANGELOG.md) — completed project changes and infrastructure milestones
 
 ---
 
