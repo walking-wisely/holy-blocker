@@ -16,7 +16,6 @@ This directory contains the project documentation for Holy Blocker. The files ar
 - [Content Classification](content-classification.md) describes how image classification, OCR, and text policy decisions should work together.
 - [Evaluation and CI](evaluation-and-ci.md) describes how to test the blocker reliably without putting sensitive corpora in the public repository.
 - [Security Backlog](security-backlog.md) prioritizes the repository's secure SDLC, CI/CD, trust-boundary hardening, and release-integrity work.
-- [../CHANGELOG.md](../CHANGELOG.md) records completed changes and infrastructure milestones.
 
 ### Implementation plans
 
