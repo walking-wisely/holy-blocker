@@ -1,0 +1,73 @@
+version: 2
+
+updates:
+  # JavaScript / pnpm workspace (repo root)
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "04:00"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "infra(deps)"
+    groups:
+      js-minor-patch:
+        update-types:
+          - minor
+          - patch
+
+  # Rust crates — all three packages in one ecosystem entry.
+  # Dependabot opens a separate PR per directory, but they are
+  # grouped within each crate so minor/patch bumps land as one PR.
+  - package-ecosystem: cargo
+    directories:
+      - /packages/text-policy
+      - /packages/mitm-proxy
+      - /packages/net-shield
+    schedule:
+      interval: weekly
+      day: monday
+      time: "04:00"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "infra(deps)"
+    groups:
+      cargo-minor-patch:
+        update-types:
+          - minor
+          - patch
+
+  # Python ML package
+  - package-ecosystem: pip
+    directory: /machine-learning
+    schedule:
+      interval: weekly
+      day: monday
+      time: "04:00"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "infra(deps)"
+    groups:
+      python-minor-patch:
+        update-types:
+          - minor
+          - patch
+
+  # GitHub Actions — keeps workflow SHA pins current.
+  # Dependabot understands SHA-pinned actions and opens PRs
+  # when a new release tag points to a different commit.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "04:00"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "infra(deps)"
+    groups:
+      actions-minor-patch:
+        update-types:
+          - minor
+          - patch
