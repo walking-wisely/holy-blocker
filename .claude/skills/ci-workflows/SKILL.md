@@ -43,7 +43,21 @@ gh api repos/dtolnay/rust-toolchain/git/ref/heads/master --jq '.object.sha'
 
 ---
 
-## 2. Include the workflow file itself in path filters
+## 2. Disable credential persistence on checkout
+
+By default `actions/checkout` leaves the GitHub token configured as a Git credential on the runner for the rest of the job. Any step that runs arbitrary code (e.g. a test suite, a build script) can read that token. Set `persist-credentials: false` to remove it immediately after checkout.
+
+```yaml
+- uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+  with:
+    persist-credentials: false
+```
+
+Only omit this if a later step explicitly needs to push or authenticate via the checkout credential (e.g. a release job that pushes tags). In that case, scope the credential to the narrowest possible step.
+
+---
+
+## 3. Include the workflow file itself in path filters
 
 When using `paths:` to filter when a workflow runs, always add the workflow's own path to the list. Without it, changes to the workflow file itself won't trigger a run — you can't validate workflow edits, including the PR that first adds the workflow.
 
@@ -66,7 +80,7 @@ Apply this to both `pull_request` and `push` trigger blocks.
 
 ---
 
-## 3. Install package managers before setup steps that depend on them
+## 4. Install package managers before setup steps that depend on them
 
 `actions/setup-node` with `cache: pnpm` calls `pnpm` to resolve the store path. If pnpm isn't installed yet, the caching step silently fails or errors. Always install the package manager first.
 
@@ -93,7 +107,7 @@ The same applies to Yarn (`cache: yarn`) — install Yarn before setup-node if y
 
 ---
 
-## 4. Use `--frozen-lockfile` (or equivalent) when installing dependencies
+## 5. Use `--frozen-lockfile` (or equivalent) when installing dependencies
 
 In CI, dependency installs should be deterministic. Never let the lock file be updated silently.
 
@@ -106,7 +120,7 @@ In CI, dependency installs should be deterministic. Never let the lock file be u
 
 ---
 
-## 5. Add `concurrency` groups to cancel redundant runs
+## 6. Add `concurrency` groups to cancel redundant runs
 
 Without concurrency groups, pushing two commits quickly will run CI twice on the same branch. The first run is wasted.
 
@@ -120,7 +134,7 @@ Use `cancel-in-progress: false` on the default branch if you need every push to 
 
 ---
 
-## 6. Declare minimum permissions; don't rely on defaults
+## 7. Declare minimum permissions; don't rely on defaults
 
 The default `GITHUB_TOKEN` permissions are broad (write on most scopes in many repo configurations). Declare only what the job needs.
 
@@ -136,7 +150,7 @@ Put `permissions` at the job level, not the workflow level, so each job is indep
 
 ---
 
-## 7. Set timeouts on jobs
+## 8. Set timeouts on jobs
 
 Jobs that hang (flaky tests, network waits, infinite loops) consume runners indefinitely without a timeout. Set a reasonable ceiling.
 
@@ -150,7 +164,7 @@ Typical values: 10–15 min for fast CI, 30–60 min for integration/build-heavy
 
 ---
 
-## 8. Use `fail-fast: false` for matrix builds when diagnosing failures
+## 9. Use `fail-fast: false` for matrix builds when diagnosing failures
 
 The default `fail-fast: true` cancels remaining matrix entries as soon as one fails. This is usually fine for CI, but set it to `false` when you want to see failures across all matrix combinations at once (useful for cross-platform or multi-version matrices).
 
@@ -163,7 +177,7 @@ strategy:
 
 ---
 
-## 9. Use `--locked` for Cargo builds and tests
+## 10. Use `--locked` for Cargo builds and tests
 
 Without `--locked`, Cargo can silently update `Cargo.lock` during CI if any dependency resolution drifts, hiding problems until later. Always pass `--locked` to keep builds deterministic.
 
@@ -174,7 +188,7 @@ Without `--locked`, Cargo can silently update `Cargo.lock` during CI if any depe
 
 ---
 
-## 10. Only install Rust components you actually use
+## 11. Only install Rust components you actually use
 
 Installing `clippy` and `rustfmt` in the toolchain step adds download time. Only include components that are explicitly invoked in the workflow steps.
 
@@ -194,7 +208,7 @@ Installing `clippy` and `rustfmt` in the toolchain step adds download time. Only
 
 ---
 
-## 11. Cache Cargo artifacts correctly for Rust
+## 12. Cache Cargo artifacts correctly for Rust
 
 Always scope the cache to the workspace being built, not the repo root (unless all packages are in one Cargo workspace at the root).
 
@@ -213,6 +227,7 @@ For a matrix over multiple crates, use `${{ matrix.package }}`.
 Before finishing, verify:
 
 - [ ] Every `uses:` line is pinned to a full SHA with a `# version` comment
+- [ ] `actions/checkout` sets `persist-credentials: false`
 - [ ] The workflow file's own path is in every `paths:` filter block
 - [ ] Package managers are installed before setup steps that cache them
 - [ ] Dependencies are installed with `--frozen-lockfile` or `npm ci`

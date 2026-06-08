@@ -25,7 +25,7 @@ Items in `Later` are important, but they should follow once the relevant compone
 
 ### 1. Branch protection and required checks
 
-Add branch protection for `main` and require passing status checks before merge.
+Add branch protection for the default branch (`master`) and require passing status checks before merge.
 
 Why now:
 
