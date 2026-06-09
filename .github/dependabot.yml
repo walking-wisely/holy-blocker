@@ -11,6 +11,9 @@ updates:
     open-pull-requests-limit: 5
     commit-message:
       prefix: "infra(deps)"
+    ignore:
+      - dependency-name: "typescript"
+        update-types: ["version-update:semver-major"]
     groups:
       js-minor-patch:
         update-types:
