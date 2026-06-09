@@ -1,0 +1,9 @@
+[extend]
+useDefault = true
+
+# To allowlist a false positive, add an [[allowlists]] block like:
+#
+# [[allowlists]]
+# description = "reason this is not a real secret"
+# regexes = ['^EXAMPLE_PATTERN$']
+# # or: paths = ['path/to/file']

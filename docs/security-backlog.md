@@ -41,22 +41,16 @@ Suggested checks:
 - Secret scanning
 - SAST
 
-### 2. Secret scanning in CI
+### 2. Secret scanning in CI — **Done.**
 
-Add repository-wide secret scanning with `gitleaks` or `trufflehog`.
+~~Add repository-wide secret scanning with `gitleaks` or `trufflehog`.~~
 
-Why now:
-
-- This project will eventually handle CA material, private eval-pack credentials, and signing
-  secrets.
-- Secret scanning is valuable before those assets exist in the repo because it sets the guardrail
-  early.
-
-Definition of done:
-
-- Pull requests fail on detected secrets.
-- Baseline/allowlist handling is documented so false positives do not train maintainers to ignore
-  alerts.
+Implemented with `gitleaks` in two layers: a `pre-commit` hook
+(`.pre-commit-config.yaml`) running `gitleaks protect --staged` on every local
+commit, and a `secret-scan` CI job (`.github/workflows/ci.yml`) running
+`gitleaks detect` against full git history on every PR and push. The project
+allowlist baseline lives in `.gitleaks.toml`; false positives are added there
+with a documented reason rather than suppressed inline.
 
 ### 3. CodeQL SAST across TypeScript, Rust, Python, and C++
 
