@@ -16,6 +16,6 @@ anyhow = "1"
 tokio = { version = "1", features = ["full"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
-wintun = "0.4"
+wintun = "0.5"
 
 [dev-dependencies]
