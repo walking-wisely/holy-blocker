@@ -16,7 +16,7 @@
     "typescript": "^5.8.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
-    "electron": "^35.0.0",
+    "electron": "^42.3.3",
     "lucide-react": "^0.468.0"
   },
   "devDependencies": {
