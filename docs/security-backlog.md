@@ -110,21 +110,17 @@ Trusted-only CI:
 - Release packaging
 - Any job that touches secrets, private models, or private corpora
 
-### 6. SECURITY.md and disclosure process
+### 6. SECURITY.md and disclosure process — **Done.**
 
-Add a top-level `SECURITY.md`.
+~~Add a top-level `SECURITY.md`.~~
 
-Why now:
+Added top-level `SECURITY.md` covering supported versions, private reporting via
+GitHub private vulnerability reporting (with email fallback), what to include and
+what not to include in a report, local-first scope and out-of-scope cases, and a
+48h-acknowledge / 7-day-triage response commitment.
 
-- Low effort and appropriate for an OSS security-sensitive project.
-- Gives researchers and users a reporting channel before releases grow.
-
-Keep it simple:
-
-- Supported versions
-- Reporting contact
-- What not to include in public issues
-- Expected response pattern
+Follow-up: enable **Private vulnerability reporting** in the repo settings
+(Settings → Security) so the channel `SECURITY.md` points to is live.
 
 ### 7. STRIDE threat models for current trust boundaries
 
