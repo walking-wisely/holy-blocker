@@ -18,7 +18,7 @@ mapping, and storage format.
 **NIV** — The New International Version is owned by Biblica, Inc. Quoting NIV in
 documentation (Markdown files, READMEs, design docs) is fine under Biblica's standard
 quotation policy — up to 500 verses, with attribution, no written permission needed.
-This document and `foundation.md` are covered by that policy.
+This document and `mission.md` are covered by that policy.
 
 The distinction that matters for the codebase: *embedding verse text in a distributed
 application binary or bundle* is a separate use case and likely requires a commercial
