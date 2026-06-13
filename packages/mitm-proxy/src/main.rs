@@ -29,13 +29,23 @@ async fn main() -> Result<()> {
 
     let engine = Arc::new(scan::build_default_engine());
     let sandbox = Arc::new(scan::build_image_sandbox(options.image_model.as_deref(), options.image_threshold));
+    // mode_cell can be swapped at runtime (e.g. from a desktop config_update IPC message)
+    // without rebuilding ScanHooks; default to Full protection. Image scanning is not yet
+    // gated by mode — it predates ProtectionMode and runs unconditionally, same as before.
+    let mode_cell = scan::ProtectionMode::Full.to_atomic();
     let scan = {
         let url_engine = Arc::clone(&engine);
         let body_engine = Arc::clone(&engine);
         let image_sandbox = Arc::clone(&sandbox);
+        let url_mode = Arc::clone(&mode_cell);
+        let body_mode = Arc::clone(&mode_cell);
         Arc::new(tunnel::ScanHooks {
-            url_scanner: Box::new(move |url| scan::scan_url(&url_engine, url)),
-            body_scanner: Box::new(move |html| scan::scan_body(&body_engine, html)),
+            url_scanner: Box::new(move |url| {
+                scan::scan_url(&url_engine, url, scan::ProtectionMode::from_atomic(&url_mode))
+            }),
+            body_scanner: Box::new(move |html| {
+                scan::scan_body(&body_engine, html, scan::ProtectionMode::from_atomic(&body_mode))
+            }),
             image_scanner: Box::new(move |bytes| scan::scan_image(&image_sandbox, bytes)),
             ..tunnel::ScanHooks::default()
         })
