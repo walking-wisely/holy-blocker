@@ -34,12 +34,16 @@ impl ProtectionMode {
     const WARN_ONLY: u8 = 1;
     const OFF: u8 = 2;
 
-    pub fn to_atomic(self) -> Arc<AtomicU8> {
-        Arc::new(AtomicU8::new(match self {
+    pub fn as_u8(self) -> u8 {
+        match self {
             Self::Full => Self::FULL,
             Self::WarnOnly => Self::WARN_ONLY,
             Self::Off => Self::OFF,
-        }))
+        }
+    }
+
+    pub fn to_atomic(self) -> Arc<AtomicU8> {
+        Arc::new(AtomicU8::new(self.as_u8()))
     }
 
     pub fn from_atomic(cell: &AtomicU8) -> Self {
@@ -48,6 +52,12 @@ impl ProtectionMode {
             Self::OFF => Self::Off,
             _ => Self::Full,
         }
+    }
+
+    /// Store a new mode into a shared atomic cell.
+    /// Accepted by IPC handlers so they don't duplicate the u8 encoding.
+    pub fn store(cell: &AtomicU8, mode: Self) {
+        cell.store(mode.as_u8(), Ordering::Relaxed);
     }
 }
 
@@ -224,7 +234,18 @@ mod tests {
     fn protection_mode_atomic_roundtrip() {
         let cell = ProtectionMode::WarnOnly.to_atomic();
         assert_eq!(ProtectionMode::from_atomic(&cell), ProtectionMode::WarnOnly);
-        cell.store(ProtectionMode::OFF, std::sync::atomic::Ordering::Relaxed);
+        ProtectionMode::store(&cell, ProtectionMode::Off);
         assert_eq!(ProtectionMode::from_atomic(&cell), ProtectionMode::Off);
+    }
+
+    #[test]
+    fn store_updates_shared_cell() {
+        let cell = ProtectionMode::Full.to_atomic();
+        ProtectionMode::store(&cell, ProtectionMode::WarnOnly);
+        assert_eq!(ProtectionMode::from_atomic(&cell), ProtectionMode::WarnOnly);
+        ProtectionMode::store(&cell, ProtectionMode::Off);
+        assert_eq!(ProtectionMode::from_atomic(&cell), ProtectionMode::Off);
+        ProtectionMode::store(&cell, ProtectionMode::Full);
+        assert_eq!(ProtectionMode::from_atomic(&cell), ProtectionMode::Full);
     }
 }
