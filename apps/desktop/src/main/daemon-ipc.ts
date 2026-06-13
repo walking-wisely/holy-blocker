@@ -4,6 +4,9 @@ import net from "node:net";
 const PIPE_PATH = "\\\\.\\pipe\\holy-blocker-daemon";
 const BACKOFF_INITIAL_MS = 500;
 const BACKOFF_MAX_MS = 30_000;
+// Drop the connection if the incomplete-line buffer exceeds this size.
+// Protects against a rogue daemon flooding us with a line that never terminates.
+const MAX_BUFFER_BYTES = 1024 * 1024; // 1 MiB
 
 export type ConnectionState = "connecting" | "connected" | "disconnected";
 
@@ -19,6 +22,26 @@ export type DaemonMessage =
   | { type: "status_update"; watchedWindows: number };
 
 type SocketFactory = () => net.Socket;
+
+function isDaemonMessage(value: unknown): value is DaemonMessage {
+  if (typeof value !== "object" || value === null) return false;
+  const obj = value as Record<string, unknown>;
+  switch (obj.type) {
+    case "heartbeat":
+      return typeof obj.at === "string";
+    case "scan_event":
+      return (
+        (obj.verdict === "block" || obj.verdict === "warn" || obj.verdict === "allow") &&
+        typeof obj.score === "number" &&
+        typeof obj.windowTitle === "string" &&
+        typeof obj.at === "string"
+      );
+    case "status_update":
+      return typeof obj.watchedWindows === "number";
+    default:
+      return false;
+  }
+}
 
 export class DaemonIpc extends EventEmitter {
   private socket: net.Socket | null = null;
@@ -76,6 +99,14 @@ export class DaemonIpc extends EventEmitter {
 
     socket.on("data", (chunk: string) => {
       this.buffer += chunk;
+
+      if (this.buffer.length > MAX_BUFFER_BYTES) {
+        // Line buffer overflow — drop this connection; scheduleReconnect via close event.
+        socket.destroy(new Error("DaemonIpc: line buffer overflow, dropping connection"));
+        this.buffer = "";
+        return;
+      }
+
       const lines = this.buffer.split("\n");
       // Last element is either empty or an incomplete line — keep it in the buffer
       this.buffer = lines.pop() ?? "";
@@ -83,8 +114,11 @@ export class DaemonIpc extends EventEmitter {
         const trimmed = line.trim();
         if (!trimmed) continue;
         try {
-          const msg = JSON.parse(trimmed) as DaemonMessage;
-          this.emit("message", msg);
+          const parsed: unknown = JSON.parse(trimmed);
+          if (isDaemonMessage(parsed)) {
+            this.emit("message", parsed);
+          }
+          // Unknown message shape — silently skip; daemon protocol may have added a new type
         } catch {
           // Malformed JSON — skip
         }

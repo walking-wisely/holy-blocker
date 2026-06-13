@@ -55,8 +55,9 @@ export function registerIpcHandlers(daemonIpc: DaemonIpc): void {
     })
   );
 
-  ipcMain.handle("daemon:get-events", (_event, n: number = 100): ScanEvent[] => {
-    const limit = Math.min(n, ringBuffer.length);
-    return ringBuffer.slice(-limit);
+  ipcMain.handle("daemon:get-events", (_event, n: unknown = 100): ScanEvent[] => {
+    const raw = typeof n === "number" && Number.isFinite(n) ? Math.floor(n) : 100;
+    const count = Math.max(0, Math.min(raw, ringBuffer.length));
+    return count === 0 ? [] : ringBuffer.slice(-count);
   });
 }
