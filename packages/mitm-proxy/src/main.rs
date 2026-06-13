@@ -20,12 +20,21 @@ async fn main() -> Result<()> {
     let tls = Arc::new(tls::TlsState::load(&ca_dir)?);
 
     let engine = Arc::new(scan::build_default_engine());
+    // mode_cell can be swapped at runtime (e.g. from a desktop config_update IPC message)
+    // without rebuilding ScanHooks; default to Full protection.
+    let mode_cell = scan::ProtectionMode::Full.to_atomic();
     let scan = {
         let url_engine = Arc::clone(&engine);
         let body_engine = Arc::clone(&engine);
+        let url_mode = Arc::clone(&mode_cell);
+        let body_mode = Arc::clone(&mode_cell);
         Arc::new(tunnel::ScanHooks {
-            url_scanner: Box::new(move |url| scan::scan_url(&url_engine, url)),
-            body_scanner: Box::new(move |html| scan::scan_body(&body_engine, html)),
+            url_scanner: Box::new(move |url| {
+                scan::scan_url(&url_engine, url, scan::ProtectionMode::from_atomic(&url_mode))
+            }),
+            body_scanner: Box::new(move |html| {
+                scan::scan_body(&body_engine, html, scan::ProtectionMode::from_atomic(&body_mode))
+            }),
             ..tunnel::ScanHooks::default()
         })
     };
