@@ -4,7 +4,7 @@
 /// without needing a working flame graph on Windows.
 use std::time::{Duration, Instant};
 
-use rcgen::{CertificateParams, DistinguishedName, DnType, IsCa, KeyPair, SanType};
+use rcgen::{CertificateParams, DistinguishedName, DnType, IsCa, Issuer, KeyPair, SanType};
 use rustls::{ServerConfig, pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer}};
 
 const ITERS: u32 = 200;
@@ -27,7 +27,7 @@ fn main() {
     let ca_key = KeyPair::generate().unwrap();
     let mut ca_params = CertificateParams::new(vec![]).unwrap();
     ca_params.is_ca = IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
-    let ca_cert = ca_params.self_signed(&ca_key).unwrap();
+    let ca_issuer = Issuer::new(ca_params, ca_key);
 
     // Pre-generate one shared leaf key (our optimisation)
     let leaf_key = KeyPair::generate().unwrap();
@@ -45,7 +45,7 @@ fn main() {
         params.subject_alt_names = vec![SanType::DnsName(sni.try_into().unwrap())];
 
         let t = Instant::now();
-        let cert = params.signed_by(&leaf_key, &ca_cert, &ca_key).unwrap();
+        let cert = params.signed_by(&leaf_key, &ca_issuer).unwrap();
         samples.push(t.elapsed());
         let _ = cert;
     }
@@ -65,7 +65,7 @@ fn main() {
         params.subject_alt_names = vec![SanType::DnsName(sni.try_into().unwrap())];
 
         let t = Instant::now();
-        let cert = params.signed_by(&fresh_key, &ca_cert, &ca_key).unwrap();
+        let cert = params.signed_by(&fresh_key, &ca_issuer).unwrap();
         samples.push(t.elapsed());
         let _ = cert;
     }
@@ -80,7 +80,7 @@ fn main() {
         dn
     };
     params.subject_alt_names = vec![SanType::DnsName(sni.to_owned().try_into().unwrap())];
-    let cert = params.signed_by(&leaf_key, &ca_cert, &ca_key).unwrap();
+    let cert = params.signed_by(&leaf_key, &ca_issuer).unwrap();
     let cert_der = cert.der().clone();
 
     let mut samples = Vec::with_capacity(ITERS as usize);
@@ -107,7 +107,7 @@ fn main() {
         let ca_key = KeyPair::generate().unwrap();
         let mut ca_params = CertificateParams::new(vec![]).unwrap();
         ca_params.is_ca = IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
-        let ca_cert = ca_params.self_signed(&ca_key).unwrap();
+        let ca_issuer_local = Issuer::new(ca_params, ca_key);
         let leaf_key = KeyPair::generate().unwrap(); // generated once in from_parts
 
         let sni = format!("host{i}.example.com");
@@ -120,7 +120,7 @@ fn main() {
                 dn
             };
             params.subject_alt_names = vec![SanType::DnsName(sni.try_into().unwrap())];
-            let cert = params.signed_by(&leaf_key, &ca_cert, &ca_key).unwrap();
+            let cert = params.signed_by(&leaf_key, &ca_issuer_local).unwrap();
             let cert_der = rustls::pki_types::CertificateDer::from(cert.der().to_vec());
             let key_der: PrivateKeyDer<'static> =
                 PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(leaf_key.serialize_der()));
