@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
-use rcgen::{CertificateParams, DistinguishedName, DnType, KeyPair, SanType};
+use rcgen::{CertificateParams, DistinguishedName, DnType, Issuer, KeyPair, SanType};
+type OwnedIssuer = Issuer<'static, KeyPair>;
 use rustls::{
     ClientConfig, ServerConfig,
     pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer},
@@ -12,8 +13,7 @@ use std::{
 };
 
 pub struct TlsState {
-    ca_cert: rcgen::Certificate,
-    ca_key: KeyPair,
+    ca_issuer: OwnedIssuer,
     leaf_key: Arc<KeyPair>,
     cache: Mutex<HashMap<String, Arc<ServerConfig>>>,
     client_cfg: Arc<ClientConfig>,
@@ -22,11 +22,10 @@ pub struct TlsState {
 impl TlsState {
     /// Construct a `TlsState` directly from an in-memory CA — used by benchmarks
     /// and tests that don't want to touch the filesystem.
-    pub fn from_parts(ca_cert: rcgen::Certificate, ca_key: KeyPair) -> Self {
+    pub fn from_issuer(ca_issuer: OwnedIssuer) -> Self {
         let leaf_key = Arc::new(KeyPair::generate().expect("generating shared leaf key pair"));
         Self {
-            ca_cert,
-            ca_key,
+            ca_issuer,
             leaf_key,
             cache: Mutex::new(HashMap::new()),
             client_cfg: Self::build_client_config().unwrap(),
@@ -42,20 +41,15 @@ impl TlsState {
 
         let ca_key = KeyPair::from_pem(&key_pem).context("parsing CA private key")?;
 
-        // rcgen 0.13 only has from_ca_cert_der; convert PEM to DER first.
         let pem = pem::parse(cert_pem.as_bytes()).context("parsing CA cert PEM")?;
         let ca_cert_der = CertificateDer::from(pem.into_contents());
-        let ca_params = CertificateParams::from_ca_cert_der(&ca_cert_der)
+        let ca_issuer = Issuer::from_ca_cert_der(&ca_cert_der, ca_key)
             .context("parsing CA certificate DER")?;
-        let ca_cert = ca_params
-            .self_signed(&ca_key)
-            .context("reconstructing CA cert object")?;
 
         let leaf_key = Arc::new(KeyPair::generate().context("generating shared leaf key pair")?);
         let client_cfg = Self::build_client_config()?;
         Ok(Self {
-            ca_cert,
-            ca_key,
+            ca_issuer,
             leaf_key,
             cache: Mutex::new(HashMap::new()),
             client_cfg,
@@ -100,7 +94,7 @@ impl TlsState {
         )];
 
         let leaf_cert = params
-            .signed_by(key_pair, &self.ca_cert, &self.ca_key)
+            .signed_by(key_pair, &self.ca_issuer)
             .context("signing leaf certificate")?;
 
         Ok(leaf_cert.der().clone().into())
@@ -197,8 +191,8 @@ mod tests {
         let ca_key = KeyPair::generate().unwrap();
         let mut ca_params = CertificateParams::new(vec![]).unwrap();
         ca_params.is_ca = IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
-        let ca_cert = ca_params.self_signed(&ca_key).unwrap();
-        TlsState::from_parts(ca_cert, ca_key)
+        let ca_issuer = Issuer::new(ca_params, ca_key);
+        TlsState::from_issuer(ca_issuer)
     }
 
     /// Verify that the leaf cert produced by the real `server_config` path

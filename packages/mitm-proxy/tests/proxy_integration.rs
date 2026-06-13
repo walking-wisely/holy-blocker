@@ -15,7 +15,7 @@ use http_body_util::{BodyExt, Full};
 use hyper::{Request, Response, body::Incoming};
 use hyper_util::rt::TokioIo;
 use mitm_proxy::{proxy, tls::TlsState, tunnel::ScanHooks};
-use rcgen::{BasicConstraints, CertificateParams, IsCa, KeyPair};
+use rcgen::{BasicConstraints, CertificateParams, IsCa, Issuer, KeyPair};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use rustls::{ClientConfig, RootCertStore, ServerConfig};
 use tokio::net::TcpListener;
@@ -23,8 +23,7 @@ use tokio::net::TcpListener;
 // ── CA helpers ───────────────────────────────────────────────────────────────
 
 struct TestCa {
-    cert: rcgen::Certificate,
-    key: KeyPair,
+    issuer: Issuer<'static, KeyPair>,
     /// DER of the CA cert — handed to TLS root stores.
     der: CertificateDer<'static>,
 }
@@ -35,7 +34,8 @@ fn make_ca() -> TestCa {
     params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
     let cert = params.self_signed(&key).unwrap();
     let der = CertificateDer::from(cert.der().to_vec());
-    TestCa { cert, key, der }
+    let issuer = Issuer::new(params, key);
+    TestCa { issuer, der }
 }
 
 // ── Origin server helpers ────────────────────────────────────────────────────
@@ -87,7 +87,7 @@ async fn spawn_https_origin(origin_ca: &TestCa, body: &'static [u8]) -> u16 {
         "localhost".to_owned().try_into().unwrap(),
     )];
     let leaf_cert = params
-        .signed_by(&leaf_key, &origin_ca.cert, &origin_ca.key)
+        .signed_by(&leaf_key, &origin_ca.issuer)
         .unwrap();
 
     let cert_der: CertificateDer<'static> = leaf_cert.der().clone().into();
@@ -181,7 +181,7 @@ async fn http_proxy_forwards_plain_request() {
     // The proxy CA is used only for CONNECT/TLS — for plain HTTP it is not
     // exercised, but TlsState still needs to be constructed.
     let proxy_ca = make_ca();
-    let tls = Arc::new(TlsState::from_parts(proxy_ca.cert, proxy_ca.key));
+    let tls = Arc::new(TlsState::from_issuer(proxy_ca.issuer));
 
     let origin_port = spawn_http_origin(b"hello from origin").await;
     let proxy_port = spawn_proxy(tls).await;
@@ -223,7 +223,7 @@ async fn https_proxy_intercepts_and_forwards() {
     );
 
     let tls = Arc::new(
-        TlsState::from_parts(proxy_ca.cert, proxy_ca.key)
+        TlsState::from_issuer(proxy_ca.issuer)
             .with_client_config(proxy_outbound_cfg),
     );
 
