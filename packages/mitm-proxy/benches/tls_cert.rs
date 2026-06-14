@@ -1,14 +1,13 @@
 use criterion::{Criterion, criterion_group, criterion_main};
 use mitm_proxy::tls::TlsState;
-use rcgen::{CertificateParams, IsCa, KeyPair};
+use rcgen::{CertificateParams, IsCa, Issuer, KeyPair};
 
 /// Build an in-memory TlsState without reading any files.
 fn make_state() -> TlsState {
     let ca_key = KeyPair::generate().unwrap();
     let mut ca_params = CertificateParams::new(vec![]).unwrap();
     ca_params.is_ca = IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
-    let ca_cert = ca_params.self_signed(&ca_key).unwrap();
-    TlsState::from_parts(ca_cert, ca_key)
+    TlsState::from_issuer(Issuer::new(ca_params, ca_key))
 }
 
 fn bench_cert_cold(c: &mut Criterion) {
