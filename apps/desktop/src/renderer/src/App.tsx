@@ -21,7 +21,7 @@ function App() {
   const [status, setStatus] = useState<DaemonStatus>({
     state: "loading",
     lastHeartbeatAt: null,
-    watchedWindows: 0
+    watchedWindows: 0,
   });
 
   useEffect(() => {
@@ -33,7 +33,7 @@ function App() {
     setStatus({
       state: "not-connected",
       lastHeartbeatAt: null,
-      watchedWindows: 0
+      watchedWindows: 0,
     });
   }, []);
 

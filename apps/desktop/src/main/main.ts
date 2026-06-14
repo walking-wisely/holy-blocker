@@ -1,9 +1,15 @@
-import { app, BrowserWindow, ipcMain } from "electron";
-import { fileURLToPath } from "node:url";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { app, BrowserWindow } from "electron";
+import { DaemonIpc } from "./daemon-ipc.js";
+import { registerIpcHandlers } from "./ipc-handlers.js";
 
 const isDev = process.env.VITE_DEV_SERVER_URL !== undefined;
 const currentDir = path.dirname(fileURLToPath(import.meta.url));
+
+const daemonIpc = new DaemonIpc();
+registerIpcHandlers(daemonIpc);
+daemonIpc.start();
 
 async function createWindow() {
   const window = new BrowserWindow({
@@ -15,8 +21,8 @@ async function createWindow() {
     webPreferences: {
       preload: path.join(currentDir, "../preload/preload.js"),
       contextIsolation: true,
-      nodeIntegration: false
-    }
+      nodeIntegration: false,
+    },
   });
 
   if (isDev) {
@@ -26,16 +32,11 @@ async function createWindow() {
   }
 }
 
-ipcMain.handle("daemon:get-status", () => ({
-  state: "not-connected",
-  lastHeartbeatAt: null,
-  watchedWindows: 0
-}));
-
 app.whenReady().then(createWindow);
 
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") {
+    daemonIpc.stop();
     app.quit();
   }
 });
