@@ -25,6 +25,7 @@ How the codebase is built, tested, and maintained. Audience: contributors.
 
 - [`evaluation-and-ci.md`](engineering/evaluation-and-ci.md) — eval layers, CI tiers, private eval pack strategy
 - [`security-backlog.md`](engineering/security-backlog.md) — secure SDLC, trust-boundary hardening, release-integrity work
+- [`aspect-skills-plan.md`](engineering/aspect-skills-plan.md) — plan for privacy/compliance, testing, and security agent skills
 
 ### [`decisions/`](decisions/)
 Architecture Decision Records — one file per significant discrete choice. Records what was decided, why, and what was rejected. Never deleted, only superseded.
