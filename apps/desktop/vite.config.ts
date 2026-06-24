@@ -6,10 +6,10 @@ export default defineConfig({
   root: "src/renderer",
   build: {
     outDir: "../../dist/renderer",
-    emptyOutDir: true
+    emptyOutDir: true,
   },
   server: {
     port: 5173,
-    strictPort: true
-  }
+    strictPort: true,
+  },
 });
