@@ -220,7 +220,7 @@ Tests to write:
 4. ~~`scan.rs` — policy hook stub with correct types; unit test the stub contracts.~~ **Done.**
 5. ~~Wire phase 4 image stub and phase 5 tee stub into `tunnel`; confirm existing tests still pass with no real inference running.~~ **Done.**
 6. ~~Wire `text-policy` into `scan.rs`; replace stubs with real `PolicyEngine` calls; test clean/blocked URL and body paths.~~ **Done.**
-7. `ProtectionMode` — add enum and `apply_mode` to `scan.rs`; thread an `Arc<AtomicU8>` through `ScanHooks` closures in `main.rs` so mode can be changed at runtime without rebuilding hooks.
+7. ~~`ProtectionMode` — add enum and `apply_mode` to `scan.rs`; thread an `Arc<AtomicU8>` through `ScanHooks` closures in `main.rs` so mode can be changed at runtime without rebuilding hooks.~~ **Done.**
 8. ~~Add Criterion benchmark suite (`benches/tunnel.rs`, `benches/tls_cert.rs`, `benches/headers.rs`); expose a `[lib]` target so benches can import from the crate.~~ **Done.**
 9. ~~Optimize `TlsState::server_config` cold miss — reuse a single pre-generated leaf `KeyPair` instead of calling `KeyPair::generate()` on every cache miss. Benchmarks showed cold cert generation at ~13.6 ms (dominated by ECDSA key generation); reusing the leaf `KeyPair` drops it below 2 ms.~~ **Done.**
 10. ~~Add end-to-end integration tests (`tests/proxy_integration.rs`): spin up real TCP listeners on ephemeral ports and drive them with a `reqwest` client. Covers plain HTTP forwarding and the full CONNECT → TLS interception → tunnel → origin round trip.~~ **Done.**

@@ -14,7 +14,7 @@ The packages below **exist in the repo today** and are actively being built:
 |---|---|---|
 | `apps/desktop` | TypeScript / Electron + React | Skeleton — BrowserWindow, one IPC stub, status UI |
 | `packages/text-policy` | Rust | normalize + lexicon + verdict + scorer + evaluator + policy done; FFI surface next |
-| `packages/mitm-proxy` | Rust | Plain HTTP forwarding + TLS state/cert generation + CONNECT handler + HTTP/1.1 tunnel loop with phase 3/4/5 scan hooks done; text-policy wired into scan_url/scan_body; ProtectionMode next |
+| `packages/mitm-proxy` | Rust | All planned steps complete: plain HTTP forwarding, TLS interception, CONNECT handler, HTTP/1.1 tunnel with phase 3/4/5 hooks, text-policy integration, ProtectionMode runtime switching, benchmarks, cert-generation optimisation, integration tests |
 | `packages/net-shield` | Rust | radix domain/IP filter done; SNI parser done; tun adapter + PacketSink dispatch done; NetShield struct + run loop done (Windows Wintun path); smoke-test done — all 5 plan steps complete |
 | `native-modules/win-daemon` | C++20 | WinEvent hooks + message loop; no capture/OCR/IPC yet |
 | `machine-learning` | Python | MobileNetV3 model + ONNX export skeleton; no real training loop yet |
