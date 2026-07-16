@@ -46,3 +46,4 @@ One folder per component. Each contains a `plan.md` (implementation phases, curr
 | `backend` | Go | [plan.md](components/backend/plan.md) |
 | `frontend` | TypeScript / React | [plan.md](components/frontend/plan.md) |
 | `voice-gate` | Rust + platform adapters | [plan.md](components/voice-gate/plan.md) |
+| `ios-app` | Swift (shelved — no plan yet) | [notes.md](components/ios-app/notes.md) — platform feasibility only |
