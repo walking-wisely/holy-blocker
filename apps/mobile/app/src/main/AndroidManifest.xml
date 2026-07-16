@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!--
+      Only needed for the TYPE_APPLICATION_OVERLAY fallback in OverlayController;
+      an accessibility service can draw TYPE_ACCESSIBILITY_OVERLAY without it.
+      https://developer.android.com/reference/android/Manifest.permission#SYSTEM_ALERT_WINDOW
+    -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+
+    <application
+        android:allowBackup="false"
+        android:label="@string/app_name"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.HolyBlocker">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!--
+          BIND_ACCESSIBILITY_SERVICE must be required so only the system can bind.
+          https://developer.android.com/guide/topics/ui/accessibility/service
+        -->
+        <service
+            android:name=".ScreenGuardService"
+            android:exported="true"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/accessibility_service_config" />
+        </service>
+    </application>
+</manifest>
