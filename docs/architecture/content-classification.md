@@ -242,6 +242,7 @@ weak contextual signal: +15
 
 ```text
 exact visible phrase: x1.00
+url host/path token match: x1.00
 case-folded match: x0.95
 repeated-character variant: x0.85
 separator-stripped variant: x0.80
@@ -250,6 +251,26 @@ homoglyph variant: x0.70
 OCR-confusion variant: x0.60 to x0.85, depending on OCR confidence
 fuzzy/regex-only match: x0.50 to x0.75
 ```
+
+A URL match carries full confidence despite resembling a separator-stripped
+match. A term in a host or path has no surrounding prose that could make it
+innocent, so there is nothing for a discount to hedge against — and because a
+phrase is never contiguous across URL separators, it can never match as an
+exact visible phrase. Discounting it would put the block band permanently out
+of reach for URLs.
+
+**Score each occurrence once, at its best match quality.** A single occurrence
+generally matches in several ways at once — the same word can satisfy the exact,
+separator-stripped, and leetspeak variants simultaneously — and these are one
+occurrence seen through different normalization views, not several hits. Take
+the highest quality among them and score it once. Summing across variants would
+let the number of variants a rule author happens to enable drive the score
+instead of the rule's severity, which is how a suggestive term (+35) can reach
+a band meant for explicit phrases (+80).
+
+Repeated *occurrences* of a term do accumulate. Occurrences are counted within a
+single variant, since spans from different normalization views are not
+comparable to each other.
 
 3. Adjust by source confidence
 
