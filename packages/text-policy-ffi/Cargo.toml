@@ -1,0 +1,26 @@
+[package]
+name = "text-policy-ffi"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "text_policy_ffi"
+crate-type = ["cdylib", "lib"]
+path = "src/lib.rs"
+
+[features]
+# The bindgen CLI is a build-time tool, not part of the shipped library, and it
+# drags in cargo_metadata — whose transitive cargo-platform needs a newer rustc
+# than the toolchain CI pins. Keeping it behind an off-by-default feature lets
+# `cargo test` build the library on the CI toolchain while scripts/build-ffi.sh
+# opts in locally.
+bindgen = ["uniffi/cli"]
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
+required-features = ["bindgen"]
+
+[dependencies]
+text-policy = { path = "../text-policy" }
+uniffi = { version = "0.32.0", default-features = false }
