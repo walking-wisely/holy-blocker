@@ -112,6 +112,86 @@ for why the voice gate fires only on the transition to `off`.
 
 ---
 
+## What the blocking is for
+
+Everything above describes a guard. The guard is real, and a person who wants it at full
+strength should have it at full strength — that is what `full` mode is for, and nothing
+here softens it.
+
+But the guard is not the point. Return to the first paragraph of this document: Job's
+covenant was not a rule imposed from outside. It was a personal commitment, made before
+God, about what he would allow his eyes to dwell on. A tool can hold a person to a
+commitment they have already made. It cannot make the commitment for them — and a person
+held to a covenant they never made is not keeping one. They are only being prevented.
+
+So the aim is not a device that cannot sin. The aim is a person who, over time, reaches
+for the Lord more than they reach for the screen.
+
+> "being confident of this, that he who began a good work in you will carry it on to
+> completion until the day of Christ Jesus."
+> — Philippians 1:6 (NIV)
+
+The work is his. This project does not do it, cannot do it, and must never present itself
+as doing it. What it can do is hold a person in a position where that work is easier to
+receive: interrupt the moment, ask the question, and then get out of the way. The tool is
+a harness, not a cage — and a harness is a thing you can take off.
+
+### The measure of success
+
+The section below on uninstall protection says that the number of steps required to
+disable or remove the tool is the measure of success. That statement governs **the
+install protection specifically** — it says how strong the floor should be, and the floor
+should be strong. It does not say what the project is *for*.
+
+The project's measure is different, and it is not the block count:
+
+- A person who runs the tool at full strength, grows, loosens it as they grow, and one
+  day quietly deletes it because they no longer need it — **that is the outcome this
+  project wants.** Not a failure, not churn. The goal.
+- A person whose device is locked down completely and whose heart is untouched is not a
+  success. The blocking worked and the thing the blocking was for did not happen.
+
+Both people may have identical event logs. The logs do not distinguish them, and neither
+can the software. This is the first reason the tool is not permitted to render verdicts
+about a person — it is not equipped to, and the judgment is not its own to make.
+
+> "The LORD does not look at the things people look at. People look at the outward
+> appearance, but the LORD looks at the heart."
+> — 1 Samuel 16:7 (NIV)
+
+The tool sees the outward appearance. That is all it will ever see. It reports what it
+saw; the person judges what it meant.
+
+### Why the tool does not keep score
+
+> "For it is by grace you have been saved, through faith — and this is not from
+> yourselves, it is the gift of God — not by works, so that no one can boast."
+> — Ephesians 2:8–9 (NIV)
+
+If we are not saved by works, then the tally of works is not the accounting that matters,
+and a tool that keeps that tally teaches otherwise every time the user opens it. Not the
+streak, not the running total, not the month-over-month trend. Where a person stands at
+the end is not the sum of the episodes.
+
+> "for though the righteous fall seven times, they rise again"
+> — Proverbs 24:16 (NIV)
+
+The falling is assumed in the text. A design that treats a fall as the loss of
+accumulated progress — a broken streak, a reset counter, a lost score — is teaching
+something scripture does not, and teaching it at the exact moment a person is most
+vulnerable to despair.
+
+A person may still want to understand their own patterns, and the tool should help with
+that. The distinction between self-knowledge and a scoreboard, along with the other
+constraints that follow from this section, is worked out in
+[decisions/formation-model.md](decisions/formation-model.md).
+
+These features are optional in the product and non-optional in the design. A person can
+turn every reflection prompt off and run this as a pure blocker. But the tool must never
+be *built* in a way that accuses.
+
+---
+
 ## What Holy Blocker does not claim to prevent — and where it tries anyway
 
 An admin or owner of the device can always uninstall any application. There is no
@@ -174,3 +254,5 @@ privacy of conscience that applies to prayer.
   modes and why the gate only fires on the transition to `off`
 - [decisions/accountability.md](decisions/accountability.md) — partner notifications
   and the accountability model
+- [decisions/formation-model.md](decisions/formation-model.md) — what the tool may judge
+  and what only the person may judge, the reflection design, and why nothing is counted
