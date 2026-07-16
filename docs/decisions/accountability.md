@@ -1,5 +1,12 @@
 # Decision: Accountability Model
 
+> **Status: reopened, pending [crisis-surface.md](crisis-surface.md).**
+> Partner mode — including whether it should exist at all — is deferred. The counts-only
+> weekly digest additionally conflicts with "show shape, never sum" in
+> [formation-model.md](formation-model.md). Nothing below is retracted, but do not build
+> against it without reading `crisis-surface.md` first. Solo mode, the voice gate, and the
+> notification-on-attempt behaviour are unaffected by the deferral.
+
 ## Two modes: solo and partnered
 
 The system supports two accountability modes. Neither is required. Neither is the
