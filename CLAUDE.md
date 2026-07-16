@@ -22,6 +22,7 @@ The packages below **exist in the repo today** and are actively being built:
 The packages below are **planned but not yet created** — do not assume they exist:
 
 - `native-modules/win-network` — Windows Service: Wintun driver install, routing rules, named-pipe IPC for net-shield
+- `native-modules/android-service` — Android edge daemon: AccessibilityService, VpnService, MediaProjection, Compose overlay, Device Owner policy. Plan written (`docs/components/android-service/plan.md`); toolchain not yet bootstrapped (no JDK, no emulator image)
 - `packages/image-sandbox` — perceptual hashing + ONNX image classifier
 - `packages/video-watchdog` — async HLS/DASH segment sampler
 
