@@ -36,7 +36,7 @@ part of the accountability model rather than an obstacle to it (see
 | Packet read loop, domain/SNI/IP dispatch | `packages/net-shield/` (Rust, over JNI) |
 | Text normalization, lexicon, scoring, verdict | `packages/text-policy/` (Rust, over JNI) |
 | Image classification | `packages/image-sandbox/` (planned) |
-| Dashboard UI (config, history, onboarding) | React Native, `:ui` process |
+| Dashboard UI (config, history, onboarding) | `:ui` process — framework TBD, RN intended (§8) |
 
 The Kotlin layer owns **platform surface and lifecycle**. It does not own policy decisions — those
 live in Rust and are called over JNI. Keep it that way: the Kotlin side should be thin enough that
@@ -79,10 +79,14 @@ See [Bootstrap](#0-bootstrap-toolchain) for the one-time setup.
 ```
 
 **Why a separate `:ui` process.** The services are long-lived foreground services; the dashboard is
-opened occasionally. Running React Native in `:ui` means its heap lives and dies with the dashboard
-and can never make the service-hosting process a more attractive low-memory-killer target. It also
-forces the UI/services boundary to be a real IPC contract rather than shared singletons, which keeps
-the dashboard swappable.
+opened occasionally. Splitting them means the dashboard's heap lives and dies with the dashboard
+rather than inflating the process that hosts the services.
+
+Do not oversell this. Android ranks processes for killing primarily by component state, and a
+foreground service already ranks high — the services are not in danger today, and this does not make
+them unkillable. It is memory isolation and defence-in-depth, not a survival guarantee. The more
+durable benefit is the second-order one: a process boundary forces the UI/services seam to be a real
+IPC contract instead of shared singletons, which is what keeps the dashboard swappable.
 
 **The cost is real and should not be glossed:** a separate process means AIDL, not a same-process
 bridge module. Every value the dashboard reads crosses a parcel boundary. This is the main tax of
@@ -106,7 +110,7 @@ brew install --cask temurin@21          # JDK 21 — required by current AGP
 brew install --cask android-commandlinetools
 
 export ANDROID_HOME="$HOME/Library/Android/sdk"
-export PATH="$ANDROID_HOME/platform-tools:$PATH"
+export PATH="$ANDROID_HOME/platform-tools:$ANDROID_HOME/emulator:$ANDROID_HOME/cmdline-tools/latest/bin:$PATH"
 
 # NOTE: google_apis, NOT google_apis_playstore — see Device Owner below.
 sdkmanager "system-images;android-34;google_apis;arm64-v8a"
@@ -220,8 +224,13 @@ src/main/kotlin/.../a11y/EventFilter.kt
 src/main/kotlin/.../a11y/NodeTextExtractor.kt
 ```
 
-- `ScreenReaderService : AccessibilityService` — subscribes to `TYPE_WINDOW_STATE_CHANGED` and
-  `TYPE_VIEW_SCROLLED` (per [edge-daemons.md](../../architecture/edge-daemons.md#android-daemon)).
+- `ScreenReaderService : AccessibilityService` — subscribes to the three signals
+  [edge-daemons.md](../../architecture/edge-daemons.md#android-daemon) calls for:
+  `TYPE_WINDOW_STATE_CHANGED`, `TYPE_VIEW_SCROLLED`, and `TYPE_WINDOW_CONTENT_CHANGED`. The last one
+  catches subtree updates that the other two miss — a feed loading new items without a scroll — and
+  is also by far the noisiest, which is most of why `EventFilter` exists. Per the same document,
+  these events are **not** a sufficient correctness mechanism on their own: custom-rendered views may
+  still need periodic or diff-triggered scans while a monitored surface is active.
 - `EventFilter` — **pure**: debouncing, per-package rate limiting, and same-content suppression.
   Decides *whether* an event warrants a scan. Test-first; no Android imports beyond the event data
   it is handed (pass a plain data class, not `AccessibilityEvent`).
@@ -272,9 +281,17 @@ src/main/kotlin/.../capture/CaptureService.kt
 src/main/kotlin/.../capture/FrameThrottle.kt
 ```
 
-- `CaptureService` — a foreground service with `foregroundServiceType="mediaProjection"`. On modern
-  Android the FGS must be running **before** the projection is requested, and consent is per
-  session.
+- `CaptureService` — a foreground service with `foregroundServiceType="mediaProjection"`. Consent is
+  **per session** — there is no persistent grant to cache.
+
+  The ordering is strict on modern Android and easy to get wrong. The foreground service must be
+  running before `getMediaProjection()`, but *after* the user has consented — it is not started
+  first:
+
+  1. `MediaProjectionManager.createScreenCaptureIntent()` → launch it.
+  2. Handle the activity result; keep `resultCode` + `data`.
+  3. **Only now** start the `mediaProjection`-typed foreground service and call `startForeground()`.
+  4. From inside that service, `getMediaProjection(resultCode, data)`.
 - `FrameThrottle` — **pure**: perceptual-difference / hash gating so identical frames don't re-run
   OCR or the image model. Test-first.
 - Deferred until the accessibility text path works — it is the expensive path and the shortcut
@@ -293,20 +310,44 @@ src/main/jniLibs/…
 - **Blocked on `packages/text-policy` shipping its FFI surface**, which its own plan lists as the
   next step. Sequence that first.
 
-### 8. `dashboard` — React Native, `:ui` process
+### 8. `dashboard` — `:ui` process
+
+Framework-independent, true either way:
 
 - `MainActivity` declared `android:process=":ui"`.
-- One `TurboModule` binding the AIDL `IProtectionService`: a `ProtectionStatus` snapshot, a change
-  subscription, and one launcher per grant flow. Resist growing it beyond that.
+- It binds the AIDL `IProtectionService` and consumes exactly three things: a `ProtectionStatus`
+  snapshot, a change subscription, and one launcher per grant flow. Resist growing that surface.
+
+**React Native is the current intent**, not a settled conclusion — see the implementation order,
+where this is the last step and the deciding criterion is written down. If RN is confirmed:
+
 - Bare workflow / dev builds — Expo Go cannot load custom native code.
+- One `TurboModule` wrapping the AIDL binding above.
+
+If the overlay has by then grown surfaces that overlap the dashboard (verdict explanation, appeal
+flow, recent-blocks list), those components already exist in Compose and the dashboard should be
+Compose too rather than rebuilding them in a second language.
 
 ## Restricted Settings is load-bearing
 
 On Android 13+, Accessibility and Device Admin are placed behind **Restricted Settings** for any app
 not installed from the Play Store: the first enable attempt is blocked until the user opens
 App Info → ⋮ → *Allow restricted settings* and authenticates with the device PIN. If the partner
-holds the PIN, the protected user cannot clear this or later disable the service — this is the
-Android analogue of the macOS admin-held-credential lock, and the accountability model depends on it.
+holds the PIN, the protected user cannot perform that grant on their own — this is the Android
+analogue of the macOS admin-held-credential lock.
+
+**Be precise about what this does and does not buy.** The gate covers *granting*, not *revoking*:
+
+- **Gated by the PIN:** the initial grant, and any re-grant after the permission is cleared.
+- **Not gated by anything:** turning an already-enabled Accessibility service **off**. A user can
+  open Settings → Accessibility and toggle it off without ever seeing the PIN prompt.
+  `setPermittedAccessibilityServices` does not help here — it constrains *which* services may be
+  enabled, not whether ours stays enabled.
+
+So the property is **detection and re-grant friction, not prevention**. The daemon must notice it has
+been disabled (this is what `ProtectionStatusStore` in §2 is for) and the accountability model rests
+on the partner being told, plus the fact that turning it back on needs the PIN again. Do not write
+copy — or design policy — that claims the service cannot be switched off. It can.
 
 **It is not reproducible via `adb install`.** Shell installs are not attributed to an unknown-sources
 installer, so the toggle will simply work and the gate will never appear. To exercise the real flow,
