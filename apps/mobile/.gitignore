@@ -1,0 +1,12 @@
+.gradle/
+build/
+local.properties
+
+# Both are produced by scripts/build-ffi.sh from packages/text-policy-ffi and
+# are reproducible from that crate — the Rust source is the single definition of
+# this surface, so a checked-in copy could only ever drift from it.
+#
+# Consequence: run scripts/build-ffi.sh before the first build. The bindings
+# alone need only cargo; the .so additionally needs the NDK.
+app/src/generated/
+app/src/main/jniLibs/

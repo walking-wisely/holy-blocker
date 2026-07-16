@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Holy Blocker</string>
+
+    <!--
+      Shown on the system's accessibility settings screen. States what the
+      service reads, since the user is granting a broad permission.
+    -->
+    <string name="accessibility_service_description">Reads on-screen text so it can cover content that matches your settings. Text is analysed on this device and is never sent anywhere.</string>
+
+    <!--
+      Overlay copy. Per docs/decisions/formation-model.md these describe what the
+      tool did — they never name a fault or address the person's conscience.
+    -->
+    <string name="overlay_covered">Covered</string>
+    <string name="overlay_warn">Heads up</string>
+
+    <!-- Onboarding -->
+    <string name="onboarding_title">Holy Blocker</string>
+    <string name="status_service_on">Screen guard is on.</string>
+    <string name="status_service_off">Screen guard is off.</string>
+    <string name="action_open_accessibility_settings">Open accessibility settings</string>
+    <string name="restricted_settings_hint">If the toggle is greyed out, open App info, tap the three-dot menu, and choose “Allow restricted settings”. Android requires this for apps installed outside the Play Store.</string>
+</resources>

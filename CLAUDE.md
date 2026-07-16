@@ -13,7 +13,9 @@ The packages below **exist in the repo today** and are actively being built:
 | Package | Language | Status |
 |---|---|---|
 | `apps/desktop` | TypeScript / Electron + React | Skeleton — BrowserWindow, one IPC stub, status UI |
-| `packages/text-policy` | Rust | normalize + lexicon + verdict + scorer + evaluator + policy done; FFI surface next |
+| `packages/text-policy` | Rust | normalize + lexicon + verdict + scorer + evaluator + policy done; FFI surface done (see `packages/text-policy-ffi`) |
+| `packages/text-policy-ffi` | Rust | UniFFI wrapper over text-policy — PolicyEngine + evaluate exposed; Kotlin bindings generated for Android |
+| `apps/mobile` | Kotlin / Android | AccessibilityService text path MVP — policy core + ScanGate + overlay + onboarding done; text-policy wired in over UniFFI; smoke-test passes end-to-end on an android-36 arm64 emulator (blocks and clears a real screen); foreground service + VpnService/MediaProjection next |
 | `packages/mitm-proxy` | Rust | Plain HTTP forwarding + TLS state/cert generation + CONNECT handler + HTTP/1.1 tunnel loop with phase 3/4/5 scan hooks done; text-policy wired into scan_url/scan_body; ProtectionMode next |
 | `packages/net-shield` | Rust | radix domain/IP filter done; SNI parser done; tun adapter + PacketSink dispatch done; NetShield struct + run loop done (Windows Wintun path); smoke-test done — all 5 plan steps complete |
 | `native-modules/win-daemon` | C++20 | WinEvent hooks + message loop; no capture/OCR/IPC yet |
