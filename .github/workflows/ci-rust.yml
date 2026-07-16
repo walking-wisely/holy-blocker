@@ -5,6 +5,7 @@ on:
     paths:
       - ".github/workflows/ci-rust.yml"
       - "packages/text-policy/**"
+      - "packages/text-policy-ffi/**"
       - "packages/mitm-proxy/**"
       - "packages/net-shield/**"
   push:
@@ -13,6 +14,7 @@ on:
     paths:
       - ".github/workflows/ci-rust.yml"
       - "packages/text-policy/**"
+      - "packages/text-policy-ffi/**"
       - "packages/mitm-proxy/**"
       - "packages/net-shield/**"
 
@@ -32,6 +34,7 @@ jobs:
       matrix:
         package:
           - packages/text-policy
+          - packages/text-policy-ffi
           - packages/mitm-proxy
           - packages/net-shield
     steps:
