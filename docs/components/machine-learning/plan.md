@@ -1,29 +1,41 @@
 # Machine Learning Pipeline — Implementation Plan
 
+**Measured performance lives in [results.md](results.md).** Planned experiments are
+under [experiments/](experiments/). The threshold and metric choices are recorded in
+[decisions/classifier-operating-point.md](../../decisions/classifier-operating-point.md).
+
 The classification strategy and model gating rationale live in [../content-classification.md](../../architecture/content-classification.md).
 This document is the build plan: what modules to add, in what order, and what each one is responsible for.
 
 ## Current state
 
-The package at `machine-learning/` already has:
+All six planned steps are complete. The package at `machine-learning/` has:
 
 - `config.py` — `TrainingConfig` dataclass with `data_dir`, `output_dir`, `image_size`, `batch_size`, `epochs`, `learning_rate`, and `max_model_mb`.
-- `model.py` — `create_classifier(class_count: int) -> nn.Module` fine-tunes MobileNetV3-Small with a replaced classifier head. `example_input(image_size: int) -> Tensor` provides a synthetic trace input.
-- `train.py` — `train(config: TrainingConfig) -> Path` placeholder; creates a model and saves a `.pt` checkpoint but contains no real dataset loading or training loop.
-- `export.py` — `export_onnx(checkpoint_path: Path, output_path: Path, config: TrainingConfig) -> Path` loads a checkpoint and traces to ONNX opset 17.
+All planned steps are complete, plus the corpus harness and release guardrail
+added in parallel (#65). The package at `machine-learning/` has:
 
-- ~~Real dataset loading and augmentation (`dataset.py`).~~ **Done.**
-- ~~Evaluation metrics — accuracy, per-class precision/recall, confusion matrix (`eval.py`).~~ **Done.**
-- ~~A `pytest` test suite; there are currently no tests at all.~~ **Done** — 36 tests across `tests/`.
-- ~~Single-class evaluation corpora and the release guardrail (`corpus.py`, `gate.py`).~~ **Done.**
+- `config.py` — `TrainingConfig` dataclass with `data_dir`, `output_dir`, `image_size`, `batch_size`, `epochs`, `learning_rate`, and `max_model_mb`.
+- `labels.py` — pinned `BINARY_LABELS = ("safe", "explicit")` and `POSITIVE_INDEX`. Class order is fixed here rather than derived from sorted directory names, which would invert FP/FN readings if a directory were renamed.
+- `model.py` — `create_classifier(class_count, pretrained)`, `create_feature_extractor`, `freeze_backbone`, `unfreeze_last_blocks`.
+- `dataset.py` — `LocalImageDataset` and `load_dataset` over `root/<label>/`; `ZipImageDataset` for reading a corpus archive in memory; `find_images` and `load_image` for the flat, label-free listings `corpus.py` consumes.
+- `corpus.py` — single-class evaluation corpora. Each corpus is uniform by construction, so one measurement reads as the false-positive rate on a benign corpus and as recall on an explicit one.
+- `gate.py` — release guardrail. A recall regression is CRITICAL and rolls back; failure to improve the false-positive rate is only a WARNING.
+- `train.py` — fine-tuning loop with per-epoch validation, device selection (MPS/CUDA/CPU), and a checkpoint carrying the label order.
+- `finetune.py` — backbone fine-tuning with discriminative learning rates, resumable across interruptions via `checkpointing.py`.
+- `features.py` / `extract.py` — convert a corpus into non-viewable feature vectors so evaluation never touches images again.
+- `eval.py` — pure metrics: `collect_predictions`, `score`, `evaluate`, `sweep_thresholds`, `misclassified`, `report`.
+- `metrics.py` — ROC-AUC, PR-AUC, miss-budget operating points, error-confidence diagnostic.
+- `harness.py` — `holy-blocker-eval` CLI over either images or cached vectors.
+- `export.py` / `quantize.py` / `export_tflite.py` — ONNX (5.81 MB), int8 ONNX (1.61 MB), TFLite (5.90 MB), all verified end to end.
+- `tests/` — 125+ tests. All fixtures are synthetic; no real imagery is required.
 
-What is missing:
+Measured performance is in [results.md](results.md).
 
-- TFLite export for Android (`export_tflite.py`).
-- ONNX dynamic quantization for smaller Windows artifacts (`quantize.py`).
-- A shippable `baseline-v0` checkpoint. `train.py` is still a placeholder; the
-  intended v0 adopts open pretrained NSFW weights rather than training from a
-  curated corpus, which avoids taking custody of explicit material.
+**Still open:** a shippable `baseline-v0` checkpoint. The intended v0 adopts open
+pretrained NSFW weights rather than training from a curated corpus, which avoids
+taking permanent custody of explicit material — the fine-tuning path here reads a
+corpus archive in memory and deletes it afterwards.
 
 ## What to add
 
@@ -279,100 +291,55 @@ testpaths = ["tests"]
 
 ## Implementation order
 
-1. ~~Add `pytest` to `pyproject.toml` `[project.optional-dependencies]` as `test = ["pytest"]`; add `[tool.pytest.ini_options]` pointing at `tests/`. No code changes yet — this is the harness.~~ **Done.**
+1. ~~Add `pytest` to `pyproject.toml` `[project.optional-dependencies]` as `test = ["pytest"]`; add `[tool.pytest.ini_options]` pointing at `tests/`.~~ **Done.**
 2. ~~`dataset.py` — implement `LocalImageDataset` and `load_dataset`; write `tests/test_dataset.py` with synthetic images using `tmp_path`.~~ **Done.**
-3. ~~`eval.py` — implement `evaluate` and `report`; write `tests/test_eval.py` with a trivially correct model on a two-label synthetic loader.~~ **Done.**
-4. ~~`corpus.py` and `gate.py` — the FPR/recall measurement harness and the release guardrail, with `tests/test_corpus.py` and `tests/test_gate.py`.~~ **Done.**
-5. ~~Resolve the dev-environment constraints imposed by `litert-torch`.~~ **Done** — Python 3.13.14 + torch 2.12.1 verified working on macOS arm64; no Docker needed.
-6. `baseline-v0` checkpoint — adopt open pretrained NSFW weights and reshape the head; measure it against both corpora to establish the first `MetricSnapshot` baseline.
-7. `quantize.py` — implement `quantize_onnx`; extend `tests/test_export.py` to verify the quantized model loads and has a smaller file size than the original.
-8. `export_tflite.py` — implement TFLite export via `litert_torch.convert()`; smoke-test MobileNetV3 conversion first, since op support is unverified.
+3. ~~`eval.py` — implement `evaluate` and `report`; write `tests/test_eval.py` with a trivially correct model on a two-label synthetic loader.~~ **Done.** Extended past the original scope with `collect_predictions`, `sweep_thresholds`, `misclassified`, and a `harness.py` CLI (`holy-blocker-eval`) that reports false positives and negatives against a local evaluation set.
+4. ~~Wire `dataset.py` and `eval.py` into `train.py` — replace the placeholder training loop with a real epoch loop over `load_dataset`, a validation call to `evaluate` after each epoch, and progress printing via `report`.~~ **Done.**
+5. ~~`quantize.py` — implement `quantize_onnx`; extend `tests/test_export.py` to verify the quantized model loads and has a smaller file size than the original.~~ **Done.** Verified at 5.81 MB → 1.61 MB.
+6. ~~`export_tflite.py` — implement TFLite export; add `tests/test_export.py` coverage for the TFLite path using a tiny synthetic model.~~ **Done.** Verified end to end: a trained checkpoint converts to a 5.90 MB flatbuffer that loads and runs in the LiteRT interpreter.
 
-Steps 4 and 6 replace the original plan's "wire into `train.py`" step: a real training
-loop is deferred until there is feedback data to train on, and v0 ships pretrained
-weights instead.
+## Deviations from the original plan
 
-## The classifier head — design direction, not yet scheduled
+Two decisions above differ from what this document originally specified.
 
-**Status:** design direction. No code exists and none is scheduled. Recorded here
-because it constrains decisions being made *now* — chiefly the export contract above —
-and because it is likely to be needed soon after a backbone ships.
+**TFLite conversion no longer goes through TensorFlow.** The planned path was
+`torch → ONNX → TF SavedModel → TFLite`, which requires `tensorflow` as a
+dependency. `tensorflow` publishes no wheel for current Python builds, and the
+route pulls in a second full framework purely as a conversion middleman.
+`export_tflite.py` instead uses `litert-torch` (the renamed successor to
+`ai-edge-torch`), which converts a torch `ExportedProgram` straight to a LiteRT
+flatbuffer. `tensorflow` has been dropped from `pyproject.toml`; the converter
+lives behind an optional `tflite` extra.
 
-### What the head is
+**Dynamic range quantization is not applied to the TFLite artifact.** The plan
+called for it on the first export. `litert-torch` exposes PT2E quantization,
+which is static int8 and needs a calibration dataset — the same prerequisite
+this plan defers under "What this does not cover". The float32 artifact is
+~6 MB against a 15 MB budget, so the size pressure that motivated quantization
+is not there yet. ONNX dynamic quantization for Windows *is* implemented in
+`quantize.py`, since `onnxruntime` supports it without calibration data.
 
-A classifier splits in two:
+**Python version ceiling.** `litert-torch` depends on `torchao`, which does not
+import on Python 3.14. The package now declares `requires-python = ">=3.11,<3.14"`.
 
-```
-image → [ backbone ] → embedding → [ head ] → logits → clean / explicit
-        ~30M params    1024 floats   ~2K params
-```
+**ONNX export pins the legacy exporter.** `torch>=2.9` defaults to the dynamo
+ONNX exporter, whose MobileNetV3 graph carries inconsistent shape metadata in
+the classifier; `onnxruntime`'s shape inference rejects it during quantization
+("Inferred shape and existing shape differ in dimension 0: (576) vs (1024)"),
+reproduced across opsets 17–21 at both 32px and 224px. `export.py` passes
+`dynamo=False`. The legacy exporter is deprecated, so this needs revisiting.
 
-The **backbone** turns pixels into a general-purpose feature vector. It is the
-expensive half, adopted pretrained and **frozen** — never retrained, which is what
-keeps an explicit training corpus out of developer custody entirely.
+## Next steps
 
-The **head** maps that feature vector to this product's specific decision. For a
-1024-d embedding and two classes it is a single dense layer — `logits = W·e + b`,
-with `W` at 2×1024 and `b` at 2, so roughly 2,050 parameters, about 0.007% of the
-model. The backbone knows the image contains skin, a beach, or a medical diagram; the
-head is the only part that encodes what counts as blockable.
+1. **Full unfreeze.** Training accuracy is 94.6% against 92.2% validation — a 2.4pp
+   gap. The model underfits, so more capacity is the cheapest remaining gain and a
+   prerequisite for judging whether more data helps.
+2. **Threshold from the miss budget**, not 0.5. See
+   [results.md](results.md#cost-of-a-miss-budget).
+3. **[Anime subsampling experiment](experiments/anime-subsampling.md)** — pre-registered,
+   run only after the full unfreeze.
+4. Relabelling study to settle the label-noise question, which remains open.
 
-### Why it must live outside the `.tflite`
-
-**LiteRT weights are immutable constants inside the flatbuffer.** A head baked into
-the exported graph can never change on the device — adapting it per user would mean
-regenerating and shipping a model file per user.
-
-The head is exactly the part that must change: it is what learns from user-flagged
-false positives, and it is what federated learning aggregates. That is the concrete
-reason for the backbone-only export contract recorded under `export_tflite.py`.
-
-### Why hand-written, and why Rust
-
-Federated learning requires each device to compute a **gradient** from local feedback
-— training, not inference. No viable on-device training framework exists for Android:
-LiteRT training needs TensorFlow-authored training graphs (which a `litert-torch`
-export cannot produce), ExecuTorch ships no training API in its Android AAR, and
-ONNX Runtime's `onnxruntime-training-android` has not been published since 1.19.2
-(2024-09-03) with its examples repo archived in May 2026.
-
-For one dense layer the entire training step is:
-
-```
-p       = softmax(W·e + b)
-dlogits = p − onehot(label)     # 2 numbers
-dW      = dlogits ⊗ e           # outer product, 2×1024
-W      -= lr · dW
-```
-
-Roughly 2,048 multiply-adds — microseconds per update, and textbook-derivable rather
-than novel numerics. Adopting a training framework for this would be disproportionate
-even if a working one existed.
-
-Rust because the repo already ships a Rust core to both Android and Windows through
-UniFFI; a `feedback-head` + `feedback-head-ffi` pair would mirror
-`text-policy` / `text-policy-ffi` exactly. Per the test-first rule, gradients must be
-verified against PyTorch `autograd` on fixed fixtures plus a finite-difference check.
-
-A privacy consequence follows from the size: because the head is ~2,050 numbers, what
-leaves the device during federated aggregation is an ~8 KB weight delta, never an
-image. Secure Aggregation operates on that flat vector directly.
-
-### Sequencing caveat — measure before building this
-
-The personalization story in
-[../../decisions/learning-from-feedback.md](../../decisions/learning-from-feedback.md)
-is kNN over embeddings plus an override table. **kNN needs no gradients and no
-training code at all.** It may deliver most of the false-positive reduction on its
-own.
-
-The recommended order is therefore: ship the frozen backbone with the vendor's
-existing head → add kNN personalization → measure the false-positive rate against the
-benign corpus using `corpus.py` and `gate.py` → build the trainable head only if kNN
-plateaus short of the target. That defers this crate, the federated protocol, and the
-whole DP/SecAgg problem behind a measurement rather than an assumption.
-
-The trainable head is the right architecture. It is not obviously the right next step.
 
 ## What this does not cover
 

@@ -1,13 +1,220 @@
 # Machine Learning
 
-Python package skeleton for the local baseline classifier.
+Local pipeline for the baseline image classifier: fine-tune MobileNetV3-Small,
+evaluate it for false positives and false negatives, and export runtime
+artifacts for the platform daemons.
 
-Pipeline shape:
+- Windows: ONNX (optionally int8-quantized)
+- Android: TFLite
 
-1. Prepare image/text samples into a normalized local dataset.
-2. Train a compact baseline model.
-3. Export runtime artifacts for platform daemons:
-   - Windows: ONNX
-   - Android: TFLite
+Everything runs on-device. No training data, evaluation imagery, or model
+artifact is ever committed — see [Data layout](#data-layout).
 
-The current code is intentionally lightweight and uses placeholders where model architecture, labels, and data policy still need to be pinned down.
+## Setup
+
+Python 3.11–3.13. **3.14 does not work**: `litert-torch` pulls in `torchao`,
+which fails to import on 3.14.
+
+```bash
+cd machine-learning
+python3.13 -m venv .venv
+.venv/bin/pip install -e ".[test,tflite]"
+```
+
+## Data layout
+
+All of these directories are gitignored.
+
+```
+data/train/<label>/<image>    # fine-tuning set
+data/val/<label>/<image>      # validation, scored after each epoch
+data/eval/<label>/<image>     # held-out set for the FP/FN harness
+```
+
+`<label>` must be `safe` or `explicit`. The class order is pinned in
+`labels.py`, not inferred from directory sort order — exported artifacts bake
+the output index order in, and alphabetical sorting would put `explicit` first
+and silently invert every false-positive/false-negative reading.
+
+## Commands
+
+```bash
+holy-blocker-train                        # fine-tune, write artifacts/baseline-v0.pt
+holy-blocker-export                       # -> artifacts/baseline-v0.onnx
+holy-blocker-eval --data-dir data/eval    # false positive / false negative report
+.venv/bin/pytest                          # full suite
+.venv/bin/pytest -m "not slow"            # skip full MobileNetV3 conversions
+```
+
+## Evaluating without keeping images
+
+`holy-blocker-extract` converts an explicit corpus into a `.npz` of feature
+vectors and deletes the source archive. After one pass the vectors are the
+permanent evaluation asset — every later run reads numbers, never pixels.
+
+```bash
+cp .env.example .env      # then paste your token into it; .env is gitignored
+pip install -e ".[data]"
+
+holy-blocker-extract --inspect   # preflight: print the archive layout, extract nothing
+holy-blocker-extract --out data/eval/nsfw_detect.npz
+holy-blocker-eval --checkpoint artifacts/baseline-v0.pt --features data/eval/nsfw_detect.npz
+```
+
+`--archive path/to.zip` skips the download if the file was fetched by hand.
+
+`HF_TOKEN` is read from `.env`, searched upward from the working directory so it
+resolves from either the repo root or `machine-learning/`. A real shell export
+always wins over the file. Copy `.env.example` to get the expected keys — it is
+the only tracked env file, and nothing in it is used by the shipped product.
+
+Verified against the real archive (Jul 2026): `nsfw_dataset_v1/<class>/<image>`,
+28,000 images, 5,600 per class, 1.7 GB download producing a 58 MB artifact.
+
+Note the class is `drawings`, plural. The singular form matched nothing and
+would have dropped 5,600 images — a fifth of the dataset — while still
+reporting clean rates over the remainder. Extraction now refuses to run when
+*any* image sits outside a known class, since that failure looks like success;
+`--inspect` shows the same diagnostic without spending a full pass, and
+`allow_unmatched=True` accepts the loss deliberately.
+
+The dataset's five classes collapse onto the binary decision via
+`features.DEFAULT_LABEL_POLICY`. That mapping *is* the FP/FN definition:
+
+| source class | maps to | why |
+|---|---|---|
+| `porn`, `hentai` | `explicit` | the content being filtered, drawn or not |
+| `sexy` | `safe` | the hard negative — over-blocking it should count as a false positive, not a win |
+| `drawing`, `neutral` | `safe` | ordinary content |
+
+Use `--strict-sexy` to move `sexy` to the blocked side.
+
+### What this does and does not guarantee
+
+- Images are decoded from the zip **in memory**. The archive is never unpacked
+  and is deleted afterwards, so no viewable image file is written.
+- The downloaded archive is on disk until the pass completes. That window is the
+  one moment the material exists in a decodable form.
+- Feature vectors cannot be casually viewed, but they are not a redaction
+  primitive and are not cryptographically one-way.
+- `--features` never surfaces file paths, so there is nothing to open.
+  `--examples` defaults to `0` for the image path too.
+
+### Freeze the backbone
+
+Cached features are produced by a specific backbone. If training fine-tunes the
+whole network, the checkpoint's backbone drifts away from the one that made the
+vectors and the head ends up scoring features it never saw. Train with
+`frozen_backbone=True` to keep them aligned — `holy-blocker-eval --features`
+warns loudly when a checkpoint was not. Changing backbone entirely means
+re-running extraction against the source corpus.
+
+## Evaluation
+
+`holy-blocker-eval` is the FP/FN harness. It prints per-class precision and
+recall, a confusion matrix, a threshold sweep, and the individual files the
+model got most wrong so they can be inspected by hand:
+
+```
+false positives (safe blocked):    3   rate 0.0188
+false negatives (explicit missed): 7   rate 0.0438
+
+ thresh     FP     FN      FPR      FNR      acc
+   0.50      3      7   0.0188   0.0438   0.9688
+   0.80      0     14   0.0000   0.0875   0.9563
+```
+
+The two error kinds are reported separately on purpose. A false positive blocks
+something harmless and erodes trust; a false negative lets through exactly what
+the user asked to be shielded from. Accuracy alone hides that asymmetry,
+especially on a class-imbalanced evaluation set. The sweep exists so the
+deployed threshold is a deliberate choice rather than an implicit 0.5.
+
+## Fine-tuning the backbone
+
+The linear probe cannot separate illustrated safe content from illustrated
+explicit content — see [Baseline results](#baseline-results). That is a capacity
+limit in the frozen ImageNet features, not a threshold or class-balance problem,
+so fixing it means letting the backbone learn:
+
+```bash
+holy-blocker-finetune --archive <corpus.zip> --epochs 6 --unfreeze 3
+holy-blocker-extract --from-checkpoint artifacts/finetuned-v0.pt --archive <corpus.zip>
+```
+
+`--unfreeze N` moves only the last N feature blocks; omit it to train the whole
+backbone. Early blocks hold generic edge and texture filters that transfer
+fine — the later ones carry the semantics that need to change.
+
+Backbone and head get separate learning rates (`1e-4` and `1e-3` by default). A
+randomly-initialised head produces large early gradients, and applying those at
+full rate to pretrained convolutions destroys the representation before the head
+has learned anything worth propagating.
+
+**This needs the images.** Backbone gradients cannot be computed from cached
+vectors, so the archive stays readable for the whole run rather than the few
+minutes extraction takes. It is still never unpacked; `--delete-archive` removes
+it when training finishes.
+
+**It also invalidates cached vectors**, by construction — they were produced by
+the old backbone. Regenerate with `--from-checkpoint`, which records the source
+checkpoint in the artifact metadata. `holy-blocker-eval --features` warns when a
+checkpoint's backbone does not match the vectors it is scoring.
+
+### Interruptions
+
+Every epoch writes `finetuned-v0.last.pt` with optimizer and scheduler state
+alongside the weights, and a rerun of the same command resumes from the next
+epoch. Restarting from weights alone would reset Adam's moment estimates and the
+cosine schedule, which is not the same as continuing.
+
+Checkpoint writes are atomic — temp file, fsync, `os.replace` — so a power cut
+during a save leaves either the old checkpoint or the new one, never a truncated
+file. An unreadable checkpoint is ignored with a warning rather than raised, so
+the run starts over instead of refusing to start. Resume also verifies the split
+seed and validation fraction match, since a different split would move held-out
+samples into training and inflate the reported accuracy.
+
+Use `--no-resume` to ignore an existing checkpoint and start fresh.
+
+## Baseline results
+
+A linear probe (frozen ImageNet backbone, head trained on the cached vectors)
+over a digest-grouped 80/20 split, so duplicate images cannot straddle it:
+
+```
+samples: 5612   accuracy: 0.9052
+false positives (safe blocked):    297   rate 0.0877
+false negatives (explicit missed): 235   rate 0.1056
+```
+
+Errors by source class:
+
+| source | n | error rate | kind |
+|---|---|---|---|
+| `drawings` | 1091 | 13.7% | false positive |
+| `hentai` | 1127 | 11.4% | false negative |
+| `sexy` | 1173 | 9.7% | false positive |
+| `porn` | 1099 | 9.7% | false negative |
+| `neutral` | 1122 | 3.0% | false positive |
+
+The failure mode is one axis, not five: the model confuses *illustrated* safe
+content with *illustrated* explicit content. `drawings` and `hentai` account for
+most of both error kinds, while `neutral` photographs sit at 3%. ImageNet
+features separate photographic content well and drawn content poorly, so this is
+the first thing fine-tuning the backbone should fix — at which point the cached
+vectors must be regenerated.
+
+## Notes
+
+- Train from pretrained weights (the default). With `pretrained=False` on a
+  small dataset the BatchNorm running statistics never stabilize, and the model
+  scores near-perfectly in train mode while collapsing to a single constant
+  output in eval mode. That is a property of the regime, not a bug — the tests
+  use `pretrained=False` only to stay offline, never to assert accuracy.
+- TFLite export is float32. `litert-torch` offers PT2E quantization, but that is
+  static int8 and needs a calibration set; the float32 artifact is ~6 MB against
+  a 15 MB budget, so it can wait.
+- ONNX export pins the legacy TorchScript exporter (`dynamo=False`). The dynamo
+  exporter's MobileNetV3 graph carries inconsistent shape metadata that
+  `onnxruntime`'s quantizer rejects; see the comment in `export.py`.
