@@ -130,6 +130,53 @@ the user asked to be shielded from. Accuracy alone hides that asymmetry,
 especially on a class-imbalanced evaluation set. The sweep exists so the
 deployed threshold is a deliberate choice rather than an implicit 0.5.
 
+## Fine-tuning the backbone
+
+The linear probe cannot separate illustrated safe content from illustrated
+explicit content — see [Baseline results](#baseline-results). That is a capacity
+limit in the frozen ImageNet features, not a threshold or class-balance problem,
+so fixing it means letting the backbone learn:
+
+```bash
+holy-blocker-finetune --archive <corpus.zip> --epochs 6 --unfreeze 3
+holy-blocker-extract --from-checkpoint artifacts/finetuned-v0.pt --archive <corpus.zip>
+```
+
+`--unfreeze N` moves only the last N feature blocks; omit it to train the whole
+backbone. Early blocks hold generic edge and texture filters that transfer
+fine — the later ones carry the semantics that need to change.
+
+Backbone and head get separate learning rates (`1e-4` and `1e-3` by default). A
+randomly-initialised head produces large early gradients, and applying those at
+full rate to pretrained convolutions destroys the representation before the head
+has learned anything worth propagating.
+
+**This needs the images.** Backbone gradients cannot be computed from cached
+vectors, so the archive stays readable for the whole run rather than the few
+minutes extraction takes. It is still never unpacked; `--delete-archive` removes
+it when training finishes.
+
+**It also invalidates cached vectors**, by construction — they were produced by
+the old backbone. Regenerate with `--from-checkpoint`, which records the source
+checkpoint in the artifact metadata. `holy-blocker-eval --features` warns when a
+checkpoint's backbone does not match the vectors it is scoring.
+
+### Interruptions
+
+Every epoch writes `finetuned-v0.last.pt` with optimizer and scheduler state
+alongside the weights, and a rerun of the same command resumes from the next
+epoch. Restarting from weights alone would reset Adam's moment estimates and the
+cosine schedule, which is not the same as continuing.
+
+Checkpoint writes are atomic — temp file, fsync, `os.replace` — so a power cut
+during a save leaves either the old checkpoint or the new one, never a truncated
+file. An unreadable checkpoint is ignored with a warning rather than raised, so
+the run starts over instead of refusing to start. Resume also verifies the split
+seed and validation fraction match, since a different split would move held-out
+samples into training and inflate the reported accuracy.
+
+Use `--no-resume` to ignore an existing checkpoint and start fresh.
+
 ## Baseline results
 
 A linear probe (frozen ImageNet backbone, head trained on the cached vectors)
