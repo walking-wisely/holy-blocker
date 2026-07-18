@@ -17,6 +17,8 @@ import com.holyblocker.mobile.policy.ScanGate
 import com.holyblocker.mobile.policy.ScreenIdentity
 import com.holyblocker.mobile.policy.SettingsGuard
 import com.holyblocker.mobile.policy.SettingsProfiles
+import com.holyblocker.mobile.policy.WindowCandidate
+import com.holyblocker.mobile.policy.WindowResolver
 
 /**
  * Layer 2's workhorse on Android: reads on-screen text from other apps, runs it
@@ -139,7 +141,14 @@ class ScreenGuardService : AccessibilityService() {
 
         syncSuspension(guard)
 
-        val identity = currentScreenIdentity(packageName, event.className?.toString())
+        // windowId is the point of backlog item 2: the event names the window
+        // that actually changed, which in split screen is the only way to tell
+        // the two settings-adjacent panes apart.
+        val identity = currentScreenIdentity(
+            packageName,
+            event.className?.toString(),
+            eventWindowId = event.windowId,
+        )
         val acted = identity != null && applyDecision(guard, identity, overlay)
 
         if (acted) {
@@ -185,7 +194,15 @@ class ScreenGuardService : AccessibilityService() {
         // root node reports a view class rather than the activity. That costs
         // nothing worth having — the class is the unreliable signal here, while
         // resource ids and the self-mention catch-all both still apply.
-        val identity = currentScreenIdentity(packageName, className = null) ?: return false
+        //
+        // eventWindowId is null for the same reason, which is why WindowResolver
+        // needs the focus/active fallback: this path has no event to name a
+        // window and must choose one on the display's own evidence.
+        val identity = currentScreenIdentity(
+            packageName,
+            className = null,
+            eventWindowId = null,
+        ) ?: return false
         return applyDecision(guard, identity, overlay)
     }
 
@@ -212,18 +229,50 @@ class ScreenGuardService : AccessibilityService() {
         rootInActiveWindow?.packageName?.toString()
             ?: windows.firstOrNull { it.isActive }?.root?.packageName?.toString()
 
-    private fun rootFor(packageName: String): AccessibilityNodeInfo? {
-        rootInActiveWindow
-            ?.takeIf { it.packageName?.toString() == packageName }
-            ?.let { return it }
+    /**
+     * The window to evaluate, paired with its root — see [WindowResolver].
+     *
+     * `rootInActiveWindow` is no longer a shortcut here even when it matches the
+     * package: it says nothing about *which* window it came from, and picking a
+     * window is the whole point. Enumerating gives ids and focus for every
+     * candidate, which is what [WindowResolver] needs and what the decision
+     * downstream needs.
+     */
+    private fun resolveWindow(packageName: String, eventWindowId: Int?): ResolvedWindow? {
+        val roots = windows.mapNotNull { window ->
+            window.root?.let { root -> window to root }
+        }
+        val candidates = roots.map { (window, root) ->
+            WindowCandidate(
+                id = window.id,
+                packageName = root.packageName?.toString(),
+                isActive = window.isActive,
+                isFocused = window.isFocused,
+            )
+        }
 
-        return windows.asSequence()
-            .mapNotNull { it.root }
-            .firstOrNull { it.packageName?.toString() == packageName }
+        val chosen = WindowResolver.choose(candidates, packageName, eventWindowId)
+            // The window list can come back empty on a task being restored, which
+            // is case 1(a) all over again. rootInActiveWindow is the last resort
+            // rather than the first choice, and it carries no focus information —
+            // treat it as focused, since a single active window is.
+            ?: return rootInActiveWindow
+                ?.takeIf { it.packageName?.toString() == packageName }
+                ?.let { ResolvedWindow(root = it, isFocused = true) }
+
+        val root = roots.first { (window, _) -> window.id == chosen.id }.second
+        return ResolvedWindow(root = root, isFocused = chosen.isFocused)
     }
 
-    private fun currentScreenIdentity(packageName: String, className: String?): ScreenIdentity? {
-        val root = rootFor(packageName) ?: run {
+    /** A window the guard has decided to evaluate. */
+    private data class ResolvedWindow(val root: AccessibilityNodeInfo, val isFocused: Boolean)
+
+    private fun currentScreenIdentity(
+        packageName: String,
+        className: String?,
+        eventWindowId: Int?,
+    ): ScreenIdentity? {
+        val resolved = resolveWindow(packageName, eventWindowId) ?: run {
             // Not silent, deliberately. Case 1(a) was invisible for as long as it
             // was because every log sat behind `root != null`, so a guard that
             // never saw the screen looked identical to one that saw it and found
@@ -240,6 +289,7 @@ class ScreenGuardService : AccessibilityService() {
             )
             return null
         }
+        val root = resolved.root
         val texts = mutableListOf<String>()
         val resourceIds = mutableSetOf<String>()
         collectIdentity(root, texts, resourceIds, depth = 0, budget = NodeBudget())
@@ -252,18 +302,20 @@ class ScreenGuardService : AccessibilityService() {
         // without it that looks identical to a screen that simply did not match.
         Log.d(
             TAG,
-            "settings screen class=$className texts=${texts.size} ids=${resourceIds.take(12)}",
+            "settings screen class=$className texts=${texts.size} " +
+                "focused=${resolved.isFocused} ids=${resourceIds.take(12)}",
         )
 
-        // An empty harvest on a screen the user can plainly read is the open bug
-        // (backlog.md item 1b). Three hypotheses produce it and they need
-        // different fixes, so dump what tells them apart — but only on the
-        // failing case, since this walks the tree a second time.
+        // A chrome-only harvest on a screen the user can plainly read is what
+        // backlog item 1(b) was. It is closed, but a regression here is otherwise
+        // silent, so the dump stays — on the failing case only, since it walks
+        // the tree a second time.
         if (texts.size < DIAGNOSTIC_TEXT_FLOOR) logEmptyHarvest(packageName, root)
 
         return ScreenIdentity(
             packageName = packageName,
             className = className,
+            windowFocused = resolved.isFocused,
             resourceIds = resourceIds,
             texts = texts,
         )
