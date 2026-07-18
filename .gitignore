@@ -12,12 +12,16 @@ __pycache__/
 *.tflite
 *.pt
 *.pth
-data/raw/
-data/processed/
-# Local evaluation sets and exported model artifacts stay out of the repo.
-data/eval/
-data/train/
-data/val/
+# Datasets and model artifacts never enter the repo. These need the `**/` prefix:
+# a pattern containing a slash is anchored to this file's directory, so a bare
+# `data/raw/` would match only at the root and miss `machine-learning/data/raw/`.
+**/data/raw/
+**/data/processed/
+**/data/eval/
+**/data/train/
+**/data/val/
+# Extracted feature vectors — derived from explicit corpora, never committed.
+*.npz
 artifacts/
 .pytest_cache/
 # Dev-time credentials. .env.example is tracked; .env never is.

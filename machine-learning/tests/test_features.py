@@ -58,7 +58,7 @@ def test_sexy_drawing_and_neutral_map_to_safe() -> None:
     # "sexy" on the safe side is the whole point: it is the hard negative that
     # drives the false-positive rate.
     assert map_source_label("sexy") == NEGATIVE_INDEX
-    assert map_source_label("drawing") == NEGATIVE_INDEX
+    assert map_source_label("drawings") == NEGATIVE_INDEX
     assert map_source_label("neutral") == NEGATIVE_INDEX
 
 
@@ -193,10 +193,21 @@ def test_saved_artifact_contains_no_image_data(tmp_path: Path) -> None:
 
     path = save_feature_set(result, tmp_path / "eval.npz")
 
-    # Any PNG/JPEG signature in the artifact would mean pixels leaked through.
-    blob = path.read_bytes()
-    assert b"\x89PNG" not in blob
-    assert b"\xff\xd8\xff" not in blob
+    # Check the archive's members rather than scanning bytes: an .npz is a zip,
+    # and a byte-signature scan yields false positives on compressed float data
+    # (a 3-byte JPEG marker appears by chance several times in ~50 MB).
+    import zipfile
+
+    with zipfile.ZipFile(path) as archive:
+        members = {info.filename for info in archive.infolist()}
+
+    assert members == {
+        "features.npy",
+        "labels.npy",
+        "source_labels.npy",
+        "digests.npy",
+        "metadata.npy",
+    }
 
 
 def test_end_to_end_zip_to_feature_set(source_zip: Path, tmp_path: Path) -> None:
@@ -249,8 +260,7 @@ def test_strict_can_be_disabled_for_inspection(tmp_path: Path) -> None:
     assert list(iter_zip_images(path, strict=False)) == []
 
 
-def test_partial_match_is_reported_but_still_yields(tmp_path: Path) -> None:
-    # A well-formed archive with extra unrecognised folders should still work.
+def test_partial_match_is_reported_by_inspection(tmp_path: Path) -> None:
     path = tmp_path / "mixed.zip"
     with zipfile.ZipFile(path, "w") as archive:
         archive.writestr("root/porn/0.png", png_bytes((1, 1, 1)))
@@ -261,6 +271,33 @@ def test_partial_match_is_reported_but_still_yields(tmp_path: Path) -> None:
     assert summary.matched == {"porn": 1}
     assert summary.unmatched_images == 1
     assert any("mystery" in example for example in summary.unmatched_examples)
+
+
+def test_partially_unmatched_archive_refuses_to_run(tmp_path: Path) -> None:
+    """The real failure mode: one wrong character dropped a fifth of the data."""
+    path = tmp_path / "typo.zip"
+    with zipfile.ZipFile(path, "w") as archive:
+        for i in range(4):
+            archive.writestr(f"root/porn/{i}.png", png_bytes((1, 1, 1)))
+        archive.writestr("root/drawing/0.png", png_bytes((2, 2, 2)))  # singular typo
+
+    with pytest.raises(ArchiveLayoutError) as excinfo:
+        list(iter_zip_images(path))
+
+    message = str(excinfo.value)
+    assert "20.0%" in message
+    assert "drawing" in message
+
+
+def test_unmatched_images_can_be_accepted_deliberately(tmp_path: Path) -> None:
+    path = tmp_path / "typo.zip"
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("root/porn/0.png", png_bytes((1, 1, 1)))
+        archive.writestr("root/mystery/0.png", png_bytes((2, 2, 2)))
+
+    items = list(iter_zip_images(path, allow_unmatched=True))
+
+    assert [name for _, name in items] == ["porn"]
 
 
 def test_inspect_reports_the_full_class_histogram(source_zip: Path) -> None:

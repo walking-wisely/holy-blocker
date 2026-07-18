@@ -68,10 +68,15 @@ resolves from either the repo root or `machine-learning/`. A real shell export
 always wins over the file. Copy `.env.example` to get the expected keys — it is
 the only tracked env file, and nothing in it is used by the shipped product.
 
-The archive's published layout is `<root>/<class>/<image>`, but that is
-unverified against the real download. If it differs, extraction **fails with the
-paths it actually found** rather than writing a confident report over zero
-samples — `--inspect` shows the same diagnostic without spending a full pass.
+Verified against the real archive (Jul 2026): `nsfw_dataset_v1/<class>/<image>`,
+28,000 images, 5,600 per class, 1.7 GB download producing a 58 MB artifact.
+
+Note the class is `drawings`, plural. The singular form matched nothing and
+would have dropped 5,600 images — a fifth of the dataset — while still
+reporting clean rates over the remainder. Extraction now refuses to run when
+*any* image sits outside a known class, since that failure looks like success;
+`--inspect` shows the same diagnostic without spending a full pass, and
+`allow_unmatched=True` accepts the loss deliberately.
 
 The dataset's five classes collapse onto the binary decision via
 `features.DEFAULT_LABEL_POLICY`. That mapping *is* the FP/FN definition:
@@ -124,6 +129,34 @@ something harmless and erodes trust; a false negative lets through exactly what
 the user asked to be shielded from. Accuracy alone hides that asymmetry,
 especially on a class-imbalanced evaluation set. The sweep exists so the
 deployed threshold is a deliberate choice rather than an implicit 0.5.
+
+## Baseline results
+
+A linear probe (frozen ImageNet backbone, head trained on the cached vectors)
+over a digest-grouped 80/20 split, so duplicate images cannot straddle it:
+
+```
+samples: 5612   accuracy: 0.9052
+false positives (safe blocked):    297   rate 0.0877
+false negatives (explicit missed): 235   rate 0.1056
+```
+
+Errors by source class:
+
+| source | n | error rate | kind |
+|---|---|---|---|
+| `drawings` | 1091 | 13.7% | false positive |
+| `hentai` | 1127 | 11.4% | false negative |
+| `sexy` | 1173 | 9.7% | false positive |
+| `porn` | 1099 | 9.7% | false negative |
+| `neutral` | 1122 | 3.0% | false positive |
+
+The failure mode is one axis, not five: the model confuses *illustrated* safe
+content with *illustrated* explicit content. `drawings` and `hentai` account for
+most of both error kinds, while `neutral` photographs sit at 3%. ImageNet
+features separate photographic content well and drawn content poorly, so this is
+the first thing fine-tuning the backbone should fix — at which point the cached
+vectors must be regenerated.
 
 ## Notes
 

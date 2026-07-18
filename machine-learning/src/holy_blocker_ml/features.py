@@ -38,7 +38,10 @@ IMAGE_SUFFIXES = frozenset({".png", ".jpg", ".jpeg", ".webp", ".bmp"})
 
 #: The five classes shipped by deepghs/nsfw_detect, which follows the
 #: nsfw_data_scraper taxonomy.
-SOURCE_CLASSES: tuple[str, ...] = ("neutral", "drawing", "sexy", "hentai", "porn")
+#: Verified against the real archive: 5,600 images per class, 28,000 total.
+#: Note "drawings" is plural — the singular form silently dropped a fifth of
+#: the dataset until the preflight scan surfaced it.
+SOURCE_CLASSES: tuple[str, ...] = ("neutral", "drawings", "sexy", "hentai", "porn")
 
 #: How source classes collapse onto the binary decision.
 #:
@@ -54,7 +57,7 @@ SOURCE_CLASSES: tuple[str, ...] = ("neutral", "drawing", "sexy", "hentai", "porn
 #: being filtered. Override either via the `policy` argument.
 DEFAULT_LABEL_POLICY: Mapping[str, str] = {
     "neutral": SAFE,
-    "drawing": SAFE,
+    "drawings": SAFE,
     "sexy": SAFE,
     "hentai": EXPLICIT,
     "porn": EXPLICIT,
@@ -172,6 +175,7 @@ def iter_zip_images(
     archive_path: Path,
     classes: Iterable[str] = SOURCE_CLASSES,
     strict: bool = True,
+    allow_unmatched: bool = False,
 ) -> Iterator[tuple[Image.Image, str]]:
     """Yield (image, source class) from a zip without unpacking it.
 
@@ -179,9 +183,12 @@ def iter_zip_images(
     created. The class comes from whichever path component matches a known
     class name, which tolerates the archive's top-level directory nesting.
 
-    With `strict` (the default) an archive that exposes no recognisable class
-    raises instead of yielding nothing. A silent empty result would otherwise
-    surface as a confident report over zero samples.
+    With `strict` (the default) three layouts refuse to run: an archive with no
+    images, one where no class is recognised, and one where *some* images sit
+    outside every known class. The last case is the dangerous one — it looks
+    like success. A single character ("drawing" vs "drawings") quietly discarded
+    a fifth of this dataset, and the run still reported clean rates over what
+    remained. Pass `allow_unmatched=True` to accept the loss deliberately.
     """
     summary = inspect_archive(archive_path, classes)
     if strict:
@@ -197,6 +204,15 @@ def iter_zip_images(
                 f"under a recognised class directory ({', '.join(sorted(classes))}). "
                 f"The layout likely differs from <root>/<class>/<image>; pass "
                 f"`classes=` to match it.\n{summary.describe()}"
+            )
+        if summary.unmatched_images and not allow_unmatched:
+            share = summary.unmatched_images / summary.image_members
+            raise ArchiveLayoutError(
+                f"{archive_path}: {summary.unmatched_images} of "
+                f"{summary.image_members} images ({share:.1%}) sit outside every "
+                f"known class and would be dropped without trace. Add the missing "
+                f"class to `classes=`, or pass allow_unmatched=True to accept the "
+                f"loss.\n{summary.describe()}"
             )
 
     known = set(classes)
