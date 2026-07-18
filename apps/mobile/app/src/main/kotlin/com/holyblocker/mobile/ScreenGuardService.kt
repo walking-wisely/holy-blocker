@@ -239,11 +239,61 @@ class ScreenGuardService : AccessibilityService() {
             "settings screen class=$className texts=${texts.size} ids=${resourceIds.take(12)}",
         )
 
+        // An empty harvest on a screen the user can plainly read is the open bug
+        // (backlog.md item 1b). Three hypotheses produce it and they need
+        // different fixes, so dump what tells them apart — but only on the
+        // failing case, since this walks the tree a second time.
+        if (texts.isEmpty()) logEmptyHarvest(packageName, root)
+
         return ScreenIdentity(
             packageName = packageName,
             className = className,
             resourceIds = resourceIds,
             texts = texts,
+        )
+    }
+
+    /**
+     * Diagnostic for an empty harvest on a populated screen — backlog item 1(b).
+     *
+     * Discriminates the three candidate causes in one dump:
+     *
+     *  - **Wrong window.** More than one window for [packageName] means [rootFor]
+     *    picking the first match is a real suspect. Exactly one means it is not,
+     *    and window-resolution work would be wasted.
+     *  - **Filtered subtree.** `declared` counts children the tree says exist;
+     *    `fetched` counts the ones `getChild` actually returned. A gap is the
+     *    signature of nodes filtered out of this service's view — the case
+     *    `flagIncludeNotImportantViews` would address, and the reason a
+     *    `uiautomator` dump seeing the row proves nothing about what we can see.
+     *  - **Genuinely absent.** `declared == fetched` with no text means the rows
+     *    are not in the tree we were handed at all, and neither of the above
+     *    helps.
+     *
+     * No text and no window titles are logged, only shape — the screen's contents
+     * stay on the screen, same rule as the harvest log above.
+     */
+    private fun logEmptyHarvest(packageName: String, root: AccessibilityNodeInfo) {
+        val matching = windows.filter { it.root?.packageName?.toString() == packageName }
+        val shape = matching.joinToString { "id=${it.id} active=${it.isActive} focused=${it.isFocused} type=${it.type}" }
+
+        var declared = 0
+        var fetched = 0
+        fun walk(node: AccessibilityNodeInfo?, depth: Int) {
+            if (node == null || depth > MAX_DEPTH) return
+            declared += node.childCount
+            for (i in 0 until node.childCount) {
+                val child = node.getChild(i) ?: continue
+                fetched++
+                walk(child, depth + 1)
+            }
+        }
+        walk(root, depth = 0)
+
+        Log.w(
+            TAG,
+            "empty harvest pkg=$packageName windows=${matching.size} [$shape] " +
+                "rootChildren=${root.childCount} declared=$declared fetched=$fetched",
         )
     }
 
