@@ -6,9 +6,13 @@ requires-python = ">=3.11"
 dependencies = [
   "torch>=2.3",
   "torchvision>=0.18",
+  "pillow>=10.0",
   "onnx>=1.16",
   "tensorflow>=2.16"
 ]
+
+[project.optional-dependencies]
+test = ["pytest"]
 
 [project.scripts]
 holy-blocker-train = "holy_blocker_ml.train:main"
@@ -20,3 +24,6 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/holy_blocker_ml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
