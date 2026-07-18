@@ -41,7 +41,7 @@ One folder per component. Each contains a `plan.md` (implementation phases, curr
 | `video-watchdog` | Rust | [plan.md](components/video-watchdog/plan.md) |
 | `win-daemon` | C++20 | [plan.md](components/win-daemon/plan.md) |
 | `win-network` | C++ / Windows Service | [plan.md](components/win-network/plan.md) |
-| `android-service` | Kotlin + Compose | [plan.md](components/android-service/plan.md) |
+| `mobile` | Kotlin / Android | [plan.md](components/mobile/plan.md) |
 | `desktop` | TypeScript / Electron | [plan.md](components/desktop/plan.md) |
 | `backend` | Go | [plan.md](components/backend/plan.md) |
 | `frontend` | TypeScript / React | [plan.md](components/frontend/plan.md) |

@@ -197,5 +197,5 @@ Everything in this package operates directly on wire formats and OS-level APIs. 
 - **macOS `NetworkExtension`** (`NEPacketTunnelProvider`) — handled separately in `native-modules/mac-network/`. The `PacketSink` trait can be reused, but the adapter layer is Swift and out of scope here.
 - **DNS-over-HTTPS and DNS blocking** — not part of Phase 1. Domain lookup operates on SNI / Host header values extracted from live connections, not on DNS queries.
 - **QUIC / HTTP3** — UDP port 443 QUIC handling requires a separate policy decision (block entirely to force HTTP/2 fallback, or allow selectively). This is deferred pending the QUIC policy design.
-- **Android** — handled separately in `native-modules/android-service/`.
+- **Android** — handled separately in `apps/mobile/`.
 - **`win-network` adapter lifetime management** — installing and removing the Wintun driver, setting Windows routing rules, and managing the adapter across reboots are responsibilities of `native-modules/win-network/`, not this package.

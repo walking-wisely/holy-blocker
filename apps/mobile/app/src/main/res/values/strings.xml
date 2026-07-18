@@ -1,6 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">Holy Blocker</string>
+    <!--
+      translatable="false" is load-bearing, not tidiness. SettingsGuard matches
+      settings screens by looking for this label in the node tree, which works
+      only because it is a brand string rather than localised copy. A translated
+      app_name would silently disable the catch-all in that locale — the exact
+      failure the guard avoids by never matching Settings' own wording.
+    -->
+    <string name="app_name" translatable="false">Holy Blocker</string>
 
     <!--
       Shown on the system's accessibility settings screen. States what the
@@ -21,4 +28,21 @@
     <string name="status_service_off">Screen guard is off.</string>
     <string name="action_open_accessibility_settings">Open accessibility settings</string>
     <string name="restricted_settings_hint">If the toggle is greyed out, open App info, tap the three-dot menu, and choose “Allow restricted settings”. Android requires this for apps installed outside the Play Store.</string>
+
+    <!--
+      The exit path. Deliberately plain and always reachable: a tool that cannot
+      be switched off is not an accountability tool, and this is also the only
+      in-app recovery if screen matching misfires on an untested device.
+    -->
+    <string name="action_request_release">Request access to settings</string>
+    <string name="action_cancel_release">Cancel request</string>
+    <string name="status_release_pending">Settings unlock in %1$d min. You can cancel any time.</string>
+    <string name="status_release_open">Settings are open for %1$d more seconds.</string>
+
+    <!--
+      Shown when the device has no verified settings-screen identifiers. Failing
+      visibly beats failing open: the guard genuinely is not running here, and
+      claiming otherwise would be the one thing worse than not having it.
+    -->
+    <string name="status_device_unsupported">Screen protection is unverified on this device — settings are not guarded.</string>
 </resources>
