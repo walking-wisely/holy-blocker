@@ -18,7 +18,7 @@ retrospective one.
 
 The drawn weakness sits almost entirely in **false positives** — `drawings` is
 62% of over-blocks — while misses split evenly between `hentai` (6.0% of class)
-and `porn` (5.4%). Since [false negatives are the budget](../../decisions/classifier-operating-point.md),
+and `porn` (5.4%). Since [false negatives are the budget](../../../decisions/classifier-operating-point.md),
 this experiment targets the error kind that matters *less*.
 
 It is still worth running because over-blocking artwork at 62% of all false

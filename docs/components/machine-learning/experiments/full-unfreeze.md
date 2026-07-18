@@ -75,7 +75,7 @@ epoch:
 | `sexy` | 4.0% | 4.2% |
 
 The gain is concentrated in the two explicit classes — misses, the error kind
-[the operating point treats as the budget](../../decisions/classifier-operating-point.md).
+[the operating point treats as the budget](../../../decisions/classifier-operating-point.md).
 False negatives fall from 262 to 185 while false positives rise from 177 to 201,
 which is the trade the threshold is supposed to make and was previously
 unavailable at any threshold.
