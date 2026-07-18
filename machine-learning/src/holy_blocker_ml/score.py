@@ -122,6 +122,13 @@ def main() -> None:
         help="npy file of archive indices held out from every model's training; "
         "reported as a second holdout when given",
     )
+    parser.add_argument(
+        "--split",
+        choices=("val", "train"),
+        default="val",
+        help="which half to score. 'train' measures the fit the model achieved on "
+        "data it saw, which is what distinguishes underfitting from overfitting",
+    )
     parser.add_argument("--seed", type=int, default=BASELINE_SEED)
     parser.add_argument("--val-fraction", type=float, default=BASELINE_VAL_FRACTION)
     parser.add_argument("--miss-budget", type=float, default=0.05)
@@ -132,27 +139,31 @@ def main() -> None:
     from holy_blocker_ml.finetune import stratified_split
 
     index = ZipImageDataset(args.archive, image_size=args.image_size, augment=False)
-    _, val_idx = stratified_split(index.source_labels, args.val_fraction, args.seed)
+    train_idx, val_idx = stratified_split(index.source_labels, args.val_fraction, args.seed)
+    scored_idx = train_idx if args.split == "train" else val_idx
 
-    val_set = ZipImageDataset(
-        args.archive, image_size=args.image_size, augment=False, indices=val_idx
+    # augment=False on the training half too: this measures the fit that was
+    # achieved, and augmentation would score a distribution the model never
+    # settled on.
+    scored_set = ZipImageDataset(
+        args.archive, image_size=args.image_size, augment=False, indices=scored_idx
     )
     model = load_for_inference(args.checkpoint)
-    loader = DataLoader(val_set, batch_size=args.batch_size, shuffle=False, num_workers=0)
+    loader = DataLoader(scored_set, batch_size=args.batch_size, shuffle=False, num_workers=0)
     predictions = collect_predictions(model, loader)
-    sources = val_set.source_labels
+    sources = scored_set.source_labels
 
     print(f"checkpoint: {args.checkpoint}")
-    print(f"split:      seed={args.seed} val_fraction={args.val_fraction}")
+    print(f"split:      {args.split}  seed={args.seed} val_fraction={args.val_fraction}")
     print()
-    print(report_holdout("validation split", predictions, sources, args.miss_budget))
+    print(report_holdout(f"{args.split} split", predictions, sources, args.miss_budget))
 
-    if args.common_idx:
+    if args.common_idx and args.split == "val":
         import numpy as np
 
         common = np.load(args.common_idx).tolist()
-        require_subset(common, val_idx, "common holdout", "validation split")
-        positions = positions_within(common, val_idx)
+        require_subset(common, scored_idx, "common holdout", "validation split")
+        positions = positions_within(common, scored_idx)
         print()
         print(
             report_holdout(
