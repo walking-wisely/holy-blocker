@@ -1,6 +1,8 @@
 # Experiment: does subsampled anime data improve the drawn axis?
 
-**Status:** tooling built, protocol amended, run pending.
+**Status:** run. **Verdict: inconclusive by the pre-registered rule — treat as a
+null and do not adopt.** Substantively the drawn axis got *worse*, not merely
+flat. See [Result](#result).
 **Pre-registered:** criteria and baselines below were fixed *before* running, so
 the result cannot be reinterpreted after the fact.
 
@@ -199,6 +201,107 @@ result near a threshold should be read as "worth replicating", never as
 "accepted" or "rejected". Recorded in advance so the write-up cannot quietly
 claim more than the design supports.
 
+## Result
+
+All three arms, identical hyperparameters, full unfreeze, `seed=0`,
+`val_fraction=0.2`, one run each. Scored with `holy-blocker-score` on the frozen
+holdouts.
+
+### Validation split — the set the decision rule is evaluated on
+
+| | baseline | arm A (+4,480 anime) | arm B (−4,480 drawn) | A − base | B − base |
+|---|---|---|---|---|---|
+| photographic | 0.9883 | 0.9872 | 0.9883 | −0.0011 | +0.0000 |
+| **drawn** | **0.9604** | **0.9526** | **0.9458** | **−0.0078** | **−0.0146** |
+| combined | 0.9796 | 0.9769 | 0.9757 | −0.0027 | −0.0039 |
+| FP at 5% miss | 10.09% | 11.55% | 13.51% | +1.46pp | +3.42pp |
+
+### Common holdout — reported alongside
+
+| | baseline | arm A | arm B |
+|---|---|---|---|
+| photographic | 0.9881 | 0.9886 | 0.9894 |
+| drawn | 0.9699 | 0.9573 | 0.9466 |
+| combined | 0.9832 | 0.9802 | 0.9778 |
+| FP at 5% miss | 8.2% | 9.4% | 11.1% |
+
+### Applying the rule
+
+- **Accept** needs drawn ≥ +0.010. Drawn moved **−0.0078**. Not met.
+- **Reject** triggers if photographic drops > 0.005. It dropped **0.0011**. Not
+  triggered.
+- **Verdict: inconclusive.** Per the rule, treat as a null result and do not
+  adopt.
+
+"Inconclusive" understates it, though: drawn AUC did not fail to improve, it
+**declined**, and the miss-budget cost rose 1.5pp. Nothing here supports adopting
+the anime data.
+
+### What the control arm adds
+
+Arm B is what makes arm A interpretable, and the two together say more than
+either alone.
+
+Ordering the three arms by drawn training volume:
+
+| drawn training images | composition | drawn AUC |
+|---|---|---|
+| 4,480 | in-distribution only | 0.9458 |
+| 8,960 | in-distribution only | **0.9604** |
+| 13,440 | 8,960 in-distribution + 4,480 anime | 0.9526 |
+
+Arm B establishes that drawn volume has **positive marginal value** on this
+validation distribution — removing 4,480 images cost 0.0146. Arm A *added* 4,480
+images and drawn AUC fell anyway. So the anime data has to be doing enough harm
+to overcome a volume effect that points the other way: its contribution net of
+volume is **negative**, not merely zero.
+
+That inference needs only the *sign* of the volume effect, so it does not rest
+on the log-linear extrapolation withdrawn below. It is the one conclusion the
+three-arm design buys that the pre-registered two-arm comparison could not have
+reached — a bare "drawn went down" would have been indistinguishable from "we
+happened to add unhelpful data."
+
+**The confound that worried this design did not bite.** The concern was that a
+*gain* could not be attributed between volume and labels. There was no gain, and
+volume and outcome point in opposite directions, so the ambiguity never arose.
+
+### Strength of the claim
+
+Single seed per arm, so per the pre-registered framing this is a **screen, not a
+test**. Against seed noise of the plausible size (per-run sd 0.003–0.010, giving
+a paired difference sd of roughly 0.004–0.014), the −0.0078 drawn delta is on the
+order of 1σ. The *direction* is consistent across both holdouts and across both
+arms, which is weak corroboration, but a single run cannot establish the
+magnitude and this write-up does not claim it does.
+
+What is solid is the negative: **nothing here clears the accept bar, and no
+reading of these numbers argues for adopting the intervention.**
+
+### Photographic performance was preserved
+
+The clause the rule protects most carefully never came under pressure:
+photographic AUC moved −0.0011 on the validation split and +0.0005 on the common
+holdout. Adding 4,480 drawn images did not disturb the photographic
+sub-problem — the third independent confirmation of medium separability in this
+experiment, after arm B's exact 0.9883 and the near-zero cross-medium confusion
+that motivated `medium.py`.
+
+### Follow-up
+
+The pre-registration's [If it fails](#if-it-fails) branch applies: **per-medium
+routing** rather than mixing. Medium is ~99% separable and this experiment has
+now confirmed the two sub-problems do not interfere, so a cheap
+drawn-vs-photographic classifier plus one specialist per medium avoids the
+interference entirely, at 2 × 6 MB against the 15 MB budget.
+
+Worth noting what was *not* shown: that better-labelled drawn data cannot help.
+What was shown is that **this** corpus, mapped **this** way, at **this** volume,
+does not help a model evaluated on `nsfw_detect`'s own drawn distribution. The
+most likely mechanism is domain mismatch — Danbooru artwork against whatever
+`drawings` and `hentai` were scraped from — which a routing architecture would
+also sidestep.
+
 ## Interim result: arm B, and what it says about the accept bar
 
 **Recorded before arm A was run.** Arm B finished first because it needs no
@@ -336,6 +439,33 @@ underfitting) rather than data volume.
 
 If that prediction holds, the experiment is **inconclusive by its own rule** and
 the correct follow-up is a full unfreeze, not more data.
+
+### How it scored
+
+Half right, and right for the stated reason on the half it got.
+
+| claim | predicted | actual | |
+|---|---|---|---|
+| photographic moves < 0.003 | < 0.003 | −0.0011 | ✅ |
+| drawn improves, but < 0.010 | small **gain** | −0.0078 **loss** | ❌ |
+| verdict is inconclusive | inconclusive | inconclusive | ✅ |
+
+The photographic call was correct and its reasoning held up — cross-medium
+confusion is near zero, the sub-problems are close to independent, and adding
+4,480 drawn images left the photographic axis alone. That reasoning has now been
+confirmed three separate ways in this experiment.
+
+The drawn call had the right *magnitude* intuition and the wrong *sign*. It
+assumed added drawn data would help a little; it hurt a little. The error was
+treating "data from a better-labelled source" as necessarily non-negative — a
+distribution far enough from the target can carry negative marginal value even
+when its labels are cleaner, and the reasoning never considered that direction.
+
+The verdict was predicted correctly but partly by luck: "inconclusive" was
+forecast via a sub-threshold gain and arrived via a loss. Counting it as a hit
+would overstate the model of the problem that produced it.
+
+**Running tally for this work: three of five predictions wrong.**
 
 ## Risks
 

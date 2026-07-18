@@ -276,6 +276,19 @@ def make_rating_zip(path, count, extras=()):
             archive.writestr(name, b"not an image")
 
 
+class LocalHub:
+    """Stand-in for the Hub: an index opener and a raw-stream opener."""
+
+    def __init__(self, root):
+        self.root = root
+
+    def __call__(self, filename):  # open_archive
+        return zipfile.ZipFile(self.root / filename)
+
+    def stream(self, filename):  # open_stream
+        return open(self.root / filename, "rb")
+
+
 @pytest.fixture
 def sources(tmp_path):
     """Local stand-ins for the four remote rating archives."""
@@ -283,7 +296,7 @@ def sources(tmp_path):
     root.mkdir()
     for filename in RATING_ARCHIVES.values():
         make_rating_zip(root / filename, count=100)
-    return lambda filename: zipfile.ZipFile(root / filename)
+    return LocalHub(root)
 
 
 @pytest.fixture
@@ -297,14 +310,91 @@ def noisy_sources(tmp_path):
             count=20,
             extras=("meta.json", "readme.txt", "danbooru_anim.gif"),
         )
-    return lambda filename: zipfile.ZipFile(root / filename)
+    return LocalHub(root)
+
+
+class TestRawRangeReads:
+    """The hand-rolled ZIP reader must agree with zipfile, byte for byte.
+
+    Workers bypass `zipfile` and parse local file headers themselves, because
+    opening a ZipFile downloads a ~21 MB central directory per worker. That
+    trades a bandwidth problem for a correctness risk, so the two paths are
+    compared directly.
+    """
+
+    @pytest.fixture
+    def archive(self, tmp_path):
+        path = tmp_path / "mixed.zip"
+        # Both compression methods, and a name long enough to push the data
+        # past the fixed 30-byte header.
+        with zipfile.ZipFile(path, "w") as out:
+            for i in range(12):
+                buffer = io.BytesIO()
+                Image.new("RGB", (16, 16), (i * 7 % 256, i, 0)).save(buffer, format="WEBP")
+                out.writestr(
+                    f"danbooru_{'x' * i}_{i}.webp",
+                    buffer.getvalue(),
+                    compress_type=zipfile.ZIP_STORED if i % 2 else zipfile.ZIP_DEFLATED,
+                )
+        return path
+
+    def test_it_matches_zipfile_for_every_member(self, archive):
+        from holy_blocker_ml.anime import index_members, read_member
+
+        with zipfile.ZipFile(archive) as source:
+            names = source.namelist()
+            expected = {n: source.read(n) for n in names}
+            members = index_members(source, names)
+
+        with open(archive, "rb") as raw:
+            for member in members:
+                assert read_member(raw, member) == expected[member.name], member.name
+
+    def test_it_handles_both_compression_methods(self, archive):
+        from holy_blocker_ml.anime import index_members
+
+        with zipfile.ZipFile(archive) as source:
+            members = index_members(source, source.namelist())
+        assert {m.compress_type for m in members} == {0, 8}
+
+    def test_a_member_absent_from_the_index_is_rejected(self, archive):
+        from holy_blocker_ml.anime import index_members
+
+        with zipfile.ZipFile(archive) as source:
+            with pytest.raises(ValueError, match="absent from the archive index"):
+                index_members(source, ["nope.webp"])
+
+    def test_a_wrong_offset_is_caught_rather_than_returning_garbage(self, archive):
+        from holy_blocker_ml.anime import _Member, read_member
+
+        bogus = _Member(name="x.webp", header_offset=7, compress_size=10, compress_type=0)
+        with open(archive, "rb") as raw:
+            with pytest.raises(ValueError, match="no local file header"):
+                read_member(raw, bogus)
+
+    def test_it_survives_an_extra_field_larger_than_the_slack(self, tmp_path, monkeypatch):
+        # The single-request read is speculative; if the name and extra fields
+        # overflow the slack it must re-read rather than truncate the payload.
+        from holy_blocker_ml import anime
+        from holy_blocker_ml.anime import index_members, read_member
+
+        path = tmp_path / "slack.zip"
+        with zipfile.ZipFile(path, "w") as out:
+            out.writestr("danbooru_1.webp", b"payload-bytes" * 64)
+
+        monkeypatch.setattr(anime, "LOCAL_HEADER_SLACK", 0)
+        with zipfile.ZipFile(path) as source:
+            expected = source.read("danbooru_1.webp")
+            members = index_members(source, ["danbooru_1.webp"])
+        with open(path, "rb") as raw:
+            assert read_member(raw, members[0]) == expected
 
 
 class TestBuildSupplement:
     def test_it_writes_the_planned_number_of_each_source(self, tmp_path, sources):
         out = tmp_path / "supplement.zip"
         counts = {"anime_general": 5, "anime_sensitive": 5, "anime_explicit": 10}
-        build_supplement(counts, out, open_archive=sources, seed=0)
+        build_supplement(counts, out, open_archive=sources, open_stream=sources.stream, seed=0)
 
         with zipfile.ZipFile(out) as archive:
             written = [n for n in archive.namelist() if n.endswith(".webp")]
@@ -316,7 +406,7 @@ class TestBuildSupplement:
         # in IMAGE_SUFFIXES. Selecting either yields a supplement that loads
         # short and aborts the run at the volume check, after the whole fetch.
         out = tmp_path / "supplement.zip"
-        build_supplement({"anime_general": 20}, out, open_archive=noisy_sources, seed=0)
+        build_supplement({"anime_general": 20}, out, open_archive=noisy_sources, open_stream=noisy_sources.stream, seed=0)
 
         with zipfile.ZipFile(out) as archive:
             written = archive.namelist()
@@ -329,7 +419,7 @@ class TestBuildSupplement:
         from holy_blocker_ml.dataset import ZipImageDataset
 
         out = tmp_path / "supplement.zip"
-        build_supplement({"anime_general": 20}, out, open_archive=noisy_sources, seed=0)
+        build_supplement({"anime_general": 20}, out, open_archive=noisy_sources, open_stream=noisy_sources.stream, seed=0)
         dataset = ZipImageDataset(
             out,
             image_size=32,
@@ -339,19 +429,41 @@ class TestBuildSupplement:
         )
         assert len(dataset) == 20
 
+    def test_a_fetch_that_dies_partway_is_not_written_out_as_success(self, tmp_path, sources):
+        # The real failure: HfFileSystem shares one httpx client across cached
+        # instances, so closing a handle killed every later rating. The build
+        # exited 0 with a zip holding 2,783 of 4,480 images.
+        opened = {"n": 0}
+
+        def flaky_stream(filename):
+            opened["n"] += 1
+            if opened["n"] > 1:
+                raise RuntimeError("Cannot send a request, as the client has been closed.")
+            return sources.stream(filename)
+
+        with pytest.raises(RuntimeError, match="client has been closed|wrote \\d+ of"):
+            build_supplement(
+                {"anime_general": 10, "anime_explicit": 10},
+                tmp_path / "partial.zip",
+                open_archive=sources,
+                open_stream=flaky_stream,
+                seed=0,
+                workers=1,
+            )
+
     def test_asking_for_more_images_than_a_rating_holds_is_rejected(
         self, tmp_path, noisy_sources
     ):
         out = tmp_path / "supplement.zip"
         with pytest.raises(ValueError, match="decodable images"):
-            build_supplement({"anime_general": 50}, out, open_archive=noisy_sources, seed=0)
+            build_supplement({"anime_general": 50}, out, open_archive=noisy_sources, open_stream=noisy_sources.stream, seed=0)
 
     def test_the_layout_is_readable_as_a_training_dataset(self, tmp_path, sources):
         from holy_blocker_ml.dataset import ZipImageDataset
 
         out = tmp_path / "supplement.zip"
         counts = {"anime_general": 4, "anime_explicit": 6}
-        build_supplement(counts, out, open_archive=sources, seed=0)
+        build_supplement(counts, out, open_archive=sources, open_stream=sources.stream, seed=0)
 
         dataset = ZipImageDataset(
             out,
@@ -371,7 +483,7 @@ class TestBuildSupplement:
 
         out = tmp_path / "supplement.zip"
         build_supplement(
-            {s: 3 for s in ANIME_SOURCE_CLASSES}, out, open_archive=sources, seed=0
+            {s: 3 for s in ANIME_SOURCE_CLASSES}, out, open_archive=sources, open_stream=sources.stream, seed=0
         )
         dataset = ZipImageDataset(
             out,
@@ -387,7 +499,7 @@ class TestBuildSupplement:
 
     def test_an_unknown_source_is_rejected(self, tmp_path, sources):
         with pytest.raises(ValueError, match="unknown anime source"):
-            build_supplement({"anime_nope": 1}, tmp_path / "x.zip", open_archive=sources)
+            build_supplement({"anime_nope": 1}, tmp_path / "x.zip", open_archive=sources, open_stream=sources.stream)
 
     def test_the_per_source_seed_survives_a_fresh_interpreter(self):
         # PYTHONHASHSEED randomises str hashing per process. A per-source seed
@@ -416,8 +528,8 @@ class TestBuildSupplement:
     def test_it_is_deterministic_under_a_seed(self, tmp_path, sources):
         counts = {"anime_general": 7}
         first, second = tmp_path / "a.zip", tmp_path / "b.zip"
-        build_supplement(counts, first, open_archive=sources, seed=11)
-        build_supplement(counts, second, open_archive=sources, seed=11)
+        build_supplement(counts, first, open_archive=sources, open_stream=sources.stream, seed=11)
+        build_supplement(counts, second, open_archive=sources, open_stream=sources.stream, seed=11)
         with zipfile.ZipFile(first) as a, zipfile.ZipFile(second) as b:
             assert sorted(a.namelist()) == sorted(b.namelist())
 
@@ -471,7 +583,7 @@ class TestBuildTrainingSets:
 
         plan = mixture_plan(labels, anime_count=8)
         supplement = tmp_path / "supp.zip"
-        build_supplement(plan.anime_counts, supplement, open_archive=sources, seed=0)
+        build_supplement(plan.anime_counts, supplement, open_archive=sources, open_stream=sources.stream, seed=0)
 
         train_set, _ = build_training_sets(corpus, supplement, plan, image_size=32)
         original_train, _ = stratified_split(labels, val_fraction=0.2, seed=0)
@@ -482,7 +594,7 @@ class TestBuildTrainingSets:
 
         plan = mixture_plan(labels, anime_count=8)
         wrong = tmp_path / "wrong.zip"
-        build_supplement({"anime_general": 3}, wrong, open_archive=sources, seed=0)
+        build_supplement({"anime_general": 3}, wrong, open_archive=sources, open_stream=sources.stream, seed=0)
 
         with pytest.raises(ValueError, match="could not be attributed"):
             build_training_sets(corpus, wrong, plan, image_size=32)

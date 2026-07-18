@@ -335,8 +335,24 @@ def open_remote_archive(filename: str) -> zipfile.ZipFile:
     """
     from huggingface_hub import HfFileSystem
 
-    handle = HfFileSystem().open(f"datasets/{DATASET_REPO}/{filename}", "rb")
-    return zipfile.ZipFile(handle)
+    return zipfile.ZipFile(open_remote_stream(filename))
+
+
+def open_remote_stream(filename: str):
+    """Open one rating archive as a raw seekable byte stream.
+
+    `cache_type="none"` because the access pattern is thousands of small reads
+    scattered across an 18 GB file. fsspec's default read-ahead would fetch a
+    block around each one and discard nearly all of it.
+
+    The fsspec instance cache is deliberately left on: it shares one httpx client
+    across streams, which is why `_fetch_source` must not close them mid-build.
+    """
+    from huggingface_hub import HfFileSystem
+
+    return HfFileSystem().open(
+        f"datasets/{DATASET_REPO}/{filename}", "rb", cache_type="none"
+    )
 
 
 #: Concurrent member fetches. Each selected image is one ranged HTTP request, so
@@ -351,46 +367,138 @@ DEFAULT_FETCH_WORKERS = 32
 FETCH_BATCH = 256
 
 
-def _fetch_source(
-    open_archive: Callable[[str], zipfile.ZipFile],
-    filename: str,
+# Local file header layout, PKWARE APPNOTE.TXT §4.3.7. Field offsets are from
+# the start of the header; the member's data begins after the variable-length
+# name and extra fields, whose lengths live in the header rather than in the
+# central directory (they are permitted to differ between the two).
+LOCAL_HEADER_SIGNATURE = b"PK\x03\x04"  # APPNOTE §4.3.7, "local file header signature"
+LOCAL_HEADER_FIXED_SIZE = 30  # APPNOTE §4.3.7, through "extra field length"
+LOCAL_NAME_LENGTH_OFFSET = 26  # APPNOTE §4.3.7, "file name length"
+LOCAL_EXTRA_LENGTH_OFFSET = 28  # APPNOTE §4.3.7, "extra field length"
+
+#: Slack read past the fixed header so the name and extra fields almost always
+#: arrive in the same request as the data. Extra fields are a few dozen bytes in
+#: practice; a miss costs one extra range request, not a wrong result.
+LOCAL_HEADER_SLACK = 4096
+
+#: APPNOTE §4.4.5. Only these two appear in the rating archives — webp is
+#: already compressed, so members are typically stored.
+COMPRESSION_STORED = 0
+COMPRESSION_DEFLATED = 8
+
+
+@dataclass(frozen=True)
+class _Member:
+    """Where one member's bytes live, taken from the central directory."""
+
+    name: str
+    header_offset: int
+    compress_size: int
+    compress_type: int
+
+
+def index_members(
+    archive: zipfile.ZipFile,
     names: Sequence[str],
+) -> list[_Member]:
+    """Resolve `names` to byte offsets using an already-parsed central directory."""
+    entries = {info.filename: info for info in archive.infolist()}
+    missing = [name for name in names if name not in entries]
+    if missing:
+        raise ValueError(f"members absent from the archive index: {missing[:5]}")
+    return [
+        _Member(
+            name=name,
+            header_offset=entries[name].header_offset,
+            compress_size=entries[name].compress_size,
+            compress_type=entries[name].compress_type,
+        )
+        for name in names
+    ]
+
+
+def read_member(handle, member: _Member) -> bytes:
+    """Read and decompress one member through raw ranged reads.
+
+    Speculatively fetches the fixed header plus slack plus the compressed size in
+    a single request, then re-reads only if the name and extra fields overflowed
+    the slack.
+    """
+    import struct
+    import zlib
+
+    handle.seek(member.header_offset)
+    block = handle.read(LOCAL_HEADER_FIXED_SIZE + LOCAL_HEADER_SLACK + member.compress_size)
+    if not block.startswith(LOCAL_HEADER_SIGNATURE):
+        raise ValueError(
+            f"{member.name}: no local file header at offset {member.header_offset}; "
+            "the archive index and the data disagree"
+        )
+
+    (name_length,) = struct.unpack_from("<H", block, LOCAL_NAME_LENGTH_OFFSET)
+    (extra_length,) = struct.unpack_from("<H", block, LOCAL_EXTRA_LENGTH_OFFSET)
+    start = LOCAL_HEADER_FIXED_SIZE + name_length + extra_length
+    end = start + member.compress_size
+
+    if end > len(block):
+        # Slack was too small for this member's extra field.
+        handle.seek(member.header_offset + start)
+        payload = handle.read(member.compress_size)
+    else:
+        payload = block[start:end]
+
+    if member.compress_type == COMPRESSION_STORED:
+        return payload
+    if member.compress_type == COMPRESSION_DEFLATED:
+        # Negative window size selects a raw deflate stream with no zlib header,
+        # which is what a zip member holds (APPNOTE §4.4.5, method 8).
+        return zlib.decompressobj(-zlib.MAX_WBITS).decompress(payload)
+    raise ValueError(f"{member.name}: unsupported compression method {member.compress_type}")
+
+
+def _fetch_source(
+    members: Sequence[_Member],
+    open_raw: Callable[[], object],
     workers: int,
+    keepalive: list,
     batch_size: int = FETCH_BATCH,
 ) -> Iterator[tuple[str, bytes]]:
-    """Yield `(name, bytes)` for one rating archive, in order, fetched concurrently.
+    """Yield `(name, bytes)` for one rating, in order, fetched concurrently.
 
-    Each worker opens its own archive handle: `zipfile` seeks on a shared file
-    object, so threads sharing one would interleave seeks and return corrupt
-    members — the same hazard `ZipImageDataset` handles for forked workers.
+    Workers hold *raw* byte streams, not `ZipFile`s. Opening a `ZipFile` downloads
+    and parses the archive's central directory — ~21 MB across ~341k members — so
+    giving every worker its own cost 21 MB x workers x ratings, about 2.7 GB at 32
+    workers against the 0.23 GB of images actually wanted. Raising the worker count
+    multiplied that overhead rather than the throughput, and at 96 workers the Hub
+    began closing connections mid-body.
 
-    The pool spans every batch rather than being rebuilt per batch. Opening a
-    handle parses the archive's central directory, and these hold ~341k members,
-    so a per-batch pool re-parsed it 32 times per batch — hundreds of times over
-    a build, which dominated the runtime and the memory it needed.
+    The directory is now parsed once per rating by the caller and passed in as
+    `members`; workers only issue ranged reads for the byte spans it names.
+
+    Each worker still needs its own stream, because seeking is stateful and threads
+    sharing one would interleave seeks — the hazard `ZipImageDataset` handles for
+    forked DataLoader workers. Streams go into `keepalive` and are not closed here:
+    they share one httpx client, so closing or garbage-collecting one closes it for
+    every later rating, which once truncated a build to 2,783 of 4,480 images while
+    still exiting cleanly.
     """
     import threading
     from concurrent.futures import ThreadPoolExecutor
 
     local = threading.local()
-    opened: list[zipfile.ZipFile] = []
     lock = threading.Lock()
 
-    def read(name: str) -> tuple[str, bytes]:
+    def read(member: _Member) -> tuple[str, bytes]:
         handle = getattr(local, "handle", None)
         if handle is None:
-            handle = local.handle = open_archive(filename)
+            handle = local.handle = open_raw()
             with lock:
-                opened.append(handle)
-        return name, handle.read(name)
+                keepalive.append(handle)
+        return member.name, read_member(handle, member)
 
-    try:
-        with ThreadPoolExecutor(max_workers=workers) as pool:
-            for start in range(0, len(names), batch_size):
-                yield from pool.map(read, names[start : start + batch_size])
-    finally:
-        for handle in opened:
-            handle.close()
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        for start in range(0, len(members), batch_size):
+            yield from pool.map(read, members[start : start + batch_size])
 
 
 def build_supplement(
@@ -400,13 +508,17 @@ def build_supplement(
     seed: int = 0,
     progress: bool = False,
     workers: int = DEFAULT_FETCH_WORKERS,
+    open_stream: Callable[[str], object] = open_remote_stream,
 ) -> Path:
     """Write a local zip holding `counts[source]` images per anime rating.
 
-    Members are copied as bytes without decoding, and laid out as
-    `<source>/<name>` so `ZipImageDataset` reads it with the same code path as
-    the main corpus. `open_archive` is injected so this is testable against
-    local stand-ins rather than the Hub.
+    Members are laid out as `<source>/<name>` so `ZipImageDataset` reads the
+    result through the same code path as the main corpus.
+
+    Each rating's central directory is parsed exactly once, via `open_archive`;
+    the selected members are then pulled by `open_stream` as raw ranged reads.
+    Both are injected so this is testable against local stand-ins rather than
+    the Hub.
     """
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -418,6 +530,8 @@ def build_supplement(
             f"expected one of: {', '.join(sorted(RATING_ARCHIVES))}"
         )
 
+    # Holds every worker handle open for the whole build; see `_fetch_source`.
+    keepalive: list[zipfile.ZipFile] = []
     with zipfile.ZipFile(output_path, "w", compression=zipfile.ZIP_STORED) as out:
         for source in sorted(counts):
             wanted = counts[source]
@@ -444,17 +558,31 @@ def build_supplement(
                 # that would reselect the training set on every invocation
                 # while still reporting the same seed.
                 chosen = select_members(names, wanted, seed=source_seed(source, seed))
+                # Resolve offsets while the directory is still parsed. This is
+                # the only time it is read; workers never open a ZipFile.
+                members = index_members(remote, chosen)
 
-            # The listing handle is closed before fetching: the workers open
-            # their own, and holding a fifth idle connection buys nothing.
             done = 0
             for name, payload in _fetch_source(
-                open_archive, RATING_ARCHIVES[source], chosen, workers
+                members,
+                lambda source=source: open_stream(RATING_ARCHIVES[source]),
+                workers,
+                keepalive,
             ):
                 out.writestr(f"{source}/{Path(name).name}", payload)
                 done += 1
                 if progress and done % FETCH_BATCH == 0:
                     print(f"  {source}: {done}/{wanted}", flush=True)
+
+            # A short rating means the fetch died partway. Without this the
+            # build writes a truncated zip and exits cleanly, and the shortfall
+            # only surfaces much later as a volume-check failure at training
+            # start — or not at all, if the arm is scored without checking.
+            if done != wanted:
+                raise RuntimeError(
+                    f"{source}: wrote {done} of {wanted} images; the supplement is "
+                    "incomplete and would train a different mixture than planned"
+                )
             if progress:
                 print(f"  {source}: {done}/{wanted} done", flush=True)
 
