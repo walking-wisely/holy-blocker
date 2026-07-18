@@ -449,19 +449,37 @@ scaffolding and will fail at load time if they fall out of sync with the `.so`.
    uninstall refused (`DELETE_FAILED_DEVICE_POLICY_MANAGER`) on an android-36 emulator. The
    `DeviceAdminAdd` identifier is confirmed, and the screen turned out to need resource-id
    matching rather than the class; see §7.
-7. Split-screen window resolution, then recents (§7 and [backlog.md](backlog.md)) — the bypasses
-   that go around step 5 rather than defeating it.
-8. **Tamper log** — append-only local record of guard-state transitions and removal attempts.
-   The backstop for what steps 5–7 cannot prevent (guest user, safe mode, adb); entries must
+7. **The empty harvest** ([backlog.md](backlog.md) item 1b) — the catch-all cannot fire on a tree
+   with no text in it, which currently leaves the device admin list unguarded and silently
+   weakens `mentionsSelf` on *any* screen that harvests empty. Evidence first: the
+   `empty harvest` diagnostic in `ScreenGuardService` discriminates the causes, and the leading
+   one is `flagIncludeNotImportantViews` being unset rather than anything to do with windows.
+   Scoped deliberately to exclude split screen — an earlier pass treated the two as one bug on
+   the strength of a stale backlog line, and they are not related.
+8. Split-screen window resolution, then recents (§7 and [backlog.md](backlog.md) item 2) — the
+   bypasses that go around step 5 rather than defeating it. Ranked after step 7 because it needs
+   deliberate user intent, while the empty harvest needs none. Note `GLOBAL_ACTION_BACK` is
+   global, so multi-window evaluation needs the action fixed before the matching is widened.
+9. **Tamper log** — append-only local record of guard-state transitions and removal attempts.
+   The backstop for what steps 5–8 cannot prevent (guest user, safe mode, adb); entries must
    survive the app being disabled.
-9. Foreground service + restart-on-boot. **Note the real reason:** an `AccessibilityService`
+10. Foreground service + restart-on-boot. **Note the real reason:** an `AccessibilityService`
    is system-bound and already restarts on boot while it stays enabled, so this neither makes
    the guard harder to kill nor is required for it to survive a reboot. What it provides is an
    always-visible status surface, a health check for removal routes we cannot observe, and the
    FGS host that the last two steps require. It may also reduce the recents-swipe kill in step 6.
-10. `VpnService` DNS/SNI filter. Note that without `setAlwaysOnVpnPackage` (owner-only) the VPN
+11. `VpnService` DNS/SNI filter. Note that without `setAlwaysOnVpnPackage` (owner-only) the VPN
     can be turned off in Settings like anything else — guard that screen the same way.
-11. `MediaProjection` capture once `image-sandbox` lands.
+12. `MediaProjection` capture once `image-sandbox` lands.
+
+#### Reference documents — steps 7 and 8
+
+- [`AccessibilityServiceInfo`](https://developer.android.com/reference/android/accessibilityservice/AccessibilityServiceInfo) — the `accessibilityFlags` values, `FLAG_INCLUDE_NOT_IMPORTANT_VIEWS` and `FLAG_RETRIEVE_INTERACTIVE_WINDOWS` among them
+- [`FLAG_INCLUDE_NOT_IMPORTANT_VIEWS`](https://developer.android.com/reference/android/accessibilityservice/AccessibilityServiceInfo#FLAG_INCLUDE_NOT_IMPORTANT_VIEWS) — the step 7 candidate; read alongside [`importantForAccessibility`](https://developer.android.com/reference/android/view/View#attr_android:importantForAccessibility), which is what it overrides
+- [`AccessibilityService.getWindows()`](https://developer.android.com/reference/android/accessibilityservice/AccessibilityService#getWindows()) and [`AccessibilityWindowInfo`](https://developer.android.com/reference/android/view/accessibility/AccessibilityWindowInfo) — window enumeration for step 8, including `isActive`/`isFocused`
+- [`GLOBAL_ACTION_BACK`](https://developer.android.com/reference/android/accessibilityservice/AccessibilityService#GLOBAL_ACTION_BACK) — note it takes no window argument, which is the hazard recorded in step 8
+- [`AccessibilityNodeInfo`](https://developer.android.com/reference/android/view/accessibility/AccessibilityNodeInfo) — `getChild`, `refresh`, and what each does and does not re-fetch
+- [`UiAutomation.setServiceInfo`](https://developer.android.com/reference/android/app/UiAutomation#setServiceInfo(android.accessibilityservice.AccessibilityServiceInfo)) — why a `uiautomator` dump and a bound service can see different trees
 
 ## Gotchas learned the hard way
 
