@@ -19,7 +19,7 @@ The packages below **exist in the repo today** and are actively being built:
 | `packages/mitm-proxy` | Rust | Plain HTTP forwarding + TLS state/cert generation + CONNECT handler + HTTP/1.1 tunnel loop with phase 3/4/5 scan hooks done; text-policy wired into scan_url/scan_body; ProtectionMode next |
 | `packages/net-shield` | Rust | radix domain/IP filter done; SNI parser done; tun adapter + PacketSink dispatch done; NetShield struct + run loop done (Windows Wintun path); smoke-test done — all 5 plan steps complete |
 | `native-modules/win-daemon` | C++20 | WinEvent hooks + message loop; no capture/OCR/IPC yet |
-| `machine-learning` | Python | MobileNetV3 fine-tuning loop + dataset + eval metrics done; ONNX export (+ int8 dynamic quantization) and TFLite export via `litert-torch` both verified end to end; `holy-blocker-eval` FP/FN harness done; 40 pytest tests — all 6 plan steps complete. Requires Python <3.14. Training data and eval sets stay gitignored |
+| `machine-learning` | Python | MobileNetV3 fine-tuning loop + dataset + eval metrics done; ONNX export (+ int8 dynamic quantization) and TFLite export via `litert-torch` both verified end to end; `holy-blocker-eval` FP/FN harness + threshold sweep done; `holy-blocker-extract` converts a gated NSFW corpus into non-viewable feature vectors so evals never touch images (requires a frozen backbone); 62 pytest tests. Requires Python <3.14. Corpora and artifacts stay gitignored |
 
 The packages below are **planned but not yet created** — do not assume they exist:
 

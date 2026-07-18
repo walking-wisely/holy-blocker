@@ -18,7 +18,7 @@ from holy_blocker_ml.config import TrainingConfig
 from holy_blocker_ml.dataset import load_dataset
 from holy_blocker_ml.eval import EvalResult, evaluate, report
 from holy_blocker_ml.labels import BINARY_LABELS
-from holy_blocker_ml.model import create_classifier
+from holy_blocker_ml.model import create_classifier, freeze_backbone
 
 CHECKPOINT_NAME = "baseline-v0.pt"
 
@@ -56,8 +56,13 @@ def run_epoch(
     return total_loss / batches if batches else 0.0
 
 
-def train(config: TrainingConfig, pretrained: bool = True) -> Path:
-    """Fine-tune the classifier and save a checkpoint. Returns the checkpoint path."""
+def train(config: TrainingConfig, pretrained: bool = True, frozen_backbone: bool = False) -> Path:
+    """Fine-tune the classifier and save a checkpoint. Returns the checkpoint path.
+
+    `frozen_backbone=True` trains only the head, which keeps the backbone
+    identical to the one that produced any cached feature artifacts. Use it when
+    evaluating against `.npz` features; leave it off for best accuracy.
+    """
     config.output_dir.mkdir(parents=True, exist_ok=True)
     device = select_device()
 
@@ -80,8 +85,13 @@ def train(config: TrainingConfig, pretrained: bool = True) -> Path:
     )
 
     model = create_classifier(class_count=len(BINARY_LABELS), pretrained=pretrained).to(device)
+    if frozen_backbone:
+        freeze_backbone(model)
     criterion = nn.CrossEntropyLoss()
-    optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate)
+    optimizer = torch.optim.AdamW(
+        [parameter for parameter in model.parameters() if parameter.requires_grad],
+        lr=config.learning_rate,
+    )
 
     result: EvalResult | None = None
     for epoch in range(1, config.epochs + 1):
@@ -102,6 +112,8 @@ def train(config: TrainingConfig, pretrained: bool = True) -> Path:
             # Baked in so an artifact can never be read back with the class
             # order inverted; `harness.py` checks this against BINARY_LABELS.
             "labels": list(BINARY_LABELS),
+            # Cached feature artifacts are only valid against a frozen backbone.
+            "frozen_backbone": frozen_backbone,
         },
         output_path,
     )

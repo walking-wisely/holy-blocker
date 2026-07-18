@@ -21,3 +21,45 @@ def create_classifier(class_count: int = len(BINARY_LABELS), pretrained: bool = 
 
 def example_input(image_size: int) -> torch.Tensor:
     return torch.randn(1, 3, image_size, image_size)
+
+
+#: Width of the MobileNetV3-Small backbone output, i.e. the input width of
+#: `model.classifier`. Feature artifacts are only interchangeable with heads
+#: built for this dimension.
+BACKBONE_FEATURE_DIM = 576
+
+
+class BackboneFeatures(nn.Module):
+    """MobileNetV3-Small up to (but excluding) the classifier head.
+
+    Emits the 576-d vector that `create_classifier(...).classifier` consumes, so
+    a head can be trained or evaluated against cached features without the
+    source images ever being needed again.
+    """
+
+    def __init__(self, backbone: nn.Module) -> None:
+        super().__init__()
+        self.features = backbone.features
+        self.avgpool = backbone.avgpool
+
+    def forward(self, images: torch.Tensor) -> torch.Tensor:
+        return torch.flatten(self.avgpool(self.features(images)), 1)
+
+
+def create_feature_extractor(pretrained: bool = True) -> BackboneFeatures:
+    """Backbone-only model used to precompute reusable feature vectors."""
+    return BackboneFeatures(create_classifier(pretrained=pretrained)).eval()
+
+
+def freeze_backbone(model: nn.Module) -> nn.Module:
+    """Freeze everything except the classifier head.
+
+    This is what makes cached feature artifacts durable. If the backbone keeps
+    training, every checkpoint produces different features and a stored artifact
+    silently stops matching the model it is scoring — so extraction would have
+    to be re-run against the source images for each new checkpoint, which is
+    exactly what caching features is meant to avoid.
+    """
+    for name, parameter in model.named_parameters():
+        parameter.requires_grad = name.startswith("classifier.")
+    return model

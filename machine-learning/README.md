@@ -46,6 +46,55 @@ holy-blocker-eval --data-dir data/eval    # false positive / false negative repo
 .venv/bin/pytest -m "not slow"            # skip full MobileNetV3 conversions
 ```
 
+## Evaluating without keeping images
+
+`holy-blocker-extract` converts an explicit corpus into a `.npz` of feature
+vectors and deletes the source archive. After one pass the vectors are the
+permanent evaluation asset — every later run reads numbers, never pixels.
+
+```bash
+# 1. Accept the terms at https://huggingface.co/datasets/deepghs/nsfw_detect
+#    (gating is automatic — no human review), then create a read token.
+export HF_TOKEN=hf_...
+pip install -e ".[data]"
+
+holy-blocker-extract --out data/eval/nsfw_detect.npz
+holy-blocker-eval --checkpoint artifacts/baseline-v0.pt --features data/eval/nsfw_detect.npz
+```
+
+`--archive path/to.zip` skips the download if the file was fetched by hand.
+
+The dataset's five classes collapse onto the binary decision via
+`features.DEFAULT_LABEL_POLICY`. That mapping *is* the FP/FN definition:
+
+| source class | maps to | why |
+|---|---|---|
+| `porn`, `hentai` | `explicit` | the content being filtered, drawn or not |
+| `sexy` | `safe` | the hard negative — over-blocking it should count as a false positive, not a win |
+| `drawing`, `neutral` | `safe` | ordinary content |
+
+Use `--strict-sexy` to move `sexy` to the blocked side.
+
+### What this does and does not guarantee
+
+- Images are decoded from the zip **in memory**. The archive is never unpacked
+  and is deleted afterwards, so no viewable image file is written.
+- The downloaded archive is on disk until the pass completes. That window is the
+  one moment the material exists in a decodable form.
+- Feature vectors cannot be casually viewed, but they are not a redaction
+  primitive and are not cryptographically one-way.
+- `--features` never surfaces file paths, so there is nothing to open.
+  `--examples` defaults to `0` for the image path too.
+
+### Freeze the backbone
+
+Cached features are produced by a specific backbone. If training fine-tunes the
+whole network, the checkpoint's backbone drifts away from the one that made the
+vectors and the head ends up scoring features it never saw. Train with
+`frozen_backbone=True` to keep them aligned — `holy-blocker-eval --features`
+warns loudly when a checkpoint was not. Changing backbone entirely means
+re-running extraction against the source corpus.
+
 ## Evaluation
 
 `holy-blocker-eval` is the FP/FN harness. It prints per-class precision and

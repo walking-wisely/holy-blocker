@@ -38,3 +38,36 @@ def test_label_ordering_is_pinned_against_accidental_reordering() -> None:
     # Android/Windows runtimes index into it.
     assert BINARY_LABELS == (SAFE, EXPLICIT)
     assert POSITIVE_INDEX == 1
+
+
+def test_freeze_backbone_leaves_only_the_head_trainable() -> None:
+    from holy_blocker_ml.model import freeze_backbone
+
+    model = freeze_backbone(create_classifier(pretrained=False))
+
+    trainable = {n for n, p in model.named_parameters() if p.requires_grad}
+    assert trainable
+    assert all(name.startswith("classifier.") for name in trainable)
+    assert not any(name.startswith("features.") for name in trainable)
+
+
+def test_feature_extractor_emits_the_documented_width() -> None:
+    from holy_blocker_ml.model import BACKBONE_FEATURE_DIM, create_feature_extractor
+
+    backbone = create_feature_extractor(pretrained=False)
+
+    with torch.no_grad():
+        assert backbone(torch.randn(3, 3, 64, 64)).shape == (3, BACKBONE_FEATURE_DIM)
+
+
+def test_extracted_features_feed_the_classifier_head_directly() -> None:
+    from holy_blocker_ml.model import create_feature_extractor
+
+    model = create_classifier(pretrained=False).eval()
+    backbone = create_feature_extractor(pretrained=False)
+    backbone.features, backbone.avgpool = model.features, model.avgpool
+    images = torch.randn(2, 3, 64, 64)
+
+    with torch.no_grad():
+        # Head-on-features must equal the full forward pass.
+        torch.testing.assert_close(model.classifier(backbone(images)), model(images))

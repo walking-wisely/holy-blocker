@@ -15,6 +15,7 @@ Typical use with a public NSFW benchmark:
 """
 
 import argparse
+import warnings
 from pathlib import Path
 
 import torch
@@ -77,6 +78,67 @@ def evaluate_checkpoint(
     return score(predictions, threshold=threshold), predictions
 
 
+def evaluate_feature_set(
+    checkpoint_path: Path,
+    features_path: Path,
+    threshold: float = DEFAULT_THRESHOLD,
+    batch_size: int = 256,
+) -> tuple[EvalResult, Predictions]:
+    """Score a checkpoint against cached feature vectors — no images involved.
+
+    Only the classifier head runs: the stored vectors are already the backbone's
+    output. `Predictions.paths` stays empty, so no file path can be surfaced for
+    inspection.
+    """
+    import numpy as np
+    from torch.utils.data import DataLoader, TensorDataset
+
+    from holy_blocker_ml.features import load_feature_set
+    from holy_blocker_ml.model import BACKBONE_FEATURE_DIM
+
+    feature_set = load_feature_set(features_path)
+
+    stored_labels = feature_set.metadata.get("labels")
+    if stored_labels is not None and list(stored_labels) != list(BINARY_LABELS):
+        raise ValueError(
+            f"feature artifact label order {list(stored_labels)} does not match "
+            f"{list(BINARY_LABELS)}; false-positive/negative counts would be inverted"
+        )
+
+    width = feature_set.features.shape[1] if len(feature_set) else BACKBONE_FEATURE_DIM
+    if width != BACKBONE_FEATURE_DIM:
+        raise ValueError(
+            f"feature artifact has width {width}, but this backbone emits "
+            f"{BACKBONE_FEATURE_DIM}; re-run extraction against the source corpus"
+        )
+
+    # A fine-tuned backbone no longer matches the one that produced the cached
+    # vectors, so the head would be scoring features it never saw. This is a
+    # warning rather than an error: the checkpoint may predate the flag.
+    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    if checkpoint.get("frozen_backbone") is not True:
+        warnings.warn(
+            f"{checkpoint_path} was not trained with a frozen backbone, so its "
+            "backbone differs from the one that produced these features; the "
+            "resulting rates are not trustworthy. Retrain with "
+            "frozen_backbone=True, or re-extract features from this checkpoint.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+
+    head = load_checkpoint(checkpoint_path).classifier
+    loader = DataLoader(
+        TensorDataset(
+            torch.from_numpy(np.ascontiguousarray(feature_set.features)),
+            torch.from_numpy(np.ascontiguousarray(feature_set.labels)),
+        ),
+        batch_size=batch_size,
+    )
+
+    predictions = collect_predictions(head, loader)
+    return score(predictions, threshold=threshold), predictions
+
+
 def format_examples(
     predictions: Predictions,
     threshold: float,
@@ -103,17 +165,34 @@ def main() -> None:
         default=Path("data/eval"),
         help="directory containing one subdirectory per label (gitignored)",
     )
+    parser.add_argument(
+        "--features",
+        type=Path,
+        help="evaluate cached feature vectors instead of images; takes precedence "
+        "over --data-dir and never surfaces file paths",
+    )
     parser.add_argument("--threshold", type=float, default=DEFAULT_THRESHOLD)
     parser.add_argument("--image-size", type=int, default=TrainingConfig.image_size)
     parser.add_argument("--batch-size", type=int, default=TrainingConfig.batch_size)
-    parser.add_argument("--examples", type=int, default=10, help="misclassified samples to list per kind")
+    parser.add_argument(
+        "--examples",
+        type=int,
+        default=0,
+        help="list this many misclassified files per kind. Defaults to 0: the "
+        "listing exists for manual inspection, which is not always wanted",
+    )
     parser.add_argument("--no-sweep", action="store_true", help="skip the threshold sweep table")
     args = parser.parse_args()
 
     config = TrainingConfig(image_size=args.image_size, batch_size=args.batch_size)
-    result, predictions = evaluate_checkpoint(
-        args.checkpoint, args.data_dir, config, threshold=args.threshold
-    )
+    if args.features:
+        result, predictions = evaluate_feature_set(
+            args.checkpoint, args.features, threshold=args.threshold
+        )
+    else:
+        result, predictions = evaluate_checkpoint(
+            args.checkpoint, args.data_dir, config, threshold=args.threshold
+        )
 
     print(report(result))
     if not args.no_sweep:

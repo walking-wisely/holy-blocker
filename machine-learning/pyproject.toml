@@ -23,11 +23,14 @@ test = ["pytest"]
 # (renamed and deprecated upstream) and replaces the old torch -> ONNX -> TF
 # SavedModel -> TFLite path, so `tensorflow` is no longer a dependency.
 tflite = ["litert-torch>=0.7"]
+# Fetching gated evaluation corpora from the Hugging Face Hub.
+data = ["huggingface-hub>=0.20"]
 
 [project.scripts]
 holy-blocker-train = "holy_blocker_ml.train:main"
 holy-blocker-export = "holy_blocker_ml.export:main"
 holy-blocker-eval = "holy_blocker_ml.harness:main"
+holy-blocker-extract = "holy_blocker_ml.extract:main"
 
 [build-system]
 requires = ["hatchling"]

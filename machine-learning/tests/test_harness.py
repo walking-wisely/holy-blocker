@@ -76,3 +76,75 @@ def test_format_examples_is_empty_when_nothing_is_misclassified() -> None:
     predictions = collect_predictions(Perfect(), loader)
 
     assert format_examples(predictions, threshold=0.5, limit=5) == ""
+
+
+def test_feature_eval_matches_image_eval_on_the_same_samples(
+    checkpoint: Path, image_tree: Path, tmp_path: Path
+) -> None:
+    """The features path must be a shortcut, not a different computation."""
+    from holy_blocker_ml.dataset import LocalImageDataset, build_transform
+    from holy_blocker_ml.features import extract_features, save_feature_set
+    from holy_blocker_ml.harness import evaluate_feature_set
+    from holy_blocker_ml.model import create_feature_extractor
+    from PIL import Image
+
+    config = TrainingConfig(image_size=32, batch_size=2)
+    by_image, _ = evaluate_checkpoint(checkpoint, image_tree, config)
+
+    # Same files, same order, routed through the backbone instead.
+    dataset = LocalImageDataset(image_tree, image_size=32, augment=False)
+    samples = [
+        (Image.open(path).convert("RGB"), "porn" if path.parent.name == "explicit" else "neutral")
+        for path, _ in dataset.samples
+    ]
+    features = extract_features(
+        iter(samples), create_feature_extractor(pretrained=False), build_transform(32, augment=False)
+    )
+    path = save_feature_set(features, tmp_path / "f.npz")
+
+    by_feature, predictions = evaluate_feature_set(checkpoint, path)
+
+    assert by_feature.confusion_matrix == by_image.confusion_matrix
+    assert by_feature.false_positives == by_image.false_positives
+    assert by_feature.false_negatives == by_image.false_negatives
+    # No paths can leak from the features route.
+    assert predictions.paths == []
+
+
+def test_feature_eval_rejects_a_width_mismatch(checkpoint: Path, tmp_path: Path) -> None:
+    import numpy as np
+
+    from holy_blocker_ml.features import FeatureSet, save_feature_set
+    from holy_blocker_ml.harness import evaluate_feature_set
+
+    wrong = FeatureSet(
+        features=np.zeros((2, 128), dtype=np.float32),
+        labels=np.array([0, 1], dtype=np.int64),
+        source_labels=["neutral", "porn"],
+        digests=["a" * 64, "b" * 64],
+        metadata={"labels": list(BINARY_LABELS)},
+    )
+    path = save_feature_set(wrong, tmp_path / "bad.npz")
+
+    with pytest.raises(ValueError, match="width 128"):
+        evaluate_feature_set(checkpoint, path)
+
+
+def test_feature_eval_rejects_inverted_label_order(checkpoint: Path, tmp_path: Path) -> None:
+    import numpy as np
+
+    from holy_blocker_ml.features import FeatureSet, save_feature_set
+    from holy_blocker_ml.harness import evaluate_feature_set
+    from holy_blocker_ml.model import BACKBONE_FEATURE_DIM
+
+    inverted = FeatureSet(
+        features=np.zeros((1, BACKBONE_FEATURE_DIM), dtype=np.float32),
+        labels=np.array([0], dtype=np.int64),
+        source_labels=["neutral"],
+        digests=["a" * 64],
+        metadata={"labels": list(reversed(BINARY_LABELS))},
+    )
+    path = save_feature_set(inverted, tmp_path / "inv.npz")
+
+    with pytest.raises(ValueError, match="inverted"):
+        evaluate_feature_set(checkpoint, path)
