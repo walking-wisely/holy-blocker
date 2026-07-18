@@ -6,6 +6,9 @@ with the commands in [`machine-learning/README.md`](../../../machine-learning/RE
 Numbers here are measured, not estimated. Where something is inferred or
 unverified it says so.
 
+Pre-registered experiments — their arms, decision rules, and verdicts — are
+indexed in [experiments/](experiments/README.md).
+
 ## Corpus
 
 [`deepghs/nsfw_detect`](https://huggingface.co/datasets/deepghs/nsfw_detect) —
