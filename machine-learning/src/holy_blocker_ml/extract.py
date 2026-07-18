@@ -82,6 +82,7 @@ def extract_hf_dataset(
     keep_archive: bool = False,
     pretrained: bool = True,
     archive: Path | None = None,
+    from_checkpoint: Path | None = None,
 ) -> FeatureSet:
     """Download, extract features in memory, save, and remove the archive.
 
@@ -98,7 +99,20 @@ def extract_hf_dataset(
         summary = inspect_archive(archive_path)
         print(f"archive layout:\n{summary.describe()}\n")
 
-        backbone = create_feature_extractor(pretrained=pretrained)
+        if from_checkpoint is not None:
+            # Regenerate vectors with a fine-tuned backbone: features are only
+            # valid against the backbone that produced them.
+            import torch
+
+            from holy_blocker_ml.labels import BINARY_LABELS
+            from holy_blocker_ml.model import BackboneFeatures, create_classifier
+
+            state = torch.load(from_checkpoint, map_location="cpu", weights_only=False)
+            source = create_classifier(class_count=len(BINARY_LABELS), pretrained=False)
+            source.load_state_dict(state["model_state"])
+            backbone = BackboneFeatures(source).eval()
+        else:
+            backbone = create_feature_extractor(pretrained=pretrained)
         transform = build_transform(config.image_size, augment=False)
         result = extract_features(
             iter_zip_images(archive_path),
@@ -112,6 +126,7 @@ def extract_hf_dataset(
             "source_file": filename,
             "image_size": config.image_size,
             "pretrained_backbone": pretrained,
+            "from_checkpoint": str(from_checkpoint) if from_checkpoint else None,
         }
         save_feature_set(result, output_path)
     finally:
@@ -130,6 +145,12 @@ def main() -> None:
         "--archive",
         type=Path,
         help="use an already-downloaded zip instead of fetching it (never deleted)",
+    )
+    parser.add_argument(
+        "--from-checkpoint",
+        type=Path,
+        help="extract using this checkpoint's backbone instead of pristine ImageNet "
+        "weights; required after fine-tuning",
     )
     parser.add_argument("--image-size", type=int, default=TrainingConfig.image_size)
     parser.add_argument("--batch-size", type=int, default=TrainingConfig.batch_size)
@@ -173,6 +194,7 @@ def main() -> None:
             policy=policy,
             keep_archive=args.keep_archive,
             archive=args.archive,
+            from_checkpoint=args.from_checkpoint,
         )
     except (ArchiveLayoutError, ValueError) as error:
         # A layout mismatch is a setup problem, not a crash: report it as one

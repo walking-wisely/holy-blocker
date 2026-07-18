@@ -63,3 +63,35 @@ def freeze_backbone(model: nn.Module) -> nn.Module:
     for name, parameter in model.named_parameters():
         parameter.requires_grad = name.startswith("classifier.")
     return model
+
+
+def trainable_parameter_names(model: nn.Module) -> list[str]:
+    """Names of parameters that will receive gradients."""
+    return [name for name, parameter in model.named_parameters() if parameter.requires_grad]
+
+
+def unfreeze_last_blocks(model: nn.Module, count: int | None = None) -> nn.Module:
+    """Unfreeze the classifier plus the last `count` feature blocks.
+
+    `count=None` unfreezes everything, `count=0` is head-only (equivalent to
+    `freeze_backbone`). Partial unfreezing is the middle option: early blocks
+    hold generic edge and texture filters that transfer fine, while the later
+    blocks carry the semantic features that need to change for a distinction
+    ImageNet never had to make.
+    """
+    block_indices = sorted(
+        {int(name.split(".")[1]) for name, _ in model.named_parameters() if name.startswith("features.")}
+    )
+    if count is None:
+        keep = set(block_indices)
+    else:
+        keep = set(block_indices[len(block_indices) - count :]) if count else set()
+
+    for name, parameter in model.named_parameters():
+        if name.startswith("classifier."):
+            parameter.requires_grad = True
+        elif name.startswith("features."):
+            parameter.requires_grad = int(name.split(".")[1]) in keep
+        else:
+            parameter.requires_grad = count is None
+    return model

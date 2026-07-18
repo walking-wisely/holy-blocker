@@ -5,6 +5,9 @@ augmentation explicit so the policy is easy to audit and change. Label indices
 come from `labels.BINARY_LABELS`, never from sorted directory names.
 """
 
+import io
+import os
+import zipfile
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -104,3 +107,85 @@ def load_dataset(
         num_workers=num_workers,
         generator=torch.Generator().manual_seed(0) if augment else None,
     )
+
+
+class ZipImageDataset(Dataset):
+    """Images read straight out of a zip archive, decoded in memory.
+
+    The fine-tuning counterpart to `features.iter_zip_images`: backbone
+    gradients need pixels, so the archive has to be readable for the whole run,
+    but it is still never unpacked and no image file is written.
+
+    The archive handle is opened lazily and cached per process, so DataLoader
+    workers each get their own rather than sharing a file descriptor across a
+    fork (which yields corrupt reads).
+    """
+
+    def __init__(
+        self,
+        archive_path: Path,
+        image_size: int,
+        augment: bool,
+        indices: Sequence[int] | None = None,
+        policy=None,
+    ) -> None:
+        from holy_blocker_ml.features import (
+            DEFAULT_LABEL_POLICY,
+            IMAGE_SUFFIXES,
+            _class_of,
+            inspect_archive,
+            map_source_label,
+        )
+        from holy_blocker_ml.features import ArchiveLayoutError, SOURCE_CLASSES
+
+        self.archive_path = Path(archive_path)
+        self.transform = build_transform(image_size, augment)
+        policy = policy or DEFAULT_LABEL_POLICY
+
+        summary = inspect_archive(self.archive_path)
+        if not summary.matched:
+            raise ArchiveLayoutError(
+                f"{self.archive_path} exposes no recognised class directory.\n{summary.describe()}"
+            )
+
+        known = set(SOURCE_CLASSES)
+        entries: list[tuple[str, str, int]] = []
+        with zipfile.ZipFile(self.archive_path) as archive:
+            for info in archive.infolist():
+                if info.is_dir():
+                    continue
+                path = Path(info.filename)
+                if path.suffix.lower() not in IMAGE_SUFFIXES:
+                    continue
+                source = _class_of(path, known)
+                if source is None:
+                    continue
+                label = map_source_label(source, policy)
+                if label is None:
+                    continue
+                entries.append((info.filename, source, label))
+
+        if indices is not None:
+            entries = [entries[i] for i in indices]
+
+        self.samples = [(name, label) for name, _, label in entries]
+        self.source_labels = [source for _, source, _ in entries]
+        self._handle: zipfile.ZipFile | None = None
+        self._pid: int | None = None
+
+    def _archive(self) -> zipfile.ZipFile:
+        pid = os.getpid()
+        if self._handle is None or self._pid != pid:
+            self._handle = zipfile.ZipFile(self.archive_path)
+            self._pid = pid
+        return self._handle
+
+    def __len__(self) -> int:
+        return len(self.samples)
+
+    def __getitem__(self, idx: int) -> tuple[Tensor, int]:
+        name, label = self.samples[idx]
+        with self._archive().open(name) as member:
+            payload = member.read()
+        with Image.open(io.BytesIO(payload)) as image:
+            return self.transform(image.convert("RGB")), label
