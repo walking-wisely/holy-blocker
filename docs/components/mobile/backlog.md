@@ -28,110 +28,58 @@ Anything requiring Device Owner is out of scope permanently — see plan.md §7.
   surface while the admin is inactive — without which the guard backed the user out of the only
   screen that can turn the admin on. See [plan.md](plan.md) §7.
 
+- ~~**A guarded screen sat unguarded because the harvest came back empty.**~~ The device-admin
+  list — the one screen that can deactivate the admin — named this app and still did not hit the
+  `SELF_IN_SETTINGS` catch-all. **Fixed** by declaring `android:isAccessibilityTool="true"`.
+
+  The cause was `accessibilityDataSensitive`, added in Android 14 (API 34): views marked
+  sensitive are served only to services that declare `isAccessibilityTool`, and Settings marks
+  those rows that way. `uiautomator` saw them because UiAutomation is exempt from the mechanism.
+
+  **Every candidate this item originally ranked was wrong, and the ranking is worth remembering
+  as a caution.** Measured on an android-36 emulator before concluding:
+
+  - `flagIncludeNotImportantViews` — ranked leading, disproven. Setting it grew the tree from
+    5 to 16 nodes, adding every intermediate container and not one list row. It is deliberately
+    **not** set: it widens what the service ingests on every app and buys nothing here.
+  - `getChild()` returning null — disproven. `declared == fetched` at every re-look.
+  - Wrong window — disproven, as this item predicted. `windows=1`.
+  - `refresh()` on the root — disproven directly rather than dismissed as a red herring.
+    `findAccessibilityNodeInfosByViewId` went back to the app, `refresh()` returned true, and
+    `childCount` stayed 0. Not a stale node cache.
+
+  Two assumptions in the original write-up were themselves the obstacle. The harvest was never
+  *empty* — it returned three text fragments, so `logEmptyHarvest`, gated on `texts.isEmpty()`,
+  never fired on the one screen it was written for; it now fires below a text floor. And
+  `declared > fetched` was claimed to be the signature of view filtering, which it is not: the
+  framework applies both `importantForAccessibility` and `accessibilityDataSensitive` before
+  reporting `childCount`, so a withheld subtree shows no gap at all.
+
+  `isAccessibilityTool` is also a Play policy declaration — it asserts the service assists users
+  with disabilities — so it is a distribution commitment, not just a manifest attribute.
+  Accepted knowingly: short of Device Owner, which [plan.md](plan.md) §7 rules out permanently,
+  nothing else reaches those rows.
+
+- ~~**Split screen harvested the wrong window.**~~ `rootFor` took the *first* window whose root
+  matched the package, which in split screen need not be the one the user is driving. **Fixed** —
+  `policy/WindowResolver.kt` prefers the event's own `windowId`, then focused, then active, then
+  first match, and the event-less re-look path relies on that fallback by design.
+
+  The action was fixed alongside the matching, which this item correctly insisted on:
+  `GLOBAL_ACTION_BACK` takes no window argument and lands on the focused window, so
+  `SettingsGuard.evaluate` degrades an unfocused match to `CoverOnly` instead of pressing BACK
+  inside the user's actual foreground app. It does so *before* the back-out bookkeeping, so a
+  pane parked unfocused cannot drain the back-out budget without a single BACK being sent.
+
+  **Verification gap, deliberately recorded rather than glossed:** 12 JVM tests cover the
+  selection order and the focus gate, but genuine two-app split screen could not be driven on the
+  android-36 phone AVD through adb — neither `--windowingMode 6` nor freeform produced two
+  independent app windows. Only the single-window path was exercised on device. The two-pane case
+  this item exists for **still needs confirming by hand** on hardware or a tablet/foldable AVD.
+
+  Recents, which this item was grouped with, remains open and untouched.
+
 ## Next
-
-### 1. A guarded screen can sit unguarded because the harvest comes back empty
-
-**The headline case: the device admin list is not guarded.** It names this app, so it should hit
-the `SELF_IN_SETTINGS` catch-all — and it does not. Reproduced repeatedly on an android-36
-emulator: the list sits open showing our own row, service bound and subscribed, guard idle.
-
-This is *not* an event-delivery problem, which is what it looks like at first. Instrumenting
-`onAccessibilityEvent` showed the event arrives normally
-(`pkg=com.android.settings type=32`, i.e. `TYPE_WINDOW_STATE_CHANGED`). The failure is entirely
-in the harvest. Two distinct causes were measured, and only the first is fixed:
-
-**(a) `rootInActiveWindow` is null — fixed.** On a settings task restored from the background it
-returns null and *stays* null: still null 2s after the screen was drawn and interactive. Every
-logging and evaluation path sat behind `root != null`, so the guard was silent rather than
-visibly failing. Fixed by falling back to enumerating `windows` for a root matching the event's
-package (`ScreenGuardService.rootFor`), plus `RescanSchedule` to take a second look after the
-events stop. `flagRetrieveInteractiveWindows` was already set, so this cost no new capability.
-
-**(b) The node tree lacks the list rows — open, and this is what still breaks the case above.**
-With (a) fixed the re-looks now run against a real tree, and the tree is *still* wrong: the
-device-admin list harvests only `content_parent`, `collapsing_toolbar`, `recycler_view` — the
-chrome, with no row nodes at all — at 400 ms, 1 s and 2 s after the event, while a `uiautomator`
-dump of the same moment plainly shows the "Holy Blocker" row. So this is not slow rendering and
-no amount of waiting fixes it; the tree we are handed genuinely does not contain the rows.
-
-Unresolved. **Run the `empty harvest` diagnostic first** — `ScreenGuardService.logEmptyHarvest`
-fires on exactly this condition and discriminates all three candidates below in one dump
-(`windows=` count, `declared=` vs `fetched=` child counts). Do not write a fix before reading it.
-
-Candidates, re-ordered by likelihood after review:
-
-- **`importantForAccessibility` filtering — the leading candidate.**
-  `flagIncludeNotImportantViews` is **not** set in `accessibility_service_config.xml`, but
-  `uiautomator` sets it on its own service info. So "a `uiautomator` dump shows the row" is *not*
-  evidence the row is reachable by this service — it is weak evidence of the opposite, and the
-  central comparison this item was built on does not hold. A `declared > fetched` gap in the
-  diagnostic confirms it. Cheapest possible fix (one XML attribute), but it widens what the
-  service ingests on every app, so probe it on the emulator before deciding how to ship it.
-- **`getChild()` returning null.** `collectIdentity` skips null children silently, so a node
-  reporting `childCount > 0` whose children never materialise reads as an empty subtree. This is
-  a distinct fetch failure from the above and needs its own handling.
-- **Wrong window** — first package match in `windows` rather than the active one. Ranked last,
-  not first: see item 2 for why this cannot produce chrome-with-no-rows. `windows=1` in the
-  diagnostic rules it out entirely.
-- `AccessibilityNodeInfo.refresh()` on the root — probably a red herring. It re-fetches *that
-  node's* properties; it does not make a filtered-out subtree appear.
-
-The `texts=` count now in the `settings screen` debug log is the signal to work from: an empty
-harvest on a visibly populated screen is this bug, and is otherwise indistinguishable from a
-screen that simply did not match.
-
-Note this weakens the catch-all generally, not just for the device-admin list — `mentionsSelf`
-cannot fire on a tree with no text in it, on any screen where the harvest comes back empty.
-
-### 2. Split-screen harvests the wrong window
-
-**The description below originally said `guardSettingsScreen` harvests from `rootInActiveWindow`.
-That has not been true since 1(a) landed** — it goes through `currentScreenIdentity` → `rootFor`,
-which already enumerates `windows` filtered by package. The stale wording survived here long
-enough to mislead a later planning pass into treating this item and 1(b) as the same bug. They
-are not; see below.
-
-The real remaining gap is narrower: `rootFor` takes the *first* window whose root matches the
-package, which is not necessarily the event's own window. In split screen two Settings-adjacent
-windows can coexist, so the guard can evaluate the wrong one, `mentionsSelf` fails, and the
-app-label catch-all §7 calls load-bearing silently does nothing.
-
-**Not a suspect for 1(b).** A wrong-window pick cannot produce the observed harvest: `rootFor`
-already filters by package, and the ids that came back (`content_parent`, `collapsing_toolbar`,
-`recycler_view`) are Settings' own chrome for that screen. Chrome present with zero rows is a
-fetch failure inside the right window, not the wrong window. A stale background Settings window
-would carry the *previous* screen's rows, not none. Verify with the `windows=` count in the
-`empty harvest` log before spending any effort here.
-
-Fix: resolve the root for the event's own window via `getWindows()` / `event.windowId`, falling
-back to `rootInActiveWindow`. **Note this mechanism is unavailable on the re-look path** —
-`evaluateCurrentScreen` is deliberately event-less, so there is no `windowId` to match; it needs
-a separate criterion (prefer `isActive`/`isFocused` among matches).
-
-Do **not** "evaluate every window belonging to a watched package" without also fixing the action:
-`applyDecision` fires `performGlobalAction(GLOBAL_ACTION_BACK)`, which is global and lands on the
-*focused* window. Matching a non-focused Settings pane would press BACK in whatever app the user
-is actually using, and would never dismiss the pane that matched, so it loops until the bound
-trips — ~3.6 s of stray BACK presses, then a cover over the innocent app. Gate `BackOut` on the
-matched window being focused; cover instead when it is not.
-
-`flagRetrieveInteractiveWindows` is already set in `accessibility_service_config.xml`, so the
-capability is paid for.
-
-Keep the decision in `SettingsGuard` (pass a list of `ScreenIdentity`, return the strongest
-decision) so it stays JVM-testable — but this is not just a signature change. `evaluate` mutates
-`consecutiveBackOuts`, `lastSurface` and `lastBackOutAtMillis` on every call, so iterating a list
-through it breaks the one-decision-per-event invariant in both directions: N identities burn N
-increments and hit `MAX_CONSECUTIVE_BACK_OUTS` within about two events, while two windows matching
-two *different* surfaces alternate `lastSurface` and reset the bound forever, so it never trips.
-The note under "checked and found not to be holes" that calls alternating surfaces safe holds
-only for the single-screen case.
-
-`match()` is already a pure private function, so the shape is: match every identity, merge, then
-call the counter-updating decision **once**. Define "strongest" carefully — `CoverOnly` is the
-*give-up* state, weaker enforcement than `BackOut` despite being the escalation, so ranking it
-higher lets one window's exhausted budget silence a window that still has one.
 
 ### 3. `app_name` must never be localised
 

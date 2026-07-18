@@ -12,6 +12,16 @@ data class ScreenIdentity(
     val className: String?,
     val resourceIds: Set<String> = emptySet(),
     val texts: List<String> = emptyList(),
+    /**
+     * Whether the window this was harvested from holds input focus.
+     *
+     * Load-bearing for the decision, not descriptive: `GLOBAL_ACTION_BACK` takes
+     * no window argument and lands on whatever is focused, so backing out of an
+     * unfocused match would press BACK inside the app the user is actually
+     * using. Defaults true because the single-window case — every screen outside
+     * split screen — is exactly that.
+     */
+    val windowFocused: Boolean = true,
 )
 
 /** A screen whose purpose is removing the guard. */
@@ -304,6 +314,25 @@ class SettingsGuard(
             // The user left, so any loop we were in has ended.
             resetBound()
             return GuardDecision.Ignore
+        }
+
+        // A guarded screen we cannot back out of, because the back action would
+        // land somewhere else entirely.
+        //
+        // `GLOBAL_ACTION_BACK` takes no window argument; it goes to the focused
+        // window. In split screen the matched settings pane need not be the
+        // focused one, and firing BACK then presses it inside whatever app the
+        // user is actually driving while never dismissing the pane that matched.
+        // Left to run, that repeats until the bound trips — roughly 3.6s of stray
+        // BACK presses in an innocent app, ending in a cover anyway.
+        //
+        // Deliberately before the bookkeeping below: covering is not an attempt
+        // at leaving, so it must not consume the back-out budget. A pane parked
+        // unfocused in split screen would otherwise exhaust the budget without a
+        // single BACK being sent, leaving the guard degraded for the moment the
+        // user finally focuses it.
+        if (!screen.windowFocused) {
+            return GuardDecision.CoverOnly(surface)
         }
 
         val sinceLast = nowMillis - lastBackOutAtMillis

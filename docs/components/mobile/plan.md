@@ -40,6 +40,9 @@ The MVP builds that Layer 2 text path, and nothing else.
 - `policy/SettingsGuard.kt` — blocks the screens that would remove the guard — **Done** for the
   AOSP profile, verified on an android-36 arm64 emulator, device-admin identifiers included.
   Xiaomi and Samsung have no profile at all.
+- `policy/WindowResolver.kt` — picks which window the guard evaluates — **Done.** Event window
+  id first, then focused, then active, then first match. Unit tested on the JVM; the
+  two-pane split-screen case it exists for is **not** device-verified — see step 8 below.
 - `policy/ReleaseSchedule.kt` — request → cooldown → window timing, monotonic — **Done.**
 - `GuardSuspension.kt` — storage edge for the exit path — **Done.**
 - `VpnService` DNS/SNI filter — not yet created.
@@ -449,17 +452,42 @@ scaffolding and will fail at load time if they fall out of sync with the `.so`.
    uninstall refused (`DELETE_FAILED_DEVICE_POLICY_MANAGER`) on an android-36 emulator. The
    `DeviceAdminAdd` identifier is confirmed, and the screen turned out to need resource-id
    matching rather than the class; see §7.
-7. **The empty harvest** ([backlog.md](backlog.md) item 1b) — the catch-all cannot fire on a tree
-   with no text in it, which currently leaves the device admin list unguarded and silently
-   weakens `mentionsSelf` on *any* screen that harvests empty. Evidence first: the
-   `empty harvest` diagnostic in `ScreenGuardService` discriminates the causes, and the leading
-   one is `flagIncludeNotImportantViews` being unset rather than anything to do with windows.
-   Scoped deliberately to exclude split screen — an earlier pass treated the two as one bug on
-   the strength of a stale backlog line, and they are not related.
-8. Split-screen window resolution, then recents (§7 and [backlog.md](backlog.md) item 2) — the
-   bypasses that go around step 5 rather than defeating it. Ranked after step 7 because it needs
-   deliberate user intent, while the empty harvest needs none. Note `GLOBAL_ACTION_BACK` is
-   global, so multi-window evaluation needs the action fixed before the matching is widened.
+7. ~~**The empty harvest** ([backlog.md](backlog.md) item 1b).~~ **Done** — the cause was
+   `accessibilityDataSensitive` (Android 14 / API 34), not the node walk. Settings marks the
+   device-admin rows sensitive, and the framework serves those only to services declaring
+   `isAccessibilityTool`; `uiautomator` sees them because UiAutomation is exempt, which is why
+   the dump comparison read as evidence of view filtering and was not. Verified on an android-36
+   arm64 emulator: the list now backs out via `SELF_IN_SETTINGS`, the accessibility list and our
+   App Info still do, and ten unrelated settings screens still do not.
+
+   Both candidates ranked above it were disproven by measurement, and the ranking should be read
+   as a caution rather than a record: `flagIncludeNotImportantViews` grew the tree from 5 to 16
+   nodes without yielding one row and is **not** set; `refresh()` left `childCount` at 0, so it
+   was not a stale node cache; and `declared == fetched` does not distinguish an absent subtree
+   from a withheld one, because the framework applies both filtering mechanisms before reporting
+   `childCount` at all.
+
+   `isAccessibilityTool` is also a Play policy declaration — it asserts the service assists users
+   with disabilities. Accepted knowingly: short of Device Owner, which §7 rules out permanently,
+   nothing else reaches those rows.
+8. ~~Split-screen window resolution (§7 and [backlog.md](backlog.md) item 2).~~ **Done, with a
+   verification gap — read this before trusting it.** `WindowResolver` picks the event's own
+   window by `event.windowId`, falling back to focused, then active, then first match; the
+   event-less re-look path has no id and relies on that fallback. `GLOBAL_ACTION_BACK` is global
+   and lands on the focused window, so `SettingsGuard.evaluate` now degrades an unfocused match
+   to `CoverOnly` rather than pressing BACK inside whatever app the user is actually driving —
+   and does so without consuming the back-out budget, since covering is not an attempt at
+   leaving.
+
+   **Unit tested, not device-verified.** 12 JVM tests cover the selection order and the focus
+   gate. On device, only the single-window path was exercised: all guarded screens still act,
+   unrelated ones still do not, and the harvest reports `focused=true`. Genuine two-app split
+   screen could not be driven on the android-36 phone AVD through adb — neither
+   `--windowingMode 6` nor freeform produced two independent app windows. **The real two-pane
+   case therefore rests on unit tests alone and should be confirmed by hand**, on hardware or a
+   tablet/foldable AVD, before this is treated as closed.
+
+   Recents remains untouched and is still open.
 9. **Tamper log** — append-only local record of guard-state transitions and removal attempts.
    The backstop for what steps 5–8 cannot prevent (guest user, safe mode, adb); entries must
    survive the app being disabled.
