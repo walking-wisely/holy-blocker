@@ -182,6 +182,21 @@ object SettingsProfiles {
                 requiresSelfMention = true,
             ),
         ),
+        // DeviceAdminAdd's own view ids, dumped from the emulator. Unlike every
+        // other screen in this profile, this one cannot be matched by class:
+        // opening it emits events carrying android.widget.FrameLayout, and the
+        // activity class arrives only on a later event that is not always sent.
+        //
+        // Matching by id matters more here than anywhere else, because this is
+        // the one guarded screen that is sometimes *exempt* — see isDeviceAdmin-
+        // Active in SettingsGuard. An exemption that fails to identify the
+        // screen does not fail open, it fails into the self-mention catch-all
+        // and blocks activation entirely.
+        resourceIdSurfaces = mapOf(
+            "com.android.settings:id/admin_name" to GuardedSurface.DEVICE_ADMIN_SETTINGS,
+            "com.android.settings:id/add_msg" to GuardedSurface.DEVICE_ADMIN_SETTINGS,
+            "com.android.settings:id/admin_warning" to GuardedSurface.DEVICE_ADMIN_SETTINGS,
+        ),
     )
 
     /**
@@ -222,6 +237,14 @@ class SettingsGuard(
     private val profile: SettingsProfile?,
     private val selfPackage: String,
     private val selfLabel: String,
+    /**
+     * Whether our `DeviceAdminReceiver` is currently active.
+     *
+     * A supplier rather than a value because the guard is built once in
+     * `onServiceConnected` and the admin is normally enabled later, from
+     * onboarding. See [match] for what it gates.
+     */
+    private val isDeviceAdminActive: () -> Boolean,
 ) {
     private var lastSurface: GuardedSurface? = null
     private var consecutiveBackOuts = 0
@@ -334,17 +357,38 @@ class SettingsGuard(
         // and most precise signal — and unlike Settings' visible copy it does
         // not change with the device language.
         screen.resourceIds.firstNotNullOfOrNull { profile.resourceIdSurfaces[it] }
-            ?.let { return it }
+            ?.let { return exempt(it) }
 
         profile.screens
             .firstOrNull { it.className == screen.className && (!it.requiresSelfMention || mentionsSelf(screen)) }
-            ?.let { return it.surface }
+            ?.let { return exempt(it.surface) }
 
         // Last resort, and the one that actually holds: the activity class is
         // only on window-state events and those are not always delivered, so a
         // screen naming us is treated as guarded whatever class it reports.
         return if (mentionsSelf(screen)) GuardedSurface.SELF_IN_SETTINGS else null
     }
+
+    /**
+     * Drops the one surface that is conditional.
+     *
+     * `DeviceAdminAdd` is a single activity serving both directions: it is the
+     * activation prompt while the admin is off and the deactivation prompt once
+     * it is on. Guarding it unconditionally would eject the user from the only
+     * screen that can enable the admin, so the feature could never be turned on.
+     *
+     * Applied to *identified* surfaces only, and returning null rather than
+     * letting the caller fall through, because this screen names the app: the
+     * self-mention catch-all would otherwise re-guard it as `SELF_IN_SETTINGS`
+     * and the exemption would be silently dead. That is not a hypothetical — it
+     * is what the first version of this did on a real device.
+     */
+    private fun exempt(surface: GuardedSurface): GuardedSurface? =
+        if (surface == GuardedSurface.DEVICE_ADMIN_SETTINGS && !isDeviceAdminActive()) {
+            null
+        } else {
+            surface
+        }
 
     private fun mentionsSelf(screen: ScreenIdentity): Boolean =
         screen.texts.any { it.contains(selfLabel, ignoreCase = true) || it.contains(selfPackage) }

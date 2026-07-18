@@ -1,6 +1,7 @@
 package com.holyblocker.mobile
 
 import android.app.Activity
+import android.app.admin.DevicePolicyManager
 import android.content.Intent
 import android.graphics.Color
 import android.os.Build
@@ -12,6 +13,7 @@ import android.view.ViewGroup
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
+import com.holyblocker.mobile.admin.HolyBlockerAdminReceiver
 import com.holyblocker.mobile.policy.AccessibilityServiceStatus
 import com.holyblocker.mobile.policy.ReleasePhase
 import com.holyblocker.mobile.policy.SettingsProfiles
@@ -28,6 +30,8 @@ class MainActivity : Activity() {
     private lateinit var coverage: TextView
     private lateinit var open: Button
     private lateinit var release: Button
+    private lateinit var adminStatus: TextView
+    private lateinit var admin: Button
     private lateinit var suspension: GuardSuspension
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -46,6 +50,18 @@ class MainActivity : Activity() {
                 suspension.requestRelease()
                 refresh()
             }
+        }
+
+        adminStatus = TextView(this).apply { textSize = 18f }
+
+        // Only ever offers activation. Deactivation is deliberately not mirrored
+        // here: it belongs to the system screen, which is guarded like every
+        // other removal path and reachable through the timed release. A
+        // deactivate button beside it would be the same one-tap bypass the
+        // release flow was reshaped to remove.
+        admin = Button(this).apply {
+            text = getString(R.string.action_enable_admin)
+            setOnClickListener { startActivity(addAdminIntent()) }
         }
 
         val hint = TextView(this).apply {
@@ -79,6 +95,8 @@ class MainActivity : Activity() {
                 addView(coverage)
                 addView(open)
                 addView(release)
+                addView(adminStatus)
+                addView(admin)
                 addView(hint)
             },
             ViewGroup.LayoutParams(
@@ -129,7 +147,33 @@ class MainActivity : Activity() {
         // otherwise is worse off than one who knows.
         val supported = SettingsProfiles.forManufacturer(Build.MANUFACTURER) != null
         coverage.text = if (supported) "" else getString(R.string.status_device_unsupported)
+
+        val adminOn = HolyBlockerAdminReceiver.isActive(this)
+        adminStatus.text =
+            getString(if (adminOn) R.string.admin_status_on else R.string.admin_status_off)
+        // Nothing to offer once it is on — the way back out is the system screen.
+        admin.visibility = if (adminOn) View.GONE else View.VISIBLE
     }
+
+    /**
+     * The system activation prompt.
+     *
+     * `EXTRA_DEVICE_ADMIN` is required: without a real receiver named here the
+     * screen cannot be opened at all, which is why the `DeviceAdminAdd` entry in
+     * [SettingsProfiles] could not be verified before this receiver existed.
+     * https://developer.android.com/reference/android/app/admin/DevicePolicyManager#ACTION_ADD_DEVICE_ADMIN
+     */
+    private fun addAdminIntent(): Intent =
+        Intent(DevicePolicyManager.ACTION_ADD_DEVICE_ADMIN).apply {
+            putExtra(
+                DevicePolicyManager.EXTRA_DEVICE_ADMIN,
+                HolyBlockerAdminReceiver.componentName(this@MainActivity),
+            )
+            putExtra(
+                DevicePolicyManager.EXTRA_ADD_EXPLANATION,
+                getString(R.string.admin_add_explanation),
+            )
+        }
 
     private fun isServiceEnabled(): Boolean = AccessibilityServiceStatus.isEnabled(
         enabledServicesSetting = Settings.Secure.getString(
