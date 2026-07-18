@@ -19,22 +19,57 @@ Anything requiring Device Owner is out of scope permanently — see plan.md §7.
 - ~~**Uninstall dialog was unwatched.**~~ Reproduced on device: launcher long-press → Uninstall
   lands in `com.google.android.packageinstaller`, which `watchesPackage` did not cover, so the
   guard never saw it. **Fixed** — installer packages are watched on a self-mention-only path.
+- ~~**`DeviceAdminReceiver` — the other half of the uninstall fix.**~~ **Built** — `adb uninstall`
+  now returns `DELETE_FAILED_DEVICE_POLICY_MANAGER` while the admin is active, verified on an
+  android-36 emulator. The `DeviceAdminAdd` entry it was blocking is confirmed as a real class,
+  but is **not** matched by class: the screen arrives as `android.widget.FrameLayout` and the
+  activity class only lands on a later, unreliable event. Matching moved to the
+  `admin_name` / `add_msg` / `admin_warning` resource ids, and `SettingsGuard` now exempts that
+  surface while the admin is inactive — without which the guard backed the user out of the only
+  screen that can turn the admin on. See [plan.md](plan.md) §7.
 
 ## Next
 
-### 1. `DeviceAdminReceiver` — the other half of the uninstall fix
+### 1. A guarded screen can sit unguarded because the harvest comes back empty
 
-With an admin active, Android refuses the uninstall outright ("must be deactivated before
-uninstalling"). Framework behaviour, not a policy call, so it survives the device-admin
-deprecation and needs no owner privileges. Highest-value unbuilt item.
+**The headline case: the device admin list is not guarded.** It names this app, so it should hit
+the `SELF_IN_SETTINGS` catch-all — and it does not. Reproduced repeatedly on an android-36
+emulator: the list sits open showing our own row, service bound and subscribed, guard idle.
 
-Also the only way to verify the `DeviceAdminAdd` entry in `SettingsProfiles.AOSP`, which is
-currently an unconfirmed guess — the screen needs `EXTRA_DEVICE_ADMIN` naming a real receiver
-before it can be opened at all.
+This is *not* an event-delivery problem, which is what it looks like at first. Instrumenting
+`onAccessibilityEvent` showed the event arrives normally
+(`pkg=com.android.settings type=32`, i.e. `TYPE_WINDOW_STATE_CHANGED`). The failure is entirely
+in the harvest. Two distinct causes were measured, and only the first is fixed:
 
-Includes `onDisableRequested()`, which fires after the user confirms deactivation but before it
-takes effect — the last reliable moment to record the event. Warning only; never obstruct
-beyond that (plan.md §7).
+**(a) `rootInActiveWindow` is null — fixed.** On a settings task restored from the background it
+returns null and *stays* null: still null 2s after the screen was drawn and interactive. Every
+logging and evaluation path sat behind `root != null`, so the guard was silent rather than
+visibly failing. Fixed by falling back to enumerating `windows` for a root matching the event's
+package (`ScreenGuardService.rootFor`), plus `RescanSchedule` to take a second look after the
+events stop. `flagRetrieveInteractiveWindows` was already set, so this cost no new capability.
+
+**(b) The node tree lacks the list rows — open, and this is what still breaks the case above.**
+With (a) fixed the re-looks now run against a real tree, and the tree is *still* wrong: the
+device-admin list harvests only `content_parent`, `collapsing_toolbar`, `recycler_view` — the
+chrome, with no row nodes at all — at 400 ms, 1 s and 2 s after the event, while a `uiautomator`
+dump of the same moment plainly shows the "Holy Blocker" row. So this is not slow rendering and
+no amount of waiting fixes it; the tree we are handed genuinely does not contain the rows.
+
+Unresolved. Candidates worth testing, cheapest first:
+
+- `AccessibilityNodeInfo.refresh()` on the root before walking — the tree may be a stale snapshot.
+- Fetching the root from the **active/focused** window specifically rather than the first
+  package match in `windows`; a backgrounded settings window from earlier in the same task would
+  present exactly this shape (correct chrome, no current rows).
+- Whether the `RecyclerView` children need `getChild()` to be driven differently to force the
+  fetch, or are gated by `importantForAccessibility`.
+
+The `texts=` count now in the `settings screen` debug log is the signal to work from: an empty
+harvest on a visibly populated screen is this bug, and is otherwise indistinguishable from a
+screen that simply did not match.
+
+Note this weakens the catch-all generally, not just for the device-admin list — `mentionsSelf`
+cannot fire on a tree with no text in it, on any screen where the harvest comes back empty.
 
 ### 2. Split-screen harvests the wrong window
 
@@ -43,11 +78,19 @@ harvests text from `rootInActiveWindow` — the *focused* window. In split scree
 a Settings event gets the other app's node tree, `mentionsSelf` fails, and the app-label
 catch-all that §7 calls load-bearing silently does nothing.
 
+Overlaps item 1(a), which added a `windows` fallback for the *null-root* case only. That fallback
+takes the first window whose root matches the package, which is not the same as taking the
+event's own window — so split screen is still wrong, and picking the wrong window there is a
+live suspect for 1(b).
+
 Fix: resolve the root for the event's own window via `getWindows()` / `event.windowId`, falling
 back to `rootInActiveWindow`. Better still, evaluate every window belonging to a watched package
 — that closes freeform and picture-in-picture by the same change. `flagRetrieveInteractiveWindows`
-is already set in `accessibility_service_config.xml` and `getWindows()` is never called, so the
-capability is already paid for.
+is already set in `accessibility_service_config.xml`, so the capability is already paid for.
+
+`ScreenGuardService.rootFor` now reads `windows`, but only to recover from a null
+`rootInActiveWindow` — it takes the first window whose root matches the package, which is not the
+event's window. That leaves split screen wrong, and is a live suspect for 1(b).
 
 Keep the decision in `SettingsGuard` (pass a list of `ScreenIdentity`, return the strongest
 decision) so it stays JVM-testable.

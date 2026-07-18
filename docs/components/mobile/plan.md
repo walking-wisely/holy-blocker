@@ -38,13 +38,15 @@ The MVP builds that Layer 2 text path, and nothing else.
 - `scripts/build-ffi.sh` — Kotlin bindings + per-ABI `.so` — **Done.**
 - `scripts/smoke-test.sh` — end-to-end device check — **Done** (passes on android-36 arm64).
 - `policy/SettingsGuard.kt` — blocks the screens that would remove the guard — **Done** for the
-  AOSP profile, verified on an android-36 arm64 emulator. Device-admin identifiers are present
-  but **unverified**; Xiaomi and Samsung have no profile at all.
+  AOSP profile, verified on an android-36 arm64 emulator, device-admin identifiers included.
+  Xiaomi and Samsung have no profile at all.
 - `policy/ReleaseSchedule.kt` — request → cooldown → window timing, monotonic — **Done.**
 - `GuardSuspension.kt` — storage edge for the exit path — **Done.**
 - `VpnService` DNS/SNI filter — not yet created.
 - `MediaProjection` capture + image path — not yet created.
-- `DeviceAdminReceiver` / tamper log — not yet created. See [backlog.md](backlog.md).
+- `admin/HolyBlockerAdminReceiver.kt` — device admin, so uninstall is refused until it is
+  deactivated — **Done**, verified on an android-36 arm64 emulator.
+- Tamper log — not yet created. See [backlog.md](backlog.md).
 
 Known bypasses that remain open are tracked in **[backlog.md](backlog.md)**, ranked by how
 little effort they take. Read it before extending the guard — several plausible-looking
@@ -169,7 +171,7 @@ or the image model — is pure logic and gets unit tests like the rest of the de
 - [`MediaProjectionManager`](https://developer.android.com/reference/android/media/projection/MediaProjectionManager)
 - [Foreground service types](https://developer.android.com/develop/background-work/services/fgs/service-types) — the `mediaProjection` type and its start-order requirement
 
-### 7. Tamper resistance — not yet created
+### 7. Tamper resistance — partially built
 
 #### Device Owner is not available to this product
 
@@ -200,6 +202,23 @@ Two things survive, and both are worth having:
   sideloaded app, so the *grant* needs the device PIN.
 - **`onDisableRequested()`** fires after the user confirms deactivation but before it takes
   effect, and may return a warning string. It is the last reliable moment to record the event.
+
+Both are built (`admin/HolyBlockerAdminReceiver`) and verified on an `android-36` emulator:
+`adb uninstall` returns `DELETE_FAILED_DEVICE_POLICY_MANAGER` while the admin is active. The
+receiver declares **no** `<uses-policies>` — neither property needs one, and every tag declared
+would ask the user to grant a power the product never exercises.
+
+**`DeviceAdminAdd` is one activity for both directions**, and this is the trap in guarding it.
+It is the activation prompt while the admin is off and the deactivation prompt once it is on, so
+guarding it unconditionally makes the feature impossible to enable. `SettingsGuard` therefore
+exempts that surface while `isDeviceAdminActive()` is false.
+
+The exemption cannot be keyed on the activity class. Opening the prompt emits events carrying
+`android.widget.FrameLayout`; the real class arrives only on a later event that is not reliably
+sent. A class-keyed exemption silently misses, the screen falls through to the `SELF_IN_SETTINGS`
+catch-all, and the guard ejects the user from the screen that turns the admin on — observed on
+device, not theorised. The match is keyed on `admin_name` / `add_msg` / `admin_warning` resource
+ids instead, which are present on every event for that screen.
 
 #### The accessibility service is the enforcement mechanism
 
@@ -421,12 +440,15 @@ scaffolding and will fail at load time if they fall out of sync with the `.so`.
    with unrecognised-device reporting, bounded back-action, and the timed in-app disable.~~
    **Done** — AOSP profile verified on an android-36 arm64 emulator: the accessibility list and
    our App Info are blocked consistently, ten unrelated settings screens are not, and the timed
-   disable both releases the guard and resumes when it expires. Device admin identifiers are
-   present but **unverified** — the screen needs `EXTRA_DEVICE_ADMIN` naming a receiver that does
-   not exist yet, so confirm them in step 7. Xiaomi profile still to be added.
-6. Device Admin — `DeviceAdminReceiver` for uninstall friction, plus an `onDisableRequested`
+   disable both releases the guard and resumes when it expires. Device admin identifiers were
+   confirmed in step 6, once a receiver existed to open the screen with. Xiaomi profile still to
+   be added.
+6. ~~Device Admin — `DeviceAdminReceiver` for uninstall friction, plus an `onDisableRequested`
    warning. Plain admin only; no owner-only calls. Also the only way to verify the
-   `DeviceAdminAdd` identifier, which cannot be reached until a receiver exists.
+   `DeviceAdminAdd` identifier, which cannot be reached until a receiver exists.~~ **Done** —
+   uninstall refused (`DELETE_FAILED_DEVICE_POLICY_MANAGER`) on an android-36 emulator. The
+   `DeviceAdminAdd` identifier is confirmed, and the screen turned out to need resource-id
+   matching rather than the class; see §7.
 7. Split-screen window resolution, then recents (§7 and [backlog.md](backlog.md)) — the bypasses
    that go around step 5 rather than defeating it.
 8. **Tamper log** — append-only local record of guard-state transitions and removal attempts.

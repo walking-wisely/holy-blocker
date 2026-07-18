@@ -2,13 +2,17 @@ package com.holyblocker.mobile
 
 import android.accessibilityservice.AccessibilityService
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import com.holyblocker.mobile.admin.HolyBlockerAdminReceiver
 import com.holyblocker.mobile.policy.CoverState
 import com.holyblocker.mobile.policy.GateOutcome
 import com.holyblocker.mobile.policy.GuardDecision
 import com.holyblocker.mobile.policy.NativeTextPolicy
+import com.holyblocker.mobile.policy.RescanSchedule
 import com.holyblocker.mobile.policy.ScanGate
 import com.holyblocker.mobile.policy.ScreenIdentity
 import com.holyblocker.mobile.policy.SettingsGuard
@@ -31,6 +35,22 @@ class ScreenGuardService : AccessibilityService() {
     private var suspension: GuardSuspension? = null
     private var appliedSuspensionUntil = 0L
 
+    private val rescan = RescanSchedule()
+    private val handler = Handler(Looper.getMainLooper())
+
+    /**
+     * The deferred second look at a screen whose events fired before it had
+     * finished populating. See [RescanSchedule] for why this is necessary.
+     */
+    // Type is explicit because the body reposts itself, which Kotlin cannot
+    // infer through.
+    private val rescanTask: Runnable = Runnable {
+        val matched = evaluateCurrentScreen()
+        if (!matched) {
+            rescan.onRescanMissed()?.let { handler.postDelayed(rescanTask, it) }
+        }
+    }
+
     override fun onServiceConnected() {
         super.onServiceConnected()
         val engine = NativeTextPolicy.withBuiltinDictionary()
@@ -44,6 +64,10 @@ class ScreenGuardService : AccessibilityService() {
             profile = profile,
             selfPackage = packageName,
             selfLabel = getString(R.string.app_name),
+            // Queried per event, not captured: the admin is normally activated
+            // from onboarding well after this service connects, and until it is
+            // the activation screen must stay reachable.
+            isDeviceAdminActive = { HolyBlockerAdminReceiver.isActive(this) },
         )
         if (profile == null) {
             // Not a failure to hide: on an unrecognised build the settings
@@ -109,47 +133,154 @@ class ScreenGuardService : AccessibilityService() {
             // somewhere else, otherwise tapping straight back into the settings
             // screen falls inside the window and is ignored.
             guard.onUnguardedScreen()
+            cancelRescan()
             return false
         }
 
         syncSuspension(guard)
 
-        val root = rootInActiveWindow ?: return false
+        val identity = currentScreenIdentity(packageName, event.className?.toString())
+        val acted = identity != null && applyDecision(guard, identity, overlay)
+
+        if (acted) {
+            cancelRescan()
+            return true
+        }
+
+        // Two different misses, both needing the same answer: look again later.
+        //
+        // Either nothing matched — the tree may still be filling in — or there
+        // was no tree to walk at all. The second is not an edge case:
+        // rootInActiveWindow is routinely null on the window-state event for a
+        // screen that is still being brought forward, and on an android-36
+        // emulator re-entering the settings task delivers exactly one event, in
+        // exactly that state. Returning here without arming the re-look is what
+        // left the device-admin list unguarded indefinitely.
+        //
+        // Each event restarts the wait, so a render burst costs one deferred
+        // look rather than one per event.
+        rescan.onWatchedEvent()?.let { scheduleRescan(it) }
+        return acted
+    }
+
+    /**
+     * Re-evaluates whatever is on screen now, with no event to describe it.
+     *
+     * Driven by [rescanTask] to catch screens that finished populating after
+     * their events had already fired. Returns whether the guard acted.
+     */
+    private fun evaluateCurrentScreen(): Boolean {
+        val guard = settingsGuard ?: return false
+        val overlay = overlay ?: return false
+        val packageName = foregroundPackage() ?: return false
+
+        if (!guard.watchesPackage(packageName)) {
+            guard.onUnguardedScreen()
+            return false
+        }
+
+        syncSuspension(guard)
+
+        // className is null on purpose: there is no event to carry it, and the
+        // root node reports a view class rather than the activity. That costs
+        // nothing worth having — the class is the unreliable signal here, while
+        // resource ids and the self-mention catch-all both still apply.
+        val identity = currentScreenIdentity(packageName, className = null) ?: return false
+        return applyDecision(guard, identity, overlay)
+    }
+
+    /**
+     * The node tree for [packageName], preferring the active window.
+     *
+     * `rootInActiveWindow` alone is not enough. Returning to a backgrounded
+     * settings task leaves it null indefinitely — measured on an android-36
+     * emulator, still null two seconds after the screen was fully drawn and
+     * interactive — so a guard that only reads it never sees that screen at all.
+     * Enumerating windows finds the tree that is genuinely there.
+     *
+     * `flagRetrieveInteractiveWindows` is already set in
+     * `accessibility_service_config.xml`, so this costs no new capability.
+     */
+    /**
+     * Which app the user is looking at, for a re-look that has no event to ask.
+     *
+     * Falls back to the window list for the same reason as [rootFor]: on a
+     * restored task `rootInActiveWindow` is null, and that is exactly when the
+     * deferred look needs to work.
+     */
+    private fun foregroundPackage(): String? =
+        rootInActiveWindow?.packageName?.toString()
+            ?: windows.firstOrNull { it.isActive }?.root?.packageName?.toString()
+
+    private fun rootFor(packageName: String): AccessibilityNodeInfo? {
+        rootInActiveWindow
+            ?.takeIf { it.packageName?.toString() == packageName }
+            ?.let { return it }
+
+        return windows.asSequence()
+            .mapNotNull { it.root }
+            .firstOrNull { it.packageName?.toString() == packageName }
+    }
+
+    private fun currentScreenIdentity(packageName: String, className: String?): ScreenIdentity? {
+        val root = rootFor(packageName) ?: return null
         val texts = mutableListOf<String>()
         val resourceIds = mutableSetOf<String>()
         collectIdentity(root, texts, resourceIds, depth = 0)
 
-        val identity = ScreenIdentity(
+        // Kept rather than removed after bring-up: this is how per-OEM
+        // identifiers get collected, and the docs point contributors at it.
+        // texts is a count, never the strings: the screen's contents stay on the
+        // screen. It is here because an empty harvest on a visibly populated
+        // screen is the signature of the node tree lagging the display, and
+        // without it that looks identical to a screen that simply did not match.
+        Log.d(
+            TAG,
+            "settings screen class=$className texts=${texts.size} ids=${resourceIds.take(12)}",
+        )
+
+        return ScreenIdentity(
             packageName = packageName,
-            className = event.className?.toString(),
+            className = className,
             resourceIds = resourceIds,
             texts = texts,
         )
+    }
 
-        // Kept rather than removed after bring-up: this is how per-OEM
-        // identifiers get collected, and the docs point contributors at it.
-        Log.d(TAG, "settings screen class=${identity.className} ids=${resourceIds.take(12)}")
-
-        return when (val decision = guard.evaluate(identity, System.currentTimeMillis())) {
-            is GuardDecision.BackOut -> {
-                Log.i(TAG, "backing out of ${decision.surface}")
-                // Clear first: leaving is the action, and a cover left behind
-                // would sit over whatever screen we land on.
-                overlay.apply(CoverState.CLEAR)
-                performGlobalAction(GLOBAL_ACTION_BACK)
-                true
-            }
-
-            is GuardDecision.CoverOnly -> {
-                // Backing out is not working — release navigation so a wrong
-                // matcher cannot make the device unusable, and cover instead.
-                Log.w(TAG, "back-out bound reached on ${decision.surface}; covering only")
-                overlay.apply(CoverState.COVER)
-                true
-            }
-
-            GuardDecision.Ignore -> false
+    /** Applies a guard decision. Returns whether it acted. */
+    private fun applyDecision(
+        guard: SettingsGuard,
+        identity: ScreenIdentity,
+        overlay: OverlayController,
+    ): Boolean = when (val decision = guard.evaluate(identity, System.currentTimeMillis())) {
+        is GuardDecision.BackOut -> {
+            Log.i(TAG, "backing out of ${decision.surface}")
+            // Clear first: leaving is the action, and a cover left behind
+            // would sit over whatever screen we land on.
+            overlay.apply(CoverState.CLEAR)
+            performGlobalAction(GLOBAL_ACTION_BACK)
+            true
         }
+
+        is GuardDecision.CoverOnly -> {
+            // Backing out is not working — release navigation so a wrong
+            // matcher cannot make the device unusable, and cover instead.
+            Log.w(TAG, "back-out bound reached on ${decision.surface}; covering only")
+            overlay.apply(CoverState.COVER)
+            true
+        }
+
+        GuardDecision.Ignore -> false
+    }
+
+    private fun scheduleRescan(delayMillis: Long) {
+        handler.removeCallbacks(rescanTask)
+        handler.postDelayed(rescanTask, delayMillis)
+    }
+
+    private fun cancelRescan() {
+        handler.removeCallbacks(rescanTask)
+        rescan.reset()
     }
 
     /** Picks up a release requested from the onboarding screen. */
@@ -229,6 +360,9 @@ class ScreenGuardService : AccessibilityService() {
     }
 
     private fun teardown() {
+        // Before the overlay and policy go: a queued re-look would otherwise run
+        // against a torn-down service and a closed policy engine.
+        cancelRescan()
         overlay?.destroy()
         overlay = null
         policy?.close()
