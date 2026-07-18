@@ -20,3 +20,7 @@ data/train/
 data/val/
 artifacts/
 .pytest_cache/
+# Dev-time credentials. .env.example is tracked; .env never is.
+.env
+.env.*
+!.env.example

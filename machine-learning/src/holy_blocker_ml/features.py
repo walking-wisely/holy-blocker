@@ -89,16 +89,116 @@ def map_source_label(
     return BINARY_LABELS.index(mapped) if mapped is not None else None
 
 
+class ArchiveLayoutError(RuntimeError):
+    """The archive's directory layout does not expose the expected classes."""
+
+
+@dataclass
+class ArchiveSummary:
+    """What a scan of the archive actually found, without decoding anything."""
+
+    total_members: int
+    image_members: int
+    matched: dict[str, int]
+    unmatched_images: int
+    unmatched_examples: list[str]
+    top_level: list[str]
+
+    def describe(self) -> str:
+        lines = [
+            f"members: {self.total_members} ({self.image_members} images)",
+            f"top-level entries: {', '.join(self.top_level) or '(none)'}",
+        ]
+        for name, count in sorted(self.matched.items()):
+            lines.append(f"  {name:<10}{count:>8}")
+        if self.unmatched_images:
+            lines.append(f"  unmatched images: {self.unmatched_images}")
+            lines += [f"    {example}" for example in self.unmatched_examples]
+        return "\n".join(lines)
+
+
+def _class_of(path: Path, known: set[str]) -> str | None:
+    """The first path component naming a known class, tolerating any nesting."""
+    return next((part for part in path.parts if part in known), None)
+
+
+def inspect_archive(
+    archive_path: Path,
+    classes: Iterable[str] = SOURCE_CLASSES,
+    example_limit: int = 5,
+) -> ArchiveSummary:
+    """Scan the archive's index without decoding images.
+
+    Cheap preflight: the published layout of a corpus is easy to get wrong, and
+    finding out after a full extraction pass is expensive.
+    """
+    known = set(classes)
+    matched: dict[str, int] = {}
+    unmatched_examples: list[str] = []
+    top_level: set[str] = set()
+    total = image_members = unmatched = 0
+
+    with zipfile.ZipFile(archive_path) as archive:
+        for info in archive.infolist():
+            if info.is_dir():
+                continue
+            total += 1
+            path = Path(info.filename)
+            if path.parts:
+                top_level.add(path.parts[0])
+            if path.suffix.lower() not in IMAGE_SUFFIXES:
+                continue
+
+            image_members += 1
+            name = _class_of(path, known)
+            if name is None:
+                unmatched += 1
+                if len(unmatched_examples) < example_limit:
+                    unmatched_examples.append(info.filename)
+            else:
+                matched[name] = matched.get(name, 0) + 1
+
+    return ArchiveSummary(
+        total_members=total,
+        image_members=image_members,
+        matched=matched,
+        unmatched_images=unmatched,
+        unmatched_examples=unmatched_examples,
+        top_level=sorted(top_level),
+    )
+
+
 def iter_zip_images(
     archive_path: Path,
     classes: Iterable[str] = SOURCE_CLASSES,
+    strict: bool = True,
 ) -> Iterator[tuple[Image.Image, str]]:
     """Yield (image, source class) from a zip without unpacking it.
 
     Members are decoded from an in-memory buffer, so no image file is ever
-    created. The class is taken from whichever path component matches a known
+    created. The class comes from whichever path component matches a known
     class name, which tolerates the archive's top-level directory nesting.
+
+    With `strict` (the default) an archive that exposes no recognisable class
+    raises instead of yielding nothing. A silent empty result would otherwise
+    surface as a confident report over zero samples.
     """
+    summary = inspect_archive(archive_path, classes)
+    if strict:
+        if summary.image_members == 0:
+            raise ArchiveLayoutError(
+                f"{archive_path} contains no image files "
+                f"({summary.total_members} members). Expected suffixes: "
+                f"{', '.join(sorted(IMAGE_SUFFIXES))}.\n{summary.describe()}"
+            )
+        if not summary.matched:
+            raise ArchiveLayoutError(
+                f"{archive_path} has {summary.image_members} images but none sit "
+                f"under a recognised class directory ({', '.join(sorted(classes))}). "
+                f"The layout likely differs from <root>/<class>/<image>; pass "
+                f"`classes=` to match it.\n{summary.describe()}"
+            )
+
     known = set(classes)
     with zipfile.ZipFile(archive_path) as archive:
         for info in archive.infolist():
@@ -107,7 +207,7 @@ def iter_zip_images(
             path = Path(info.filename)
             if path.suffix.lower() not in IMAGE_SUFFIXES:
                 continue
-            match = next((part for part in path.parts if part in known), None)
+            match = _class_of(path, known)
             if match is None:
                 continue
             with archive.open(info) as member:
@@ -161,11 +261,14 @@ def extract_features(
 
     flush()
 
-    stacked = (
-        np.concatenate(vectors, axis=0)
-        if vectors
-        else np.empty((0, BACKBONE_FEATURE_DIM), dtype=np.float32)
-    )
+    if not vectors:
+        raise ValueError(
+            f"extraction produced no samples ({dropped} dropped as unmapped). "
+            "Either the source yielded nothing or every class fell outside the "
+            f"policy: {sorted(policy)}"
+        )
+
+    stacked = np.concatenate(vectors, axis=0)
     return FeatureSet(
         features=stacked,
         labels=np.asarray(labels, dtype=np.int64),

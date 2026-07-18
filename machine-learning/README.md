@@ -53,16 +53,25 @@ vectors and deletes the source archive. After one pass the vectors are the
 permanent evaluation asset — every later run reads numbers, never pixels.
 
 ```bash
-# 1. Accept the terms at https://huggingface.co/datasets/deepghs/nsfw_detect
-#    (gating is automatic — no human review), then create a read token.
-export HF_TOKEN=hf_...
+cp .env.example .env      # then paste your token into it; .env is gitignored
 pip install -e ".[data]"
 
+holy-blocker-extract --inspect   # preflight: print the archive layout, extract nothing
 holy-blocker-extract --out data/eval/nsfw_detect.npz
 holy-blocker-eval --checkpoint artifacts/baseline-v0.pt --features data/eval/nsfw_detect.npz
 ```
 
 `--archive path/to.zip` skips the download if the file was fetched by hand.
+
+`HF_TOKEN` is read from `.env`, searched upward from the working directory so it
+resolves from either the repo root or `machine-learning/`. A real shell export
+always wins over the file. Copy `.env.example` to get the expected keys — it is
+the only tracked env file, and nothing in it is used by the shipped product.
+
+The archive's published layout is `<root>/<class>/<image>`, but that is
+unverified against the real download. If it differs, extraction **fails with the
+paths it actually found** rather than writing a confident report over zero
+samples — `--inspect` shows the same diagnostic without spending a full pass.
 
 The dataset's five classes collapse onto the binary decision via
 `features.DEFAULT_LABEL_POLICY`. That mapping *is* the FP/FN definition:

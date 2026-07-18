@@ -16,15 +16,17 @@ Access is gated with automatic approval:
 """
 
 import argparse
-import os
 from pathlib import Path
 
 from holy_blocker_ml.config import TrainingConfig
 from holy_blocker_ml.dataset import build_transform
+from holy_blocker_ml.env import load_dotenv, require_env
 from holy_blocker_ml.features import (
     DEFAULT_LABEL_POLICY,
+    ArchiveLayoutError,
     FeatureSet,
     extract_features,
+    inspect_archive,
     iter_zip_images,
     save_feature_set,
 )
@@ -35,11 +37,20 @@ DATASET_REPO = "deepghs/nsfw_detect"
 ARCHIVE_NAME = "nsfw_dataset_v1.zip"
 
 
-def download_archive(repo_id: str, filename: str, destination: Path) -> Path:
-    """Fetch the dataset archive from the Hub, failing loudly if ungated."""
-    from huggingface_hub import hf_hub_download
-    from huggingface_hub.errors import GatedRepoError
+GATE_HINT = (
+    "This dataset is gated (automatic approval):\n"
+    "  1. Accept the terms at https://huggingface.co/datasets/deepghs/nsfw_detect\n"
+    "  2. Create a read token at https://huggingface.co/settings/tokens\n"
+    "  3. Put it in .env as HF_TOKEN=hf_..."
+)
 
+
+def download_archive(repo_id: str, filename: str, destination: Path) -> Path:
+    """Fetch the dataset archive from the Hub, failing loudly if inaccessible."""
+    from huggingface_hub import hf_hub_download
+    from huggingface_hub.errors import GatedRepoError, RepositoryNotFoundError
+
+    token = require_env("HF_TOKEN", hint=GATE_HINT)
     destination.mkdir(parents=True, exist_ok=True)
     try:
         return Path(
@@ -48,14 +59,16 @@ def download_archive(repo_id: str, filename: str, destination: Path) -> Path:
                 filename=filename,
                 repo_type="dataset",
                 local_dir=destination,
-                token=os.environ.get("HF_TOKEN"),
+                token=token,
             )
         )
     except GatedRepoError as error:
         raise SystemExit(
-            f"{repo_id} is gated. Accept the terms at "
-            f"https://huggingface.co/datasets/{repo_id}, create a read token at "
-            "https://huggingface.co/settings/tokens, then set HF_TOKEN."
+            f"{repo_id} is gated and this token has not been granted access.\n\n{GATE_HINT}"
+        ) from error
+    except RepositoryNotFoundError as error:
+        raise SystemExit(
+            f"{repo_id} not found, or the token lacks read access to it.\n\n{GATE_HINT}"
         ) from error
 
 
@@ -82,6 +95,9 @@ def extract_hf_dataset(
         archive_path = download_archive(repo_id, filename, work_dir)
 
     try:
+        summary = inspect_archive(archive_path)
+        print(f"archive layout:\n{summary.describe()}\n")
+
         backbone = create_feature_extractor(pretrained=pretrained)
         transform = build_transform(config.image_size, augment=False)
         result = extract_features(
@@ -127,22 +143,41 @@ def main() -> None:
         action="store_true",
         help="do not delete the downloaded archive afterwards",
     )
+    parser.add_argument(
+        "--inspect",
+        action="store_true",
+        help="report the archive layout and exit without extracting",
+    )
     args = parser.parse_args()
+
+    load_dotenv()
+
+    if args.inspect:
+        archive = args.archive or download_archive(
+            args.repo, args.file, args.out.parent / ".archive"
+        )
+        print(inspect_archive(archive).describe())
+        return
 
     policy = dict(DEFAULT_LABEL_POLICY)
     if args.strict_sexy:
         policy["sexy"] = EXPLICIT
 
     config = TrainingConfig(image_size=args.image_size, batch_size=args.batch_size)
-    result = extract_hf_dataset(
-        args.out,
-        config,
-        repo_id=args.repo,
-        filename=args.file,
-        policy=policy,
-        keep_archive=args.keep_archive,
-        archive=args.archive,
-    )
+    try:
+        result = extract_hf_dataset(
+            args.out,
+            config,
+            repo_id=args.repo,
+            filename=args.file,
+            policy=policy,
+            keep_archive=args.keep_archive,
+            archive=args.archive,
+        )
+    except (ArchiveLayoutError, ValueError) as error:
+        # A layout mismatch is a setup problem, not a crash: report it as one
+        # so the diagnostic is the first thing seen rather than a traceback.
+        raise SystemExit(f"extraction failed: {error}") from error
 
     print(f"wrote {args.out}  ({len(result)} samples, dim {result.metadata['feature_dim']})")
     for name, count in sorted(result.metadata["source_counts"].items()):

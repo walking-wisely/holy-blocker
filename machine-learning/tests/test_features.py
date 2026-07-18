@@ -10,6 +10,8 @@ from PIL import Image
 from holy_blocker_ml.dataset import build_transform
 from holy_blocker_ml.features import (
     DEFAULT_LABEL_POLICY,
+    ArchiveLayoutError,
+    inspect_archive,
     SOURCE_CLASSES,
     FeatureSet,
     extract_features,
@@ -210,3 +212,71 @@ def test_end_to_end_zip_to_feature_set(source_zip: Path, tmp_path: Path) -> None
     # 2 porn + 2 hentai are blocked; the other 6 are safe.
     assert int((restored.labels == POSITIVE_INDEX).sum()) == 4
     assert int((restored.labels == NEGATIVE_INDEX).sum()) == 6
+
+
+# --- failing loudly on an unexpected layout ---------------------------------
+
+
+def test_archive_with_no_recognisable_classes_raises(tmp_path: Path) -> None:
+    """The real archive's layout is unverified, so a mismatch must not pass silently."""
+    path = tmp_path / "wrong.zip"
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("dataset/train/class_a/0.png", png_bytes((1, 2, 3)))
+        archive.writestr("dataset/train/class_b/1.png", png_bytes((4, 5, 6)))
+
+    with pytest.raises(ArchiveLayoutError) as excinfo:
+        list(iter_zip_images(path))
+
+    message = str(excinfo.value)
+    assert "2" in message  # saw two images
+    assert "class_a" in message or "dataset" in message  # shows what it did find
+
+
+def test_empty_archive_raises_rather_than_yielding_nothing(tmp_path: Path) -> None:
+    path = tmp_path / "empty.zip"
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("readme.txt", b"no images here")
+
+    with pytest.raises(ArchiveLayoutError, match="no image"):
+        list(iter_zip_images(path))
+
+
+def test_strict_can_be_disabled_for_inspection(tmp_path: Path) -> None:
+    path = tmp_path / "wrong.zip"
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("dataset/class_a/0.png", png_bytes((1, 2, 3)))
+
+    assert list(iter_zip_images(path, strict=False)) == []
+
+
+def test_partial_match_is_reported_but_still_yields(tmp_path: Path) -> None:
+    # A well-formed archive with extra unrecognised folders should still work.
+    path = tmp_path / "mixed.zip"
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("root/porn/0.png", png_bytes((1, 1, 1)))
+        archive.writestr("root/mystery/0.png", png_bytes((2, 2, 2)))
+
+    summary = inspect_archive(path)
+
+    assert summary.matched == {"porn": 1}
+    assert summary.unmatched_images == 1
+    assert any("mystery" in example for example in summary.unmatched_examples)
+
+
+def test_inspect_reports_the_full_class_histogram(source_zip: Path) -> None:
+    summary = inspect_archive(source_zip)
+
+    assert summary.matched == {name: 2 for name in SOURCE_CLASSES}
+    assert summary.image_members == len(SOURCE_CLASSES) * 2
+    assert summary.unmatched_images == 0
+    assert "nsfw_dataset_v1" in summary.top_level
+
+
+def test_extract_refuses_to_write_an_empty_feature_set() -> None:
+    backbone = create_feature_extractor(pretrained=False)
+
+    def only_unmapped():
+        yield Image.new("RGB", (32, 32), (1, 2, 3)), "unknown-class"
+
+    with pytest.raises(ValueError, match="no samples"):
+        extract_features(only_unmapped(), backbone, build_transform(32, augment=False))
