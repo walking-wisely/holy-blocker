@@ -95,7 +95,7 @@ class ScreenGuardService : AccessibilityService() {
 
         val root = rootInActiveWindow ?: return
         val fragments = mutableListOf<String>()
-        collectText(root, fragments, depth = 0)
+        collectText(root, fragments, depth = 0, budget = NodeBudget())
 
         when (val outcome = gate.onScreenText(packageName, fragments, System.currentTimeMillis())) {
             is GateOutcome.Scanned -> {
@@ -226,7 +226,7 @@ class ScreenGuardService : AccessibilityService() {
         val root = rootFor(packageName) ?: return null
         val texts = mutableListOf<String>()
         val resourceIds = mutableSetOf<String>()
-        collectIdentity(root, texts, resourceIds, depth = 0)
+        collectIdentity(root, texts, resourceIds, depth = 0, budget = NodeBudget())
 
         // Kept rather than removed after bring-up: this is how per-OEM
         // identifiers get collected, and the docs point contributors at it.
@@ -279,10 +279,13 @@ class ScreenGuardService : AccessibilityService() {
 
         var declared = 0
         var fetched = 0
+        val budget = NodeBudget()
         fun walk(node: AccessibilityNodeInfo?, depth: Int) {
             if (node == null || depth > MAX_DEPTH) return
+            if (!budget.take()) return
             declared += node.childCount
             for (i in 0 until node.childCount) {
+                if (budget.exhausted) return
                 val child = node.getChild(i) ?: continue
                 fetched++
                 walk(child, depth + 1)
@@ -290,10 +293,13 @@ class ScreenGuardService : AccessibilityService() {
         }
         walk(root, depth = 0)
 
+        // `truncated` matters for reading the other two numbers: a walk that ran
+        // out of budget has a declared/fetched gap that means nothing.
         Log.w(
             TAG,
             "empty harvest pkg=$packageName windows=${matching.size} [$shape] " +
-                "rootChildren=${root.childCount} declared=$declared fetched=$fetched",
+                "rootChildren=${root.childCount} declared=$declared fetched=$fetched " +
+                "truncated=${budget.exhausted}",
         )
     }
 
@@ -359,39 +365,61 @@ class ScreenGuardService : AccessibilityService() {
         texts: MutableList<String>,
         resourceIds: MutableSet<String>,
         depth: Int,
+        budget: NodeBudget,
     ) {
         if (node == null || depth > MAX_DEPTH || texts.size >= MAX_FRAGMENTS) return
+        if (!budget.take()) return
 
         node.text?.toString()?.let { if (it.isNotBlank()) texts += it }
         node.contentDescription?.toString()?.let { if (it.isNotBlank()) texts += it }
         node.viewIdResourceName?.let { resourceIds += it }
 
         for (i in 0 until node.childCount) {
-            collectIdentity(node.getChild(i), texts, resourceIds, depth + 1)
-            if (texts.size >= MAX_FRAGMENTS) return
+            collectIdentity(node.getChild(i), texts, resourceIds, depth + 1, budget)
+            if (texts.size >= MAX_FRAGMENTS || budget.exhausted) return
         }
     }
 
     /**
      * Depth-first walk collecting `text` and `contentDescription`.
      *
-     * Bounded by [MAX_DEPTH] and [MAX_FRAGMENTS] because this runs on the
-     * UI-event path and some apps (web views especially) expose very deep trees;
-     * an unbounded walk here would jank the foreground app.
+     * Bounded by [MAX_DEPTH], [MAX_FRAGMENTS] and [MAX_NODES] because this runs
+     * on the UI-event path and some apps (web views especially) expose very deep
+     * *and* very wide trees; an unbounded walk here would jank the foreground app.
      */
     private fun collectText(
         node: AccessibilityNodeInfo?,
         into: MutableList<String>,
         depth: Int,
+        budget: NodeBudget,
     ) {
         if (node == null || depth > MAX_DEPTH || into.size >= MAX_FRAGMENTS) return
+        if (!budget.take()) return
 
         node.text?.toString()?.let { if (it.isNotBlank()) into += it }
         node.contentDescription?.toString()?.let { if (it.isNotBlank()) into += it }
 
         for (i in 0 until node.childCount) {
-            collectText(node.getChild(i), into, depth + 1)
-            if (into.size >= MAX_FRAGMENTS) return
+            collectText(node.getChild(i), into, depth + 1, budget)
+            if (into.size >= MAX_FRAGMENTS || budget.exhausted) return
+        }
+    }
+
+    /**
+     * A per-walk allowance of node visits, shared down the recursion.
+     *
+     * Each visit costs an IPC round-trip to the app being inspected, so the
+     * count that matters is across the whole walk rather than per level — which
+     * is why this is threaded through rather than being a depth-local check.
+     */
+    private class NodeBudget(private var remaining: Int = MAX_NODES) {
+        val exhausted: Boolean get() = remaining <= 0
+
+        /** Claims one visit. False when the walk should stop. */
+        fun take(): Boolean {
+            if (remaining <= 0) return false
+            remaining--
+            return true
         }
     }
 
@@ -427,5 +455,23 @@ class ScreenGuardService : AccessibilityService() {
         private const val TAG = "ScreenGuard"
         private const val MAX_DEPTH = 40
         private const val MAX_FRAGMENTS = 400
+
+        /**
+         * Ceiling on nodes visited per walk, across the whole tree.
+         *
+         * [MAX_DEPTH] bounds how *deep* a walk goes and [MAX_FRAGMENTS] bounds how
+         * much text it keeps, but neither bounds how *wide* it goes: a node with
+         * thousands of children stays under both while costing one IPC round-trip
+         * per child on the UI-event path.
+         *
+         * The gap is not hypothetical here. [MAX_FRAGMENTS] only bites once text
+         * has accumulated, so a tree that yields no text is bounded by depth
+         * alone — and a tree that yields no text is precisely the screen the
+         * empty-harvest diagnostic exists to investigate.
+         *
+         * Sized well above any real settings screen, so it is a backstop against
+         * an ANR rather than a limit normal operation should ever reach.
+         */
+        private const val MAX_NODES = 3_000
     }
 }
