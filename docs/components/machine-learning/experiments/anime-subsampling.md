@@ -1,6 +1,6 @@
 # Experiment: does subsampled anime data improve the drawn axis?
 
-**Status:** planned, not run.
+**Status:** tooling built, protocol amended, run pending.
 **Pre-registered:** criteria and baselines below were fixed *before* running, so
 the result cannot be reinterpreted after the fact.
 
@@ -47,6 +47,9 @@ Caveat: CC-BY-4.0 covers the curation, not the underlying third-party artwork.
    photographic. Sample `anime_dbrating` so the combined set holds that ratio.
    Naively mixing 1.2M against 28k is 40:1 and would let drawn content dominate
    gradient updates in a 2.5M-parameter backbone.
+   **Amended before the run — see [Protocol amendment](#protocol-amendment).**
+   As written this step admits only n=0, because the corpus is already exactly
+   40% drawn. Substitution replaces addition.
 2. **Map ratings to the binary policy.** `general` + `sensitive` → `safe`,
    `explicit` → `explicit`. Hold `questionable` out of training entirely for the
    first run — its whole value is as an evaluation set for the boundary, and
@@ -101,6 +104,71 @@ would show a ~1.8pp regression that is purely an artifact of the swap.
 The common holdout is a strict subset of the validation split, so any run
 sharing `seed=0` and `val_fraction=0.2` can be scored on both.
 
+## Protocol amendment
+
+Fixed **before** the run, like everything else on this page. The decision rule,
+its thresholds, and the baselines are untouched — this changes only *how the
+anime data enters the training set*.
+
+### The defect
+
+Method step 1 says to sample so the combined set holds 40% drawn / 60%
+photographic. The corpus is 5,600 images in each of five classes: `drawings` +
+`hentai` = 11,200 of 28,000, which is **already exactly 40%**. Adding any drawn
+data pushes it above 40%, so the rule as written is satisfied only by adding
+nothing. It was written as though the corpus were photographic-heavy and needed
+drawn data to reach a target ratio; it was already at the target.
+
+### The amendment: substitute, do not add
+
+Hold drawn volume fixed at 11,200 and swap part of it for anime data:
+
+| | before | after |
+|---|---|---|
+| photographic (train) | 13,440 | 13,440 — untouched |
+| drawn, original (train) | 8,960 | 4,480 |
+| drawn, anime (train) | 0 | 4,480 |
+| **validation half** | **5,600** | **5,600 — frozen, all original** |
+
+`replace_fraction = 0.5`, allocated to match what it displaces: 2,240 safe
+(1,120 `general` + 1,120 `sensitive`) for the dropped `drawings`, and 2,240
+`explicit` for the dropped `hentai`.
+
+Half rather than all of it. A full swap would leave the model never seeing the
+original drawn distribution while still being *scored* on it — the validation
+half is original `drawings`/`hentai` — so a drop would be domain shift, not label
+quality, and the experiment could not tell the two apart.
+
+### Why this is the better experiment anyway
+
+The case made for this dataset above is about label **quality**: `questionable`
+exists as a boundary class, and labels come from community moderation rather
+than subreddit provenance. Volume is never the claimed mechanism. The
+pre-registered prediction goes further and says the binding constraint is
+capacity, not data volume — a claim the full unfreeze then confirmed. Holding
+volume fixed isolates the variable actually under argument; adding data would
+confound label quality with volume and leave a null result uninterpretable.
+
+### What this protects
+
+- **The validation half is never touched.** Baselines are fixed on
+  `stratified_split(seed=0, val_fraction=0.2)` over the original archive.
+  Substitution removes samples only from the training half, so the frozen
+  holdouts stay exactly the sets the baselines were measured on and
+  `holy-blocker-score` remains directly comparable.
+- **Photographic training data is never touched.** The decision rule rejects on
+  a photographic regression, which is only interpretable if that half is held
+  fixed.
+- **`questionable` stays out of training**, as the original method requires. It
+  is absent from `ANIME_LABEL_POLICY`, so `map_source_label` returns None and
+  the dataset drops it — enforced by the pipeline, not by convention.
+
+### Recorded deviation
+
+Method step 3's "identical hyperparameters" now means those of the
+full-unfreeze run, as the Prerequisite section already established. Everything
+else in the method stands.
+
 ## Decision rule
 
 Fixed in advance.
@@ -147,6 +215,32 @@ Per-medium **routing** instead of mixing. Medium is ~99% separable, so a cheap
 drawn-vs-photographic classifier plus one specialist per medium removes the
 interference entirely. Cost is two on-device models — 2 × 6 MB against the 15 MB
 budget in `TrainingConfig.max_model_mb`, which fits.
+
+## How to run it
+
+```sh
+# 1. Inspect the plan without fetching anything.
+holy-blocker-anime --archive data/eval/.archive/nsfw_dataset_v1.zip --dry-run
+
+# 2. Build the supplement. Ranged reads pull only the selected members, so the
+#    68 GB of rating archives is never downloaded whole.
+holy-blocker-anime --archive data/eval/.archive/nsfw_dataset_v1.zip \
+                   --out data/eval/anime_supplement.zip
+
+# 3. Train, holding architecture and hyperparameters at the full-unfreeze run's.
+holy-blocker-finetune --archive data/eval/.archive/nsfw_dataset_v1.zip \
+                      --supplement data/eval/anime_supplement.zip \
+                      --output-dir artifacts/anime-subsample \
+                      --epochs 6 --backbone-lr 1e-4 --head-lr 1e-3
+
+# 4. Score on the frozen holdouts — the same command the baselines came from.
+holy-blocker-score --archive data/eval/.archive/nsfw_dataset_v1.zip \
+                   --checkpoint artifacts/anime-subsample/finetuned-v0.pt \
+                   --common-idx data/eval/common_idx.npy
+```
+
+`anime_dbrating` is ungated, so no `HF_TOKEN` is needed for step 2 — unlike
+`nsfw_detect`.
 
 ## Prerequisite
 

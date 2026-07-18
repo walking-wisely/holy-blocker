@@ -33,6 +33,7 @@ holy-blocker-eval = "holy_blocker_ml.harness:main"
 holy-blocker-extract = "holy_blocker_ml.extract:main"
 holy-blocker-finetune = "holy_blocker_ml.finetune:main"
 holy-blocker-score = "holy_blocker_ml.score:main"
+holy-blocker-anime = "holy_blocker_ml.anime:main"
 
 [build-system]
 requires = ["hatchling"]

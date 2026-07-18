@@ -26,12 +26,25 @@ from holy_blocker_ml.metrics import roc_auc
 PHOTOGRAPHIC: tuple[str, ...] = ("neutral", "sexy", "porn")
 DRAWN: tuple[str, ...] = ("drawings", "hentai")
 
+#: Danbooru ratings supplied by the anime subsampling experiment. Every one is
+#: drawn by construction. Listed separately from `DRAWN` because that tuple is
+#: the *scored* drawn holdout — it names the two `nsfw_detect` classes the
+#: pre-registered baselines were measured on, and widening it would silently
+#: change what the decision rule reads.
+ANIME_DRAWN: tuple[str, ...] = (
+    "anime_general",
+    "anime_sensitive",
+    "anime_questionable",
+    "anime_explicit",
+)
+
 #: Medium name per source class. Pinned explicitly rather than inferred, for the
 #: same reason `labels.py` pins class order: a silent miss here would misreport
 #: the number the experiment's decision rule reads.
 SOURCE_TO_MEDIUM: dict[str, str] = {
     **{name: "photographic" for name in PHOTOGRAPHIC},
     **{name: "drawn" for name in DRAWN},
+    **{name: "drawn" for name in ANIME_DRAWN},
 }
 
 

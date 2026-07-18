@@ -150,6 +150,7 @@ class ZipImageDataset(Dataset):
         augment: bool,
         indices: Sequence[int] | None = None,
         policy=None,
+        classes: Sequence[str] | None = None,
     ) -> None:
         from holy_blocker_ml.features import (
             DEFAULT_LABEL_POLICY,
@@ -163,14 +164,19 @@ class ZipImageDataset(Dataset):
         self.archive_path = Path(archive_path)
         self.transform = build_transform(image_size, augment)
         policy = policy or DEFAULT_LABEL_POLICY
+        # `classes` names the directories to recognise. Parameterised rather
+        # than read from SOURCE_CLASSES so a supplement archive (the anime
+        # experiment's) can carry its own taxonomy without widening the
+        # `nsfw_detect` contract, which `DEFAULT_LABEL_POLICY` is pinned to.
+        classes = tuple(classes) if classes is not None else SOURCE_CLASSES
 
-        summary = inspect_archive(self.archive_path)
+        summary = inspect_archive(self.archive_path, classes=classes)
         if not summary.matched:
             raise ArchiveLayoutError(
                 f"{self.archive_path} exposes no recognised class directory.\n{summary.describe()}"
             )
 
-        known = set(SOURCE_CLASSES)
+        known = set(classes)
         entries: list[tuple[str, str, int]] = []
         with zipfile.ZipFile(self.archive_path) as archive:
             for info in archive.infolist():
@@ -186,6 +192,19 @@ class ZipImageDataset(Dataset):
                 if label is None:
                     continue
                 entries.append((info.filename, source, label))
+
+        if not entries:
+            # The archive has recognised class directories but the policy gave
+            # none of them a label, so this would be an empty training set that
+            # looks like a successful load. Holding a class out of training is
+            # done by omitting it from the policy (the anime experiment holds
+            # out `questionable` that way), which makes a whole-archive miss an
+            # easy mistake to make silently.
+            raise ValueError(
+                f"{self.archive_path} yielded no labelled samples: every recognised "
+                f"class ({', '.join(sorted(summary.matched))}) is unmapped by the "
+                f"policy ({', '.join(sorted(policy))})."
+            )
 
         if indices is not None:
             entries = [entries[i] for i in indices]
