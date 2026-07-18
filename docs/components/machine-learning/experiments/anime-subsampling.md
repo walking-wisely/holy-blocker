@@ -150,7 +150,57 @@ budget in `TrainingConfig.max_model_mb`, which fits.
 
 ## Prerequisite
 
-Run the **full unfreeze** first. Training accuracy of 94.6% says the current
+~~Run the **full unfreeze** first. Training accuracy of 94.6% says the current
 model underfits, and an underfitting model is the wrong instrument for measuring
 whether more data helps — extra data cannot be absorbed by a model that already
-cannot fit what it has.
+cannot fit what it has.~~ **Done** — see [full-unfreeze.md](full-unfreeze.md).
+
+It changed the picture in two ways.
+
+**The capacity hypothesis was confirmed, and it moved the drawn axis on its
+own.** Drawn AUC improved by 0.0074 on the validation split and 0.0133 on the
+common holdout with no new data — the latter larger than the +0.010 gain this
+experiment set as its bar for accepting a *data* intervention. Photographic
+improved too, and nothing regressed.
+
+**The prerequisite is satisfied in practice but not on its own terms.** The
+stated rationale was that "an underfitting model is the wrong instrument for
+measuring whether more data helps." Training accuracy rose from 94.6% to 95.9%,
+but a model that still cannot fit its own training data is still, strictly,
+underfitting. The difference is that capacity is no longer the lever — there is
+nothing left to unfreeze — so waiting for a fully-fitting model before running
+this would mean waiting on an architecture change, not a cheaper knob. Run it,
+and read a null drawn result as "data did not help *this* architecture" rather
+than "data does not help."
+
+**The baselines above are superseded.** They describe the unfreeze-3 model,
+which is no longer the model to beat. The table below re-fixes them against the
+full-unfreeze model. This is still a pre-registration: this experiment named the
+full unfreeze as its prerequisite, so these numbers are fixed *before* the anime
+run begins, and the decision rule and its thresholds are unchanged.
+
+Validation split — the set the decision rule is evaluated on:
+
+| holdout | n | AUC to beat / preserve |
+|---|---|---|
+| photographic | 3,360 | **0.9883** — must not degrade |
+| drawn | 2,240 | **0.9604** — target of the experiment |
+| combined | 5,600 | 0.9796 |
+| FP rate at 5% miss budget | 5,600 | 10.1% |
+
+Common holdout, reported alongside:
+
+| holdout | n | AUC |
+|---|---|---|
+| photographic | 692 | 0.9881 |
+| drawn | 455 | 0.9699 |
+| combined | 1,147 | 0.9832 |
+| FP rate at 5% miss budget | 1,147 | 8.2% |
+
+Method step 3 changes accordingly: fine-tune with a **full unfreeze**, not
+`--unfreeze 3`, so the comparison holds architecture fixed and varies only data.
+
+This also raises the bar. The drawn sub-problem now starts at 0.9604 rather than
+0.9530, and the remaining headroom to photographic has narrowed from 0.0314 to
+0.0279 — so a +0.010 drawn gain from data alone is a larger share of what is
+left to win than it was when this was written.

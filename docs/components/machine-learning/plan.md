@@ -331,13 +331,16 @@ reproduced across opsets 17–21 at both 32px and 224px. `export.py` passes
 
 ## Next steps
 
-1. **Full unfreeze.** Training accuracy is 94.6% against 92.2% validation — a 2.4pp
+1. ~~**Full unfreeze.** Training accuracy is 94.6% against 92.2% validation — a 2.4pp
    gap. The model underfits, so more capacity is the cheapest remaining gain and a
-   prerequisite for judging whether more data helps.
+   prerequisite for judging whether more data helps.~~ **Done** — improved every
+   metric on both evaluation sets with no regression; see
+   [experiments/full-unfreeze.md](experiments/full-unfreeze.md).
 2. **Threshold from the miss budget**, not 0.5. See
    [results.md](results.md#cost-of-a-miss-budget).
 3. **[Anime subsampling experiment](experiments/anime-subsampling.md)** — pre-registered,
-   run only after the full unfreeze.
+   run only after the full unfreeze. Unblocked; baselines re-fixed against the
+   full-unfreeze model.
 4. Relabelling study to settle the label-noise question, which remains open.
 
 

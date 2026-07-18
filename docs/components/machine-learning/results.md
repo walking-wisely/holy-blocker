@@ -107,6 +107,14 @@ accuracy (94.6% vs 92.2%), 0.013 AUC. Training accuracy below 95% means it
 cannot fit even the training data — three unfrozen blocks is a capacity limit. A
 full unfreeze is the cheapest remaining improvement.
 
+> **Confirmed.** The full unfreeze was run and improved every reported metric on
+> both evaluation sets, with nothing regressing: drawn AUC 0.9530 → 0.9604,
+> photographic 0.9844 → 0.9883, and the FP rate at a 5% miss budget 13.2% →
+> 10.1% on the validation split. See
+> [experiments/full-unfreeze.md](experiments/full-unfreeze.md). The numbers
+> throughout this document describe the unfreeze-3 model and are kept as the
+> record it was measured against.
+
 **Two confusion axes, not one.** A 5-way probe on the same features shows
 `drawings→hentai` (64% of drawings errors) and `sexy→porn` (62% of sexy errors)
 dominate, while cross-medium confusion is near zero (`drawings→sexy` = 1). The
@@ -120,7 +128,9 @@ no relabelling study has been run.
 
 ## Not established
 
-- Whether a full unfreeze closes the remaining gap.
+- ~~Whether a full unfreeze closes the remaining gap.~~ **Done** — it narrows it
+  (drawn-to-photographic 0.0314 → 0.0279) but does not close it. See
+  [experiments/full-unfreeze.md](experiments/full-unfreeze.md).
 - The label-noise rate. No annotator agreement study or relabelling pass exists.
 - Whether these numbers transfer to real traffic. This corpus is a scraped
   taxonomy, not a sample of what users actually encounter.
