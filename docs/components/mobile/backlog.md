@@ -126,6 +126,42 @@ fresh instances. Harmless now, but `SettingsGuard.reset()` clears the release wi
 it to a reconnect later would silently cancel an active release mid-window. Either call them on
 reconnect instead of reallocating, or delete them.
 
+## Not a guard bug — content interception
+
+Filed here for visibility only, and kept in its own section deliberately. Everything above is
+tamper resistance: it protects the screens that *remove the blocker*. The item below is a defect
+in the thing the product is actually for. Conflating the two is what produced the mistake
+recorded in [plan.md](plan.md) step 8, so the boundary is drawn explicitly rather than left to
+the reader.
+
+### 8. In split screen, text is harvested from one pane and blamed on another
+
+`ScreenGuardService.onAccessibilityEvent` harvests `rootInActiveWindow` — the **focused** pane —
+while passing the *event's* package to `ScanGate.onScreenText`. Outside split screen those are
+the same window and it is correct. Inside it they need not be.
+
+The evasion needs no intent at all: focus a benign pane, let content sit or play in the other.
+Events fire from the content pane, the harvest returns the benign pane's text, the verdict is
+ALLOW, nothing is covered. The mirror case produces false positives — a cover triggered by text
+the user is not looking at.
+
+**Do not fix the harvest on its own.** Reading the event's window without also deciding
+aggregation converts a wrong-but-stable behaviour into a racy one: `CoverState` is a single
+global value, so two panes disagreeing would flip the cover on whichever event arrived last.
+That is harder to reason about and harder to test than the bug it replaces. The window model in
+plan.md workstream 1 comes first.
+
+**It must not inherit step 8's focus rule.** The guard may ignore an unfocused window because a
+control cannot be operated without focus. Content is consumed without being touched, so the same
+rule here *is* the evasion.
+
+Reasoned from the source, **not reproduced** — this is the split-screen configuration that could
+not be driven on the android-36 phone AVD through adb. Confirm on hardware or a tablet/foldable
+AVD before designing the fix.
+
+Note the ceiling on all of this: the harvest reads `text` and `contentDescription` only, so the
+module is a text classifier. Imagery is not covered in either pane — see plan.md workstream 4.
+
 ## Cannot be closed at Device Admin level
 
 Recording these is the only available response, and it is the argument for the tamper log.

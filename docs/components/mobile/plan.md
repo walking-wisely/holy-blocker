@@ -452,7 +452,7 @@ scaffolding and will fail at load time if they fall out of sync with the `.so`.
    uninstall refused (`DELETE_FAILED_DEVICE_POLICY_MANAGER`) on an android-36 emulator. The
    `DeviceAdminAdd` identifier is confirmed, and the screen turned out to need resource-id
    matching rather than the class; see §7.
-7. ~~**The empty harvest** ([backlog.md](backlog.md) item 1b).~~ **Done** — the cause was
+7. ~~**The empty harvest** (was [backlog.md](backlog.md) item 1b; now in its § Done).~~ **Done** — the cause was
    `accessibilityDataSensitive` (Android 14 / API 34), not the node walk. Settings marks the
    device-admin rows sensitive, and the framework serves those only to services declaring
    `isAccessibilityTool`; `uiautomator` sees them because UiAutomation is exempt, which is why
@@ -470,17 +470,25 @@ scaffolding and will fail at load time if they fall out of sync with the `.so`.
    `isAccessibilityTool` is also a Play policy declaration — it asserts the service assists users
    with disabilities. Accepted knowingly: short of Device Owner, which §7 rules out permanently,
    nothing else reaches those rows.
-8. ~~Split-screen window resolution (§7 and [backlog.md](backlog.md) item 2).~~ **Done, with a
+8. ~~Split-screen window resolution (§7; was [backlog.md](backlog.md) item 2, now in its § Done).~~ **Done, with a
    verification gap — read this before trusting it.** `WindowResolver` picks the event's own
    window by `event.windowId`, falling back to focused, then active, then first match; the
    event-less re-look path has no id and relies on that fallback. `GLOBAL_ACTION_BACK` is global
-   and lands on the focused window, so `SettingsGuard.evaluate` now degrades an unfocused match
-   to `CoverOnly` rather than pressing BACK inside whatever app the user is actually driving —
-   and does so without consuming the back-out budget, since covering is not an attempt at
-   leaving.
+   and lands on the focused window, so `SettingsGuard.evaluate` declines to act on an unfocused
+   match rather than pressing BACK inside whatever app the user is actually driving.
 
-   **Unit tested, not device-verified.** 12 JVM tests cover the selection order and the focus
-   gate. On device, only the single-window path was exercised: all guarded screens still act,
+   **That branch first shipped as `CoverOnly`, which is what this plan and the backlog both
+   originally called for, and it was wrong.** `OverlayController` adds a `MATCH_PARENT` window to
+   the service's own `WindowManager`, so the cover spans the *display*, not the pane — an
+   unfocused match would black out the innocent app and swallow its touches, and since covering
+   never trips the back-out bound there was nothing to end it. It traded a bounded ~3.6s of stray
+   BACK presses for an unbounded full-display cover. Corrected to `Ignore`, which is safe for a
+   reason specific to this path: a guarded surface is a *control*, and a control cannot be
+   operated without focus, so the toggle stays unreachable for exactly as long as the guard
+   declines to act. **The content path must not copy the rule** — see workstream 3 below.
+
+   **Unit tested, not device-verified.** 13 JVM tests cover the selection order and the focus
+   rule. On device, only the single-window path was exercised: all guarded screens still act,
    unrelated ones still do not, and the harvest reports `focused=true`. Genuine two-app split
    screen could not be driven on the android-36 phone AVD through adb — neither
    `--windowingMode 6` nor freeform produced two independent app windows. **The real two-pane
@@ -488,17 +496,104 @@ scaffolding and will fail at load time if they fall out of sync with the `.so`.
    tablet/foldable AVD, before this is treated as closed.
 
    Recents remains untouched and is still open.
-9. **Tamper log** — append-only local record of guard-state transitions and removal attempts.
-   The backstop for what steps 5–8 cannot prevent (guest user, safe mode, adb); entries must
-   survive the app being disabled.
-10. Foreground service + restart-on-boot. **Note the real reason:** an `AccessibilityService`
-   is system-bound and already restarts on boot while it stays enabled, so this neither makes
-   the guard harder to kill nor is required for it to survive a reboot. What it provides is an
-   always-visible status surface, a health check for removal routes we cannot observe, and the
-   FGS host that the last two steps require. It may also reduce the recents-swipe kill in step 6.
-11. `VpnService` DNS/SNI filter. Note that without `setAlwaysOnVpnPackage` (owner-only) the VPN
-    can be turned off in Settings like anything else — guard that screen the same way.
-12. `MediaProjection` capture once `image-sandbox` lands.
+Steps 1–8 are history. The remaining work is reorganised into the workstreams below, because
+the flat list hid the distinction that matters — see the next section.
+
+## The next phase: two protections, one window model
+
+Steps 7 and 8 were both filed as guard hardening, and working through them surfaced a structural
+problem worth naming before more code is written.
+
+**This module serves two different protections, and they have been quietly sharing code that
+suits only one of them.**
+
+| | Tamper resistance | Content interception |
+|---|---|---|
+| Protects | the screens that *remove the blocker* | the user from what is on screen |
+| Lives in | `SettingsGuard`, `admin/` | `ScanGate`, `text-policy` |
+| Adversary | the owner, deliberately | no adversary; ordinary use |
+| Acts on | a **control** being reachable | **content** being present |
+| Unfocused window | harmless — a control cannot be operated without focus | **still harmful** — media plays regardless |
+
+That last row is the whole point. The two paths need *opposite* rules for an unfocused window,
+and the correct fix for one is the evasion for the other. Applying step 8's focus rule to content
+would write the bypass into the design.
+
+They also currently disagree about which window they are even looking at: the guard goes through
+`WindowResolver`, while the content path still reads `rootInActiveWindow` directly. That
+divergence is the defect generator, and it is why the workstreams below start with a shared model
+rather than with either consumer.
+
+### Workstream 1 — the window model (foundation)
+
+A pure-Kotlin description of *the windows currently showing, what was decided about each, and
+what the display should therefore do*. No Android imports, JUnit on the JVM, test-first — the
+rule the rest of `policy/` already follows. `WindowResolver` is the first piece of this and
+should be absorbed into it rather than left as a guard-only helper.
+
+This is where the question the content path cannot currently answer gets decided **once**: when
+one pane is BLOCK and the other is ALLOW, what happens? Today `CoverState` is a single global
+value, so there is no way to express it.
+
+### Workstream 2 — tamper resistance, on top of the model
+
+Consumes workstream 1. Already correct on focus (step 8). Remaining: recents and SystemUI
+([backlog.md](backlog.md) items 4 and 6), the **tamper log** — an append-only local record of
+guard-state transitions and removal attempts, the backstop for what steps 5–8 cannot prevent
+(guest user, safe mode, adb), whose entries must survive the app being disabled — and the
+**foreground service + restart-on-boot**.
+
+On the foreground service, the real reason is not what it looks like: an `AccessibilityService`
+is system-bound and already restarts on boot while it stays enabled, so this neither makes the
+guard harder to kill nor is required for it to survive a reboot. What it provides is an
+always-visible status surface, a health check for removal routes we cannot observe, and the FGS
+host that the later steps require. It may also reduce the recents-swipe kill.
+
+### Workstream 3 — content interception, on top of the model
+
+Consumes workstream 1, and fixes the live defect recorded as
+[backlog.md](backlog.md) item 8: `ScreenGuardService.onAccessibilityEvent` harvests
+`rootInActiveWindow` while attributing the verdict to the *event's* package, so in split screen
+it can scan one pane's text and blame another.
+
+**Do not fix the harvest alone.** Reading the event's window without also deciding aggregation
+converts a wrong-but-stable behaviour into a racy one: with a single global `CoverState`, two
+panes disagreeing would flip the cover on whichever event arrived last. Workstream 1 first.
+
+Explicitly **not** inheriting step 8's focus rule, per the table above.
+
+### Workstream 4 — the image path
+
+`MediaProjection` capture plus the `packages/image-sandbox` classifier, neither of which exists.
+
+**Read this before ranking the workstreams.** Today `collectText` harvests `text` and
+`contentDescription` and nothing else, so this module is a *text* classifier. Imagery is not
+protected at all — in split screen or out of it. Workstreams 1–3 make a text classifier correct
+in multi-window; only this one changes what the product can see. If the promise is closer to
+"blocks explicit imagery" than "blocks explicit text", the honest sequencing is to plan 1–3 and
+**build 4 first**.
+
+### Workstream 5 — split-screen policy (expected to be dropped)
+
+`GLOBAL_ACTION_TOGGLE_SPLIT_SCREEN` (API 24) is the only lever a non-owner app has to refuse
+split screen; the declarative and policy routes are all closed (`resizeableActivity` governs only
+our own activities, `UserManager` restrictions need Device Owner, and the `Settings.Global`
+windowing knobs need `WRITE_SECURE_SETTINGS`).
+
+Two documented hazards: it is effective **only if it appears in `getSystemActions()`** (API 30),
+so it must be queried rather than assumed; and it is a *toggle*, so firing it outside split screen
+docks the current app and creates the state it was meant to prevent.
+
+Kept on the list only as a fallback. **If workstream 3 lands, this should be deleted** — split
+screen becomes handled rather than broken, and blocking a legitimate OS feature outright would be
+a disproportionate answer that taxes benign use for the life of the install. That is the outcome
+to aim for.
+
+### Not part of this split
+
+`VpnService` DNS/SNI filter — a different layer with its own threat model. Note that without
+`setAlwaysOnVpnPackage` (owner-only) the VPN can be turned off in Settings like anything else;
+guard that screen the same way.
 
 #### Reference documents — steps 7 and 8
 
