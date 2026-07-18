@@ -5,6 +5,7 @@ import android.os.Build
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import com.holyblocker.mobile.admin.HolyBlockerAdminReceiver
 import com.holyblocker.mobile.policy.CoverState
 import com.holyblocker.mobile.policy.GateOutcome
 import com.holyblocker.mobile.policy.GuardDecision
@@ -44,6 +45,10 @@ class ScreenGuardService : AccessibilityService() {
             profile = profile,
             selfPackage = packageName,
             selfLabel = getString(R.string.app_name),
+            // Queried per event, not captured: the admin is normally activated
+            // from onboarding well after this service connects, and until it is
+            // the activation screen must stay reachable.
+            isDeviceAdminActive = { HolyBlockerAdminReceiver.isActive(this) },
         )
         if (profile == null) {
             // Not a failure to hide: on an unrecognised build the settings
