@@ -67,3 +67,55 @@ def test_loader_batches_and_preserves_total_count(image_tree: Path) -> None:
     assert len(batches) == 3  # 5 samples at batch size 2
     assert sum(images.shape[0] for images, _ in batches) == 5
     assert batches[0][0].shape[1:] == (3, 32, 32)
+
+
+# --- carried over from the master-side suite --------------------------------
+
+
+def test_validation_transform_is_deterministic(labelled_tree: Path) -> None:
+    dataset = LocalImageDataset(labelled_tree, image_size=32, augment=False)
+
+    assert torch.equal(dataset[0][0], dataset[0][0])
+
+
+def test_getitem_returns_chw_tensor_and_int_label(labelled_tree: Path) -> None:
+    dataset = LocalImageDataset(labelled_tree, image_size=32, augment=False)
+
+    image, label = dataset[0]
+
+    assert image.shape == (3, 32, 32)
+    assert image.dtype == torch.float32
+    assert isinstance(label, int)
+    assert label in (POSITIVE_INDEX, 0)
+
+
+def test_every_label_is_represented(labelled_tree: Path) -> None:
+    dataset = LocalImageDataset(labelled_tree, image_size=32, augment=False)
+
+    assert sorted(dataset[i][1] for i in range(len(dataset))) == [0, 0, 1, 1]
+
+
+def test_load_dataset_covers_the_whole_tree(labelled_tree: Path) -> None:
+    loader = load_dataset(labelled_tree, image_size=32, augment=False, batch_size=2)
+
+    assert sum(len(labels) for _, labels in loader) == 4
+
+
+def test_find_images_returns_a_flat_sorted_listing(single_kind_tree: Path) -> None:
+    """Flat, label-free listing — the shape corpus.py consumes."""
+    from holy_blocker_ml.dataset import find_images
+
+    paths = find_images(single_kind_tree)
+
+    assert len(paths) == 4
+    assert paths == sorted(paths)
+    assert all(p.is_file() for p in paths)
+
+
+def test_load_image_normalizes_to_chw(single_kind_tree: Path) -> None:
+    from holy_blocker_ml.dataset import build_transform, find_images, load_image
+
+    tensor = load_image(find_images(single_kind_tree)[0], build_transform(32, augment=False))
+
+    assert tensor.shape == (3, 32, 32)
+    assert tensor.dtype == torch.float32

@@ -154,3 +154,13 @@ def test_report_names_both_classes_and_surfaces_the_error_counts() -> None:
     assert EXPLICIT in text
     assert "false negatives" in text.lower()
     assert "1" in text
+
+
+def test_evaluate_does_not_build_a_graph() -> None:
+    """Inference must not retain autograd state — from the master-side suite."""
+    inputs = torch.tensor([[6.0, 0.0], [0.0, 6.0]], requires_grad=True)
+    dataset = TensorDataset(inputs, torch.tensor([0, 1]))
+
+    evaluate(ScriptedModel(), DataLoader(dataset, batch_size=2))
+
+    assert inputs.grad is None

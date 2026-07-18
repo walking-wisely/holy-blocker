@@ -38,5 +38,27 @@
                 android:name="android.accessibilityservice"
                 android:resource="@xml/accessibility_service_config" />
         </service>
+
+        <!--
+          Device admin. Active admin status is what makes the package manager
+          refuse uninstall; see HolyBlockerAdminReceiver for why no policies are
+          declared.
+
+          BIND_DEVICE_ADMIN must be required so only the system can send these
+          broadcasts, and the receiver must be exported for the system to reach
+          it at all.
+          https://developer.android.com/guide/topics/admin/device-admin
+        -->
+        <receiver
+            android:name=".admin.HolyBlockerAdminReceiver"
+            android:exported="true"
+            android:permission="android.permission.BIND_DEVICE_ADMIN">
+            <meta-data
+                android:name="android.app.device_admin"
+                android:resource="@xml/device_admin" />
+            <intent-filter>
+                <action android:name="android.app.action.DEVICE_ADMIN_ENABLED" />
+            </intent-filter>
+        </receiver>
     </application>
 </manifest>

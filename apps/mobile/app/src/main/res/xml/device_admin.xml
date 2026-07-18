@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Policy declaration for HolyBlockerAdminReceiver.
+  https://developer.android.com/guide/topics/admin/device-admin
+
+  Intentionally empty, and that is the whole design. The two things an active
+  admin gives this product — the package manager refusing uninstall, and
+  onDisableRequested() firing before deactivation — both follow from the admin
+  being *active*, not from any declared policy.
+
+  Declaring tags we do not use (force-lock, wipe-data, reset-password) would ask
+  the user to grant powers the product never exercises, on the screen where they
+  are deciding whether to trust it. The element itself must still be present:
+  DeviceAdminReceiver requires the meta-data resource to parse.
+-->
+<device-admin xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-policies />
+</device-admin>

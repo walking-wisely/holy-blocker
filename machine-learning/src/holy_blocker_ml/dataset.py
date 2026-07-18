@@ -20,6 +20,8 @@ from torchvision import transforms
 from holy_blocker_ml.labels import BINARY_LABELS
 
 IMAGE_SUFFIXES = frozenset({".png", ".jpg", ".jpeg", ".webp", ".bmp"})
+#: Alias kept for `corpus.py`, which was written against this name.
+IMAGE_EXTENSIONS = IMAGE_SUFFIXES
 
 # torchvision ships MobileNetV3 weights trained with ImageNet statistics; the
 # fine-tuned head inherits that expectation, so inputs must use the same values.
@@ -47,6 +49,26 @@ def build_transform(image_size: int, augment: bool) -> transforms.Compose:
     return transforms.Compose(
         [*stages, transforms.ToTensor(), transforms.Normalize(IMAGENET_MEAN, IMAGENET_STD)]
     )
+
+
+def find_images(directory: Path) -> list[Path]:
+    """Return every image file directly under `directory`, in sorted order.
+
+    Flat, non-recursive, and label-free — this is what a single-class evaluation
+    corpus looks like, where the label comes from the corpus kind rather than
+    from the directory tree. Used by `corpus.py`.
+    """
+    return sorted(
+        path
+        for path in directory.iterdir()
+        if path.is_file() and path.suffix.lower() in IMAGE_SUFFIXES
+    )
+
+
+def load_image(path: Path, transform: transforms.Compose) -> Tensor:
+    """Read one image as a normalized CHW float tensor."""
+    with Image.open(path) as image:
+        return transform(image.convert("RGB"))
 
 
 class LocalImageDataset(Dataset):

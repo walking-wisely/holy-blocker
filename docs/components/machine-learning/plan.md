@@ -12,16 +12,30 @@ This document is the build plan: what modules to add, in what order, and what ea
 All six planned steps are complete. The package at `machine-learning/` has:
 
 - `config.py` — `TrainingConfig` dataclass with `data_dir`, `output_dir`, `image_size`, `batch_size`, `epochs`, `learning_rate`, and `max_model_mb`.
-- `labels.py` — pinned `BINARY_LABELS = ("safe", "explicit")` and `POSITIVE_INDEX`. Class order is fixed here rather than derived from sorted directory names, which would invert FP/FN readings.
-- `model.py` — `create_classifier(class_count, pretrained)` fine-tunes MobileNetV3-Small with a replaced head; `example_input(image_size)` provides a trace input.
-- `dataset.py` — `LocalImageDataset` and `load_dataset` over `root/<label>/`, with train-time augmentation and deterministic validation transforms.
-- `train.py` — real fine-tuning loop: per-epoch training over `load_dataset`, validation via `evaluate`, device selection (MPS/CUDA/CPU), and a checkpoint carrying the label order.
-- `eval.py` — pure metrics: `collect_predictions`, `score`, `evaluate`, `sweep_thresholds`, `misclassified`, `report`, `report_sweep`.
-- `harness.py` — `holy-blocker-eval` CLI: FP/FN report, threshold sweep, and worst-misclassification listing against a local (gitignored) evaluation set.
-- `export.py` — ONNX export for Windows.
-- `quantize.py` — ONNX dynamic quantization (5.81 MB → 1.61 MB verified).
-- `export_tflite.py` — TFLite export for Android via `litert-torch` (5.90 MB verified, loads and runs in the LiteRT interpreter).
-- `tests/` — 40 tests covering dataset, eval, harness, model, train, and both export paths. All fixtures are synthetic; no real imagery is required.
+All planned steps are complete, plus the corpus harness and release guardrail
+added in parallel (#65). The package at `machine-learning/` has:
+
+- `config.py` — `TrainingConfig` dataclass with `data_dir`, `output_dir`, `image_size`, `batch_size`, `epochs`, `learning_rate`, and `max_model_mb`.
+- `labels.py` — pinned `BINARY_LABELS = ("safe", "explicit")` and `POSITIVE_INDEX`. Class order is fixed here rather than derived from sorted directory names, which would invert FP/FN readings if a directory were renamed.
+- `model.py` — `create_classifier(class_count, pretrained)`, `create_feature_extractor`, `freeze_backbone`, `unfreeze_last_blocks`.
+- `dataset.py` — `LocalImageDataset` and `load_dataset` over `root/<label>/`; `ZipImageDataset` for reading a corpus archive in memory; `find_images` and `load_image` for the flat, label-free listings `corpus.py` consumes.
+- `corpus.py` — single-class evaluation corpora. Each corpus is uniform by construction, so one measurement reads as the false-positive rate on a benign corpus and as recall on an explicit one.
+- `gate.py` — release guardrail. A recall regression is CRITICAL and rolls back; failure to improve the false-positive rate is only a WARNING.
+- `train.py` — fine-tuning loop with per-epoch validation, device selection (MPS/CUDA/CPU), and a checkpoint carrying the label order.
+- `finetune.py` — backbone fine-tuning with discriminative learning rates, resumable across interruptions via `checkpointing.py`.
+- `features.py` / `extract.py` — convert a corpus into non-viewable feature vectors so evaluation never touches images again.
+- `eval.py` — pure metrics: `collect_predictions`, `score`, `evaluate`, `sweep_thresholds`, `misclassified`, `report`.
+- `metrics.py` — ROC-AUC, PR-AUC, miss-budget operating points, error-confidence diagnostic.
+- `harness.py` — `holy-blocker-eval` CLI over either images or cached vectors.
+- `export.py` / `quantize.py` / `export_tflite.py` — ONNX (5.81 MB), int8 ONNX (1.61 MB), TFLite (5.90 MB), all verified end to end.
+- `tests/` — 125+ tests. All fixtures are synthetic; no real imagery is required.
+
+Measured performance is in [results.md](results.md).
+
+**Still open:** a shippable `baseline-v0` checkpoint. The intended v0 adopts open
+pretrained NSFW weights rather than training from a curated corpus, which avoids
+taking permanent custody of explicit material — the fine-tuning path here reads a
+corpus archive in memory and deletes it afterwards.
 
 ## What to add
 
@@ -87,7 +101,98 @@ def report(result: EvalResult) -> str:
 src/holy_blocker_ml/export_tflite.py
 ```
 
-Converts a PyTorch checkpoint to a TFLite flatbuffer for Android (ONNX Runtime handles Windows). The conversion path is `torch → ONNX → TF SavedModel → TFLite`; `tensorflow` is already a declared dependency.
+Converts a PyTorch checkpoint to a TFLite flatbuffer for Android (ONNX Runtime handles Windows).
+
+**The conversion path was revised after a toolchain review (2026-07-18).** The
+original `torch → ONNX → TF SavedModel → TFLite` route is a dead end: it depends on
+`onnx-tf`, whose README carries an explicit deprecation notice and whose last release
+was 1.10.0 in March 2022. Current guidance:
+
+- **Primary: `litert-torch`** — Google's supported PyTorch→LiteRT converter, formerly
+  named `ai-edge-torch` (the GitHub repo now redirects; the import is `litert_torch`).
+  Converts directly from a `torch.nn.Module`, no ONNX hop. Converter status is Beta.
+- **Fallback: `onnx2tf`** (PINTO0309) — actively maintained, converts ONNX → LiteRT
+  directly and handles the NCHW→NHWC transposition that the old path got wrong.
+- **Do not use `onnx-tf`.**
+
+`litert-torch` does *not* require a full `tensorflow` install — it brings its own
+runtime stack (`ai-edge-litert`, `litert-converter`, `ai-edge-quantizer`). The
+`tensorflow` dependency in `pyproject.toml` should be dropped when this module lands.
+
+Constraints to check before starting — these bound the whole dev environment:
+
+| Constraint | Value | Status |
+|---|---|---|
+| `litert-torch` version | 0.9.1 (2026-05-19) | |
+| Python | `>=3.10, <3.14` | Verified — 3.13.14 works; 3.14 is out of range |
+| torch | `>=2.4.0, <2.13.0` | Verified — resolves to torch 2.12.1 |
+| Platform | Linux only per repo README | **Contradicted — conversion runs on macOS arm64** |
+
+The `.tflite` file extension and format are unchanged by the LiteRT rename.
+
+#### Conversion smoke test (run 2026-07-18, macOS arm64, Python 3.13.14)
+
+Converting `mobilenet_v3_small` with a 2-class head — the exact shape
+`model.create_classifier()` produces — **succeeds**, which settles the open question
+about `hardswish` and squeeze-and-excite op support:
+
+| Measure | Result |
+|---|---|
+| Conversion | Succeeds in ~11 s |
+| Artifact size (fp32, unquantized) | **6.19 MB** — inside the 15 MB `max_model_mb` budget before any quantization |
+| Compute | 112.7 M arithmetic ops / 56.4 M MACs |
+| Numerical fidelity vs torch | max abs logit difference **4.5e-7** |
+
+Two practical notes for whoever writes `export_tflite.py`: the README's Linux-only
+claim did not hold — the macOS arm64 wheels install and convert correctly, so no
+Docker is required for conversion. And the runtime emits `FutureWarning`s from
+`litert_torch/_convert/signature.py` about deprecated `treespec.children_specs`;
+these are internal to the library and harmless.
+
+#### CLIP attention-pool smoke test (same run)
+
+A candidate long-run backbone is `TinyCLIP-ResNet-30M-Text-29M-LAION400M` (MIT). Its
+vision tower is a CLIP `ModifiedResNet` — conv layers, which the MobileNetV3 test
+already covers, plus **one** `AttentionPool2d` block at the end over a fixed 7×7+1
+token grid. That attention block was the only unverified op risk, so it was tested in
+isolation (module rebuilt to the checkpoint's shapes, random weights, static input —
+convertibility depends on ops, not weights):
+
+| Measure | Result |
+|---|---|
+| Conversion of `AttentionPool2d(1792 → 1024, 7×7, 28 heads)` | **Succeeds in ~1.3 s** |
+| Output shape | `(1, 1024)` as expected |
+| Numerical fidelity vs torch | max abs difference **2.0e-7** |
+
+So `F.multi_head_attention_forward` converts through `litert-torch` at a static shape.
+Note the attention pool alone is ~11.5 M parameters — roughly a third of the 29.6 M
+vision tower — so the documented fallback of dropping it for global-average pooling
+(the `timm/resnet50_clip_gap.openai` pattern) would also shrink the artifact
+substantially, at some cost in embedding quality.
+
+**Still untested:** the full assembled ResNet tower, and int8 quantization, which has
+an [open crash report](https://github.com/google-ai-edge/litert-torch/issues/150) when
+a representative dataset is passed. Both probes above were fp32.
+
+#### Export contract (decided)
+
+Whatever backbone is chosen, `export_tflite.py` must export the **backbone only**,
+terminating at the embedding, with `forward` returning `(logits, embedding)`.
+Classification stays outside the graph — see the runtime findings recorded in
+[../../decisions/learning-from-feedback.md](../../decisions/learning-from-feedback.md).
+Baking the head into the `.tflite` would forfeit the ability to retarget the runtime
+later, and would break the on-device training design. The quantization recipe must be
+pinned and the embedding dtype/scale treated as a versioned interface: an int8
+backbone's scale and zero-point become part of the head's input contract, so a silent
+re-export would invalidate every fine-tuned head in the field.
+
+Reference documents:
+
+- [litert-torch repository](https://github.com/google-ai-edge/litert-torch)
+- [Convert PyTorch to LiteRT](https://developers.google.com/edge/litert/models/convert_pytorch)
+- [LiteRT for Android](https://developers.google.com/edge/litert/android)
+- [ai-edge-quantizer](https://github.com/google-ai-edge/ai-edge-quantizer)
+- [onnx2tf](https://github.com/PINTO0309/onnx2tf) (fallback path)
 
 ```python
 def export_tflite(
@@ -95,7 +200,7 @@ def export_tflite(
     output_path: Path,
     config: TrainingConfig,
 ) -> Path:
-    """Convert checkpoint to TFLite using the ONNX → TF SavedModel → TFLite path.
+    """Convert checkpoint to TFLite via litert_torch.convert().
 
     Applies dynamic range quantization for the first export.
     Int8 static quantization requires a calibration dataset and is not done here.
@@ -103,7 +208,47 @@ def export_tflite(
     """
 ```
 
-If `ai-edge-torch` is available in the environment it can be used as an alternative first step; fall back to the ONNX path otherwise.
+MobileNetV3 op support (`hardswish`, squeeze-and-excite) through this converter is
+**unverified** — the review found no evidence either way. Both decompose into Core
+ATen primitives the converter targets, so it is expected to work, but treat a
+conversion smoke test as a required first step rather than a formality. If conversion
+fails, `litert-torch` ships a `find_culprits` tool that bisects the graph to the
+offending op.
+
+### `corpus.py` and `gate.py`
+
+The false-positive / false-negative measurement harness. Both corpora are single-class
+by construction, so no per-file labels exist on disk — the label comes from the corpus
+kind, and one computation (the rate of explicit predictions) reads as the
+false-positive rate on a benign corpus and as recall on an explicit one.
+
+```python
+class CorpusKind(Enum):        # BENIGN -> false_positive_rate, EXPLICIT -> recall
+class CorpusSpec:              # name, root, kind
+class CorpusMeasurement:       # name, kind, item_count, value, metric_name
+
+def load_corpus(spec, image_size, batch_size) -> DataLoader
+def explicit_prediction_rate(model, loader) -> float
+def measure_corpus(model, spec, image_size, batch_size) -> CorpusMeasurement
+```
+
+`gate.py` implements the release rule from
+[../../decisions/learning-from-feedback.md](../../decisions/learning-from-feedback.md):
+recall regression is CRITICAL and rolls back; failure to improve the false-positive
+rate is a WARNING only. A false-positive win can never buy a recall regression — the
+corruptible metric has no authority over the guarded one.
+
+```python
+class MetricSnapshot:          # recall, false_positive_rate
+class GuardrailThresholds:     # max_recall_drop, min_false_positive_improvement
+class GateSeverity(Enum):      # OK, WARNING, CRITICAL
+
+def check_guardrail(baseline, candidate, thresholds=None) -> GateResult
+```
+
+**Corpus data never enters the repo.** `CorpusSpec.root` points at a gitignored local
+path; `load_corpus` raises a `FileNotFoundError` that says so. Tests exercise the
+plumbing with synthetic noise images only.
 
 ### `quantize.py`
 
@@ -195,9 +340,14 @@ reproduced across opsets 17–21 at both 32px and 224px. `export.py` passes
    run only after the full unfreeze.
 4. Relabelling study to settle the label-noise question, which remains open.
 
+
 ## What this does not cover
 
-- Federated learning, server aggregation, or any cloud components — the pipeline is strictly local and self-contained.
+- Federated learning, server aggregation, or any cloud components. This pipeline stays
+  strictly local and self-contained. The head that federated learning would train is
+  described above as a design direction only; if it is ever built it belongs in its own
+  Rust crate, not here, and any network path must be opt-in and off by default per the
+  local-first rule in AGENTS.md.
 - Sourcing or curating training data. The `data/` directory is gitignored; data curation is a separate out-of-repo process.
 - Text NLP model training. Text classification is handled deterministically by `packages/text-policy`; see [../content-classification.md](../../architecture/content-classification.md) (§ When To Add ML) for the gating rationale.
 - iOS CoreML export — deferred until iOS platform work begins.

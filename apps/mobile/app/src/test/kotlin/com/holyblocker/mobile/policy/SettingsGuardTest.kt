@@ -9,8 +9,26 @@ class SettingsGuardTest {
     private val self = "com.holyblocker.mobile"
     private val label = "Holy Blocker"
 
-    private fun guard(profile: SettingsProfile? = SettingsProfiles.AOSP) =
-        SettingsGuard(profile = profile, selfPackage = self, selfLabel = label)
+    private companion object {
+        /** DeviceAdminAdd's own view ids, dumped from an android-36 emulator. */
+        val DEVICE_ADMIN_IDS = setOf(
+            "com.android.settings:id/admin_name",
+            "com.android.settings:id/add_msg",
+            "com.android.settings:id/admin_warning",
+        )
+    }
+
+    private fun guard(
+        profile: SettingsProfile? = SettingsProfiles.AOSP,
+        // Active by default so the existing cases read as "steady state": the
+        // admin is on and the screen that would remove it is guarded.
+        deviceAdminActive: Boolean = true,
+    ) = SettingsGuard(
+        profile = profile,
+        selfPackage = self,
+        selfLabel = label,
+        isDeviceAdminActive = { deviceAdminActive },
+    )
 
     // Every identifier below was dumped from a running android-36 emulator, not
     // inferred. An earlier draft of this file used plausible-looking names and
@@ -45,7 +63,36 @@ class SettingsGuardTest {
         packageName = "com.android.settings",
         className =
             "com.android.settings.applications.specialaccess.deviceadmin.DeviceAdminAdd",
+        resourceIds = DEVICE_ADMIN_IDS,
         texts = listOf(label),
+    )
+
+    /**
+     * The same screen as it actually arrives most of the time.
+     *
+     * Dumped from an android-36 emulator: opening the activation prompt emits
+     * events carrying `android.widget.FrameLayout`, not the activity class. The
+     * resource ids are present throughout, which is why they carry the match.
+     */
+    private fun deviceAdminScreenWithoutClass() = ScreenIdentity(
+        packageName = "com.android.settings",
+        className = "android.widget.FrameLayout",
+        resourceIds = DEVICE_ADMIN_IDS,
+        texts = listOf(label),
+    )
+
+    /**
+     * The device-admin prompt for somebody else's app.
+     *
+     * Same activity and same view ids — "Find Hub" ships an admin on the stock
+     * android-36 image, so this is the ordinary case, not a contrived one.
+     */
+    private fun otherAppDeviceAdminScreen() = ScreenIdentity(
+        packageName = "com.android.settings",
+        className =
+            "com.android.settings.applications.specialaccess.deviceadmin.DeviceAdminAdd",
+        resourceIds = DEVICE_ADMIN_IDS,
+        texts = listOf("Find Hub", "Allow Find Hub to lock or erase a lost device"),
     )
 
     private fun unrelatedScreen() = ScreenIdentity(
@@ -72,10 +119,123 @@ class SettingsGuardTest {
     }
 
     @Test
-    fun `backs out of the device admin screen`() {
-        val decision = guard().evaluate(deviceAdminScreen(), nowMillis = 0)
+    fun `backs out of the device admin screen once the admin is active`() {
+        val decision = guard(deviceAdminActive = true)
+            .evaluate(deviceAdminScreen(), nowMillis = 0)
 
         assertEquals(GuardDecision.BackOut(GuardedSurface.DEVICE_ADMIN_SETTINGS), decision)
+    }
+
+    @Test
+    fun `allows the device admin screen while the admin is inactive`() {
+        // DeviceAdminAdd is the same activity for activating and deactivating.
+        // Guarding it unconditionally would eject the user from the only screen
+        // that can turn the admin on — the feature could never be enabled.
+        val decision = guard(deviceAdminActive = false)
+            .evaluate(deviceAdminScreen(), nowMillis = 0)
+
+        assertEquals(GuardDecision.Ignore, decision)
+    }
+
+    @Test
+    fun `allows the activation dialog when the activity class is not delivered`() {
+        // Regression, reproduced on an android-36 emulator before it was fixed:
+        // the activation prompt arrives as android.widget.FrameLayout, so a
+        // class-keyed exemption never fires. The screen then fell through to the
+        // self-mention catch-all and the guard backed the user out of the only
+        // screen that can turn the admin on — the feature was unreachable.
+        val decision = guard(deviceAdminActive = false)
+            .evaluate(deviceAdminScreenWithoutClass(), nowMillis = 0)
+
+        assertEquals(GuardDecision.Ignore, decision)
+    }
+
+    @Test
+    fun `guards the deactivation dialog when the activity class is not delivered`() {
+        // The other half: the same event shape must still be caught once the
+        // admin is on, or the exemption would simply unguard the screen.
+        val decision = guard(deviceAdminActive = true)
+            .evaluate(deviceAdminScreenWithoutClass(), nowMillis = 0)
+
+        assertEquals(GuardDecision.BackOut(GuardedSurface.DEVICE_ADMIN_SETTINGS), decision)
+    }
+
+    @Test
+    fun `the activation dialog is not recaptured by the self-mention catch-all`() {
+        // The trap in the case above: the activation dialog names this app, so
+        // exempting it by class is not enough — falling through to the
+        // SELF_IN_SETTINGS catch-all would back out of it anyway and the
+        // exemption would be silently dead.
+        val screen = deviceAdminScreen()
+        assertTrue("fixture must name the app for this test to mean anything", label in screen.texts)
+
+        val decision = guard(deviceAdminActive = false).evaluate(screen, nowMillis = 0)
+
+        assertEquals(GuardDecision.Ignore, decision)
+    }
+
+    @Test
+    fun `admin activation state is read live rather than captured at construction`() {
+        // The guard outlives the activation: it is built in onServiceConnected,
+        // and the admin is typically enabled later from onboarding.
+        var active = false
+        val g = SettingsGuard(
+            profile = SettingsProfiles.AOSP,
+            selfPackage = self,
+            selfLabel = label,
+            isDeviceAdminActive = { active },
+        )
+
+        assertEquals(GuardDecision.Ignore, g.evaluate(deviceAdminScreen(), nowMillis = 0))
+
+        active = true
+        assertEquals(
+            GuardDecision.BackOut(GuardedSurface.DEVICE_ADMIN_SETTINGS),
+            g.evaluate(deviceAdminScreen(), nowMillis = 10_000),
+        )
+    }
+
+    @Test
+    fun `ignores the device admin prompt for another app`() {
+        // DeviceAdminAdd is shared by every device admin on the phone, exactly
+        // like the uninstall dialog. Matching it by ids or class alone would
+        // eject the user from managing somebody else's admin app — well outside
+        // what this tool may do, and the same overreach the uninstall path is
+        // already careful to avoid.
+        assertEquals(
+            GuardDecision.Ignore,
+            guard(deviceAdminActive = true).evaluate(otherAppDeviceAdminScreen(), nowMillis = 0),
+        )
+        assertEquals(
+            GuardDecision.Ignore,
+            guard(deviceAdminActive = false).evaluate(otherAppDeviceAdminScreen(), nowMillis = 0),
+        )
+    }
+
+    @Test
+    fun `still guards our own device admin prompt among others`() {
+        // The narrowing above must not cost the real case.
+        assertEquals(
+            GuardDecision.BackOut(GuardedSurface.DEVICE_ADMIN_SETTINGS),
+            guard(deviceAdminActive = true).evaluate(deviceAdminScreen(), nowMillis = 0),
+        )
+    }
+
+    @Test
+    fun `the admin exemption does not leak to other guarded screens`() {
+        // Only the device-admin screen is conditional. Accessibility and App
+        // Info must stay guarded regardless of admin state, or turning the admin
+        // off would unguard everything else with it.
+        val g = guard(deviceAdminActive = false)
+
+        assertEquals(
+            GuardDecision.BackOut(GuardedSurface.ACCESSIBILITY_SETTINGS),
+            g.evaluate(accessibilityScreen(), nowMillis = 0),
+        )
+        assertEquals(
+            GuardDecision.BackOut(GuardedSurface.APP_INFO_SELF),
+            g.evaluate(appInfoScreen(), nowMillis = 10_000),
+        )
     }
 
     @Test

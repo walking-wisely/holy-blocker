@@ -38,13 +38,15 @@ The MVP builds that Layer 2 text path, and nothing else.
 - `scripts/build-ffi.sh` — Kotlin bindings + per-ABI `.so` — **Done.**
 - `scripts/smoke-test.sh` — end-to-end device check — **Done** (passes on android-36 arm64).
 - `policy/SettingsGuard.kt` — blocks the screens that would remove the guard — **Done** for the
-  AOSP profile, verified on an android-36 arm64 emulator. Device-admin identifiers are present
-  but **unverified**; Xiaomi and Samsung have no profile at all.
+  AOSP profile, verified on an android-36 arm64 emulator, device-admin identifiers included.
+  Xiaomi and Samsung have no profile at all.
 - `policy/ReleaseSchedule.kt` — request → cooldown → window timing, monotonic — **Done.**
 - `GuardSuspension.kt` — storage edge for the exit path — **Done.**
 - `VpnService` DNS/SNI filter — not yet created.
 - `MediaProjection` capture + image path — not yet created.
-- `DeviceAdminReceiver` / tamper log — not yet created. See [backlog.md](backlog.md).
+- `admin/HolyBlockerAdminReceiver.kt` — device admin, so uninstall is refused until it is
+  deactivated — **Done**, verified on an android-36 arm64 emulator.
+- Tamper log — not yet created. See [backlog.md](backlog.md).
 
 Known bypasses that remain open are tracked in **[backlog.md](backlog.md)**, ranked by how
 little effort they take. Read it before extending the guard — several plausible-looking
@@ -169,7 +171,7 @@ or the image model — is pure logic and gets unit tests like the rest of the de
 - [`MediaProjectionManager`](https://developer.android.com/reference/android/media/projection/MediaProjectionManager)
 - [Foreground service types](https://developer.android.com/develop/background-work/services/fgs/service-types) — the `mediaProjection` type and its start-order requirement
 
-### 7. Tamper resistance — not yet created
+### 7. Tamper resistance — partially built
 
 #### Device Owner is not available to this product
 
@@ -200,6 +202,23 @@ Two things survive, and both are worth having:
   sideloaded app, so the *grant* needs the device PIN.
 - **`onDisableRequested()`** fires after the user confirms deactivation but before it takes
   effect, and may return a warning string. It is the last reliable moment to record the event.
+
+Both are built (`admin/HolyBlockerAdminReceiver`) and verified on an `android-36` emulator:
+`adb uninstall` returns `DELETE_FAILED_DEVICE_POLICY_MANAGER` while the admin is active. The
+receiver declares **no** `<uses-policies>` — neither property needs one, and every tag declared
+would ask the user to grant a power the product never exercises.
+
+**`DeviceAdminAdd` is one activity for both directions**, and this is the trap in guarding it.
+It is the activation prompt while the admin is off and the deactivation prompt once it is on, so
+guarding it unconditionally makes the feature impossible to enable. `SettingsGuard` therefore
+exempts that surface while `isDeviceAdminActive()` is false.
+
+The exemption cannot be keyed on the activity class. Opening the prompt emits events carrying
+`android.widget.FrameLayout`; the real class arrives only on a later event that is not reliably
+sent. A class-keyed exemption silently misses, the screen falls through to the `SELF_IN_SETTINGS`
+catch-all, and the guard ejects the user from the screen that turns the admin on — observed on
+device, not theorised. The match is keyed on `admin_name` / `add_msg` / `admin_warning` resource
+ids instead, which are present on every event for that screen.
 
 #### The accessibility service is the enforcement mechanism
 
@@ -421,25 +440,46 @@ scaffolding and will fail at load time if they fall out of sync with the `.so`.
    with unrecognised-device reporting, bounded back-action, and the timed in-app disable.~~
    **Done** — AOSP profile verified on an android-36 arm64 emulator: the accessibility list and
    our App Info are blocked consistently, ten unrelated settings screens are not, and the timed
-   disable both releases the guard and resumes when it expires. Device admin identifiers are
-   present but **unverified** — the screen needs `EXTRA_DEVICE_ADMIN` naming a receiver that does
-   not exist yet, so confirm them in step 7. Xiaomi profile still to be added.
-6. Device Admin — `DeviceAdminReceiver` for uninstall friction, plus an `onDisableRequested`
+   disable both releases the guard and resumes when it expires. Device admin identifiers were
+   confirmed in step 6, once a receiver existed to open the screen with. Xiaomi profile still to
+   be added.
+6. ~~Device Admin — `DeviceAdminReceiver` for uninstall friction, plus an `onDisableRequested`
    warning. Plain admin only; no owner-only calls. Also the only way to verify the
-   `DeviceAdminAdd` identifier, which cannot be reached until a receiver exists.
-7. Split-screen window resolution, then recents (§7 and [backlog.md](backlog.md)) — the bypasses
-   that go around step 5 rather than defeating it.
-8. **Tamper log** — append-only local record of guard-state transitions and removal attempts.
-   The backstop for what steps 5–7 cannot prevent (guest user, safe mode, adb); entries must
+   `DeviceAdminAdd` identifier, which cannot be reached until a receiver exists.~~ **Done** —
+   uninstall refused (`DELETE_FAILED_DEVICE_POLICY_MANAGER`) on an android-36 emulator. The
+   `DeviceAdminAdd` identifier is confirmed, and the screen turned out to need resource-id
+   matching rather than the class; see §7.
+7. **The empty harvest** ([backlog.md](backlog.md) item 1b) — the catch-all cannot fire on a tree
+   with no text in it, which currently leaves the device admin list unguarded and silently
+   weakens `mentionsSelf` on *any* screen that harvests empty. Evidence first: the
+   `empty harvest` diagnostic in `ScreenGuardService` discriminates the causes, and the leading
+   one is `flagIncludeNotImportantViews` being unset rather than anything to do with windows.
+   Scoped deliberately to exclude split screen — an earlier pass treated the two as one bug on
+   the strength of a stale backlog line, and they are not related.
+8. Split-screen window resolution, then recents (§7 and [backlog.md](backlog.md) item 2) — the
+   bypasses that go around step 5 rather than defeating it. Ranked after step 7 because it needs
+   deliberate user intent, while the empty harvest needs none. Note `GLOBAL_ACTION_BACK` is
+   global, so multi-window evaluation needs the action fixed before the matching is widened.
+9. **Tamper log** — append-only local record of guard-state transitions and removal attempts.
+   The backstop for what steps 5–8 cannot prevent (guest user, safe mode, adb); entries must
    survive the app being disabled.
-9. Foreground service + restart-on-boot. **Note the real reason:** an `AccessibilityService`
+10. Foreground service + restart-on-boot. **Note the real reason:** an `AccessibilityService`
    is system-bound and already restarts on boot while it stays enabled, so this neither makes
    the guard harder to kill nor is required for it to survive a reboot. What it provides is an
    always-visible status surface, a health check for removal routes we cannot observe, and the
    FGS host that the last two steps require. It may also reduce the recents-swipe kill in step 6.
-10. `VpnService` DNS/SNI filter. Note that without `setAlwaysOnVpnPackage` (owner-only) the VPN
+11. `VpnService` DNS/SNI filter. Note that without `setAlwaysOnVpnPackage` (owner-only) the VPN
     can be turned off in Settings like anything else — guard that screen the same way.
-11. `MediaProjection` capture once `image-sandbox` lands.
+12. `MediaProjection` capture once `image-sandbox` lands.
+
+#### Reference documents — steps 7 and 8
+
+- [`AccessibilityServiceInfo`](https://developer.android.com/reference/android/accessibilityservice/AccessibilityServiceInfo) — the `accessibilityFlags` values, `FLAG_INCLUDE_NOT_IMPORTANT_VIEWS` and `FLAG_RETRIEVE_INTERACTIVE_WINDOWS` among them
+- [`FLAG_INCLUDE_NOT_IMPORTANT_VIEWS`](https://developer.android.com/reference/android/accessibilityservice/AccessibilityServiceInfo#FLAG_INCLUDE_NOT_IMPORTANT_VIEWS) — the step 7 candidate; read alongside [`importantForAccessibility`](https://developer.android.com/reference/android/view/View#attr_android:importantForAccessibility), which is what it overrides
+- [`AccessibilityService.getWindows()`](https://developer.android.com/reference/android/accessibilityservice/AccessibilityService#getWindows()) and [`AccessibilityWindowInfo`](https://developer.android.com/reference/android/view/accessibility/AccessibilityWindowInfo) — window enumeration for step 8, including `isActive`/`isFocused`
+- [`GLOBAL_ACTION_BACK`](https://developer.android.com/reference/android/accessibilityservice/AccessibilityService#GLOBAL_ACTION_BACK) — note it takes no window argument, which is the hazard recorded in step 8
+- [`AccessibilityNodeInfo`](https://developer.android.com/reference/android/view/accessibility/AccessibilityNodeInfo) — `getChild`, `refresh`, and what each does and does not re-fetch
+- [`UiAutomation.setServiceInfo`](https://developer.android.com/reference/android/app/UiAutomation#setServiceInfo(android.accessibilityservice.AccessibilityServiceInfo)) — why a `uiautomator` dump and a bound service can see different trees
 
 ## Gotchas learned the hard way
 
