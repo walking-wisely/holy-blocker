@@ -31,6 +31,7 @@ class RescanSchedule(
     private val offsetsMillis: List<Long> = DEFAULT_OFFSETS_MILLIS,
 ) {
     private var nextIndex = 0
+    private var elapsedMillis = 0L
 
     /**
      * An event arrived on a watched screen and did not match.
@@ -39,7 +40,7 @@ class RescanSchedule(
      *   this screen is spent.
      */
     fun onWatchedEvent(): Long? {
-        nextIndex = 0
+        reset()
         return advance()
     }
 
@@ -49,9 +50,27 @@ class RescanSchedule(
     /** The screen matched, or the user left it. */
     fun reset() {
         nextIndex = 0
+        elapsedMillis = 0
     }
 
-    private fun advance(): Long? = offsetsMillis.getOrNull(nextIndex)?.also { nextIndex++ }
+    /**
+     * The wait until the next look, measured from now.
+     *
+     * [offsetsMillis] are absolute — measured from the event that armed the
+     * schedule — but the caller feeds this straight to `Handler.postDelayed`,
+     * which is relative. Returning the offsets verbatim therefore stacked each
+     * wait on the previous one and pushed the looks out to 0.4s, 1.4s and 3.4s.
+     * The delta is what keeps the offsets meaning what they say.
+     */
+    private fun advance(): Long? {
+        val offset = offsetsMillis.getOrNull(nextIndex) ?: return null
+        nextIndex++
+        // coerce guards a misordered offsets list: a negative delay would make
+        // postDelayed fire immediately and burn the budget in one frame.
+        val delay = (offset - elapsedMillis).coerceAtLeast(0)
+        elapsedMillis = offset
+        return delay
+    }
 
     companion object {
         /**

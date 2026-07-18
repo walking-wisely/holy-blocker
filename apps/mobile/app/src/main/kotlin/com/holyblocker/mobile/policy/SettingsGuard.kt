@@ -357,16 +357,33 @@ class SettingsGuard(
         // and most precise signal — and unlike Settings' visible copy it does
         // not change with the device language.
         screen.resourceIds.firstNotNullOfOrNull { profile.resourceIdSurfaces[it] }
-            ?.let { return exempt(it) }
+            ?.let { return narrow(it, screen) }
 
         profile.screens
             .firstOrNull { it.className == screen.className && (!it.requiresSelfMention || mentionsSelf(screen)) }
-            ?.let { return exempt(it.surface) }
+            ?.let { return narrow(it.surface, screen) }
 
         // Last resort, and the one that actually holds: the activity class is
         // only on window-state events and those are not always delivered, so a
         // screen naming us is treated as guarded whatever class it reports.
         return if (mentionsSelf(screen)) GuardedSurface.SELF_IN_SETTINGS else null
+    }
+
+    /**
+     * Applies the rules that hold however the surface was identified.
+     *
+     * Both are about the same activity and both must survive a match by
+     * resource id as well as by class, which is why they live here rather than
+     * on `GuardedScreen`.
+     */
+    private fun narrow(surface: GuardedSurface, screen: ScreenIdentity): GuardedSurface? {
+        // DeviceAdminAdd hosts the prompt for *every* device admin on the
+        // phone, exactly like the uninstall dialog. Guarding it without
+        // checking whose admin it is would eject the user from managing
+        // somebody else's app, which is well outside what this tool may do.
+        if (surface in SELF_MENTION_REQUIRED && !mentionsSelf(screen)) return null
+
+        return exempt(surface)
     }
 
     /**
@@ -416,5 +433,15 @@ class SettingsGuard(
          * attempt rather than a continuation of a loop that already ended.
          */
         const val BACK_OUT_RESET_MILLIS = 5_000L
+
+        /**
+         * Surfaces whose activity is shared with other apps, so a match only
+         * counts when the screen names us.
+         *
+         * `UNINSTALL_SELF` is not listed because it is already reached by a
+         * self-mention-only path in [match] — the installer package never
+         * matches by class at all.
+         */
+        private val SELF_MENTION_REQUIRED = setOf(GuardedSurface.DEVICE_ADMIN_SETTINGS)
     }
 }

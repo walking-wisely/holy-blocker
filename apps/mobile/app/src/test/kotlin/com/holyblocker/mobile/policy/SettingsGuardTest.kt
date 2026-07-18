@@ -81,6 +81,20 @@ class SettingsGuardTest {
         texts = listOf(label),
     )
 
+    /**
+     * The device-admin prompt for somebody else's app.
+     *
+     * Same activity and same view ids — "Find Hub" ships an admin on the stock
+     * android-36 image, so this is the ordinary case, not a contrived one.
+     */
+    private fun otherAppDeviceAdminScreen() = ScreenIdentity(
+        packageName = "com.android.settings",
+        className =
+            "com.android.settings.applications.specialaccess.deviceadmin.DeviceAdminAdd",
+        resourceIds = DEVICE_ADMIN_IDS,
+        texts = listOf("Find Hub", "Allow Find Hub to lock or erase a lost device"),
+    )
+
     private fun unrelatedScreen() = ScreenIdentity(
         packageName = "com.other.app",
         className = "com.other.app.MainActivity",
@@ -178,6 +192,32 @@ class SettingsGuardTest {
         assertEquals(
             GuardDecision.BackOut(GuardedSurface.DEVICE_ADMIN_SETTINGS),
             g.evaluate(deviceAdminScreen(), nowMillis = 10_000),
+        )
+    }
+
+    @Test
+    fun `ignores the device admin prompt for another app`() {
+        // DeviceAdminAdd is shared by every device admin on the phone, exactly
+        // like the uninstall dialog. Matching it by ids or class alone would
+        // eject the user from managing somebody else's admin app — well outside
+        // what this tool may do, and the same overreach the uninstall path is
+        // already careful to avoid.
+        assertEquals(
+            GuardDecision.Ignore,
+            guard(deviceAdminActive = true).evaluate(otherAppDeviceAdminScreen(), nowMillis = 0),
+        )
+        assertEquals(
+            GuardDecision.Ignore,
+            guard(deviceAdminActive = false).evaluate(otherAppDeviceAdminScreen(), nowMillis = 0),
+        )
+    }
+
+    @Test
+    fun `still guards our own device admin prompt among others`() {
+        // The narrowing above must not cost the real case.
+        assertEquals(
+            GuardDecision.BackOut(GuardedSurface.DEVICE_ADMIN_SETTINGS),
+            guard(deviceAdminActive = true).evaluate(deviceAdminScreen(), nowMillis = 0),
         )
     }
 

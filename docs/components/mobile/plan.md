@@ -440,9 +440,9 @@ scaffolding and will fail at load time if they fall out of sync with the `.so`.
    with unrecognised-device reporting, bounded back-action, and the timed in-app disable.~~
    **Done** — AOSP profile verified on an android-36 arm64 emulator: the accessibility list and
    our App Info are blocked consistently, ten unrelated settings screens are not, and the timed
-   disable both releases the guard and resumes when it expires. Device admin identifiers are
-   present but **unverified** — the screen needs `EXTRA_DEVICE_ADMIN` naming a receiver that does
-   not exist yet, so confirm them in step 7. Xiaomi profile still to be added.
+   disable both releases the guard and resumes when it expires. Device admin identifiers were
+   confirmed in step 6, once a receiver existed to open the screen with. Xiaomi profile still to
+   be added.
 6. ~~Device Admin — `DeviceAdminReceiver` for uninstall friction, plus an `onDisableRequested`
    warning. Plain admin only; no owner-only calls. Also the only way to verify the
    `DeviceAdminAdd` identifier, which cannot be reached until a receiver exists.~~ **Done** —

@@ -86,8 +86,11 @@ live suspect for 1(b).
 Fix: resolve the root for the event's own window via `getWindows()` / `event.windowId`, falling
 back to `rootInActiveWindow`. Better still, evaluate every window belonging to a watched package
 — that closes freeform and picture-in-picture by the same change. `flagRetrieveInteractiveWindows`
-is already set in `accessibility_service_config.xml` and `getWindows()` is never called, so the
-capability is already paid for.
+is already set in `accessibility_service_config.xml`, so the capability is already paid for.
+
+`ScreenGuardService.rootFor` now reads `windows`, but only to recover from a null
+`rootInActiveWindow` — it takes the first window whose root matches the package, which is not the
+event's window. That leaves split screen wrong, and is a live suspect for 1(b).
 
 Keep the decision in `SettingsGuard` (pass a list of `ScreenIdentity`, return the strongest
 decision) so it stays JVM-testable.
