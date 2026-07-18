@@ -27,6 +27,7 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader
 
+from holy_blocker_ml.checkpointing import load_resume_state, resume_epoch, save_atomic
 from holy_blocker_ml.config import TrainingConfig
 from holy_blocker_ml.dataset import ZipImageDataset
 from holy_blocker_ml.eval import collect_predictions, report, score
@@ -35,6 +36,9 @@ from holy_blocker_ml.model import create_classifier, trainable_parameter_names, 
 from holy_blocker_ml.train import select_device
 
 CHECKPOINT_NAME = "finetuned-v0.pt"
+#: Written every epoch with optimizer and scheduler state so an interrupted run
+#: continues rather than restarting. CHECKPOINT_NAME holds the best epoch only.
+RESUME_NAME = "finetuned-v0.last.pt"
 
 
 def stratified_split(
@@ -117,6 +121,7 @@ def finetune(
     seed: int = 0,
     num_workers: int = 4,
     pretrained: bool = True,
+    resume: bool = True,
 ) -> Path:
     """Fine-tune against the archive and save a checkpoint. Returns its path."""
     config.output_dir.mkdir(parents=True, exist_ok=True)
@@ -152,9 +157,33 @@ def finetune(
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=config.epochs)
 
     output_path = config.output_dir / CHECKPOINT_NAME
+    resume_path = config.output_dir / RESUME_NAME
     best_accuracy = 0.0
+    start_epoch = 1
 
-    for epoch in range(1, config.epochs + 1):
+    if resume:
+        state = load_resume_state(resume_path)
+        if state is not None:
+            if state.get("seed") != seed or state.get("val_fraction") != val_fraction:
+                raise SystemExit(
+                    f"{resume_path} was written with a different split "
+                    f"(seed={state.get('seed')}, val_fraction={state.get('val_fraction')}); "
+                    "resuming would leak validation samples into training. Delete it "
+                    "or rerun with the original values."
+                )
+            model.load_state_dict(state["model_state"])
+            model.to(device)
+            optimizer.load_state_dict(state["optimizer_state"])
+            scheduler.load_state_dict(state["scheduler_state"])
+            best_accuracy = float(state.get("best_accuracy", 0.0))
+            start_epoch = resume_epoch(resume_path)
+            print(f"resuming from epoch {start_epoch} (best so far {best_accuracy:.4f})")
+
+    if start_epoch > config.epochs:
+        print("checkpoint is already at or past the requested epoch count")
+        return output_path
+
+    for epoch in range(start_epoch, config.epochs + 1):
         model.train()
         total, batches = 0.0, 0
         for images, labels in train_loader:
@@ -181,7 +210,7 @@ def finetune(
 
         if result.accuracy > best_accuracy:
             best_accuracy = result.accuracy
-            torch.save(
+            save_atomic(
                 {
                     "model_state": model.state_dict(),
                     "labels": list(BINARY_LABELS),
@@ -193,7 +222,24 @@ def finetune(
                 },
                 output_path,
             )
-            print(f"  saved (best so far: {best_accuracy:.4f})")
+            print(f"  best so far: {best_accuracy:.4f} -> {output_path.name}")
+
+        # Written every epoch regardless of quality: this is what resume reads.
+        save_atomic(
+            {
+                "model_state": model.state_dict(),
+                "optimizer_state": optimizer.state_dict(),
+                "scheduler_state": scheduler.state_dict(),
+                "labels": list(BINARY_LABELS),
+                "frozen_backbone": False,
+                "unfreeze": unfreeze,
+                "epoch": epoch,
+                "best_accuracy": best_accuracy,
+                "seed": seed,
+                "val_fraction": val_fraction,
+            },
+            resume_path,
+        )
         model.to(device)
 
     return output_path
@@ -216,6 +262,11 @@ def main() -> None:
     )
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument(
+        "--no-resume",
+        action="store_true",
+        help="ignore any resume checkpoint and start from scratch",
+    )
+    parser.add_argument(
         "--delete-archive",
         action="store_true",
         help="remove the corpus once training finishes",
@@ -236,6 +287,7 @@ def main() -> None:
             unfreeze=args.unfreeze,
             backbone_lr=args.backbone_lr,
             num_workers=args.workers,
+            resume=not args.no_resume,
         )
         print(f"\nsaved {artifact}")
         print("cached feature artifacts are now stale — regenerate with")
