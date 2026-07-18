@@ -8,11 +8,34 @@
   typeViewScrolled        — user scrolled; new content entered the viewport
 
   ScanGate debounces the last two, which fire far faster than a scan is useful.
+
+  isAccessibilityTool — the fix for backlog item 1(b), and the only one there is.
+  Android 14 (API 34) added accessibilityDataSensitive: a view marked sensitive is
+  served to accessibility services that declare isAccessibilityTool and withheld
+  from every other one. Settings marks the device-admin list rows that way, which
+  is why that screen harvested chrome and no rows while a uiautomator dump of the
+  same moment showed them — UiAutomation is exempt. Measured on an android-36
+  emulator: without this the RecyclerView reports childCount=0 and refresh() does
+  not change it; with it, 2 children and the SELF_IN_SETTINGS catch-all fires.
+
+  Neither candidate the backlog ranked above this one survived the measurement:
+  flagIncludeNotImportantViews grew the tree 5 -> 16 nodes without producing a
+  single row, and is deliberately not set here.
+
+  This is also a Play policy declaration — it asserts the service is built to
+  assist users with disabilities — so it is a distribution commitment, not just a
+  manifest attribute. Accepted knowingly: short of Device Owner, which plan.md §7
+  rules out permanently, nothing else reaches those rows.
+
+  References:
+    https://developer.android.com/reference/android/R.attr#accessibilityDataSensitive
+    https://developer.android.com/reference/android/accessibilityservice/AccessibilityServiceInfo#isAccessibilityTool()
 -->
 <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
     android:accessibilityEventTypes="typeWindowStateChanged|typeWindowContentChanged|typeViewScrolled"
     android:accessibilityFeedbackType="feedbackGeneric"
     android:accessibilityFlags="flagReportViewIds|flagRetrieveInteractiveWindows"
     android:canRetrieveWindowContent="true"
+    android:isAccessibilityTool="true"
     android:description="@string/accessibility_service_description"
     android:notificationTimeout="100" />
