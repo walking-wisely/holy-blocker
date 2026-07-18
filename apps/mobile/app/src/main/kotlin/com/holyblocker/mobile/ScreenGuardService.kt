@@ -223,7 +223,23 @@ class ScreenGuardService : AccessibilityService() {
     }
 
     private fun currentScreenIdentity(packageName: String, className: String?): ScreenIdentity? {
-        val root = rootFor(packageName) ?: return null
+        val root = rootFor(packageName) ?: run {
+            // Not silent, deliberately. Case 1(a) was invisible for as long as it
+            // was because every log sat behind `root != null`, so a guard that
+            // never saw the screen looked identical to one that saw it and found
+            // nothing to match. This is the same failure one layer up from
+            // logEmptyHarvest, and it needs its own signal or that diagnostic
+            // simply never runs.
+            //
+            // Shape only — window ids and package names, never titles or text.
+            Log.w(
+                TAG,
+                "no root pkg=$packageName windows=${windows.size} " +
+                    "pkgs=${windows.mapNotNull { it.root?.packageName?.toString() }.distinct()} " +
+                    "activeRoot=${rootInActiveWindow?.packageName}",
+            )
+            return null
+        }
         val texts = mutableListOf<String>()
         val resourceIds = mutableSetOf<String>()
         collectIdentity(root, texts, resourceIds, depth = 0, budget = NodeBudget())
@@ -243,7 +259,7 @@ class ScreenGuardService : AccessibilityService() {
         // (backlog.md item 1b). Three hypotheses produce it and they need
         // different fixes, so dump what tells them apart — but only on the
         // failing case, since this walks the tree a second time.
-        if (texts.isEmpty()) logEmptyHarvest(packageName, root)
+        if (texts.size < DIAGNOSTIC_TEXT_FLOOR) logEmptyHarvest(packageName, root)
 
         return ScreenIdentity(
             packageName = packageName,
@@ -256,19 +272,26 @@ class ScreenGuardService : AccessibilityService() {
     /**
      * Diagnostic for an empty harvest on a populated screen — backlog item 1(b).
      *
-     * Discriminates the three candidate causes in one dump:
+     * Kept after that item was closed, because it is the signal that says a
+     * guarded screen is being harvested blind — a regression here is silent
+     * otherwise. What it discriminates, corrected against what it measured:
      *
      *  - **Wrong window.** More than one window for [packageName] means [rootFor]
-     *    picking the first match is a real suspect. Exactly one means it is not,
-     *    and window-resolution work would be wasted.
-     *  - **Filtered subtree.** `declared` counts children the tree says exist;
-     *    `fetched` counts the ones `getChild` actually returned. A gap is the
-     *    signature of nodes filtered out of this service's view — the case
-     *    `flagIncludeNotImportantViews` would address, and the reason a
-     *    `uiautomator` dump seeing the row proves nothing about what we can see.
-     *  - **Genuinely absent.** `declared == fetched` with no text means the rows
-     *    are not in the tree we were handed at all, and neither of the above
-     *    helps.
+     *    picking the first match is a real suspect. Exactly one means it is not.
+     *    This held: the device-admin list reported `windows=1`, which is what
+     *    ruled item 2 out as a cause of 1(b) rather than merely ranking it last.
+     *  - **Fetch failure.** `declared` counts children the tree says exist;
+     *    `fetched` counts the ones `getChild` actually returned. A gap means
+     *    nodes are being lost on the way out.
+     *  - **Withheld subtree.** `declared == fetched` and still no text. Note this
+     *    does *not* distinguish "absent" from "filtered", which is what the
+     *    original version of this comment claimed: both `importantForAccessibility`
+     *    filtering and `accessibilityDataSensitive` are applied by the framework
+     *    before `childCount` is reported, so a withheld subtree shows no gap at
+     *    all. 1(b) turned out to be exactly this case — `declared == fetched == 16`
+     *    with the rows withheld — and was closed by `isAccessibilityTool`. Compare
+     *    against a `uiautomator` dump to size the gap, remembering UiAutomation is
+     *    exempt from both mechanisms.
      *
      * No text and no window titles are logged, only shape — the screen's contents
      * stay on the screen, same rule as the harvest log above.
@@ -473,5 +496,18 @@ class ScreenGuardService : AccessibilityService() {
          * an ANR rather than a limit normal operation should ever reach.
          */
         private const val MAX_NODES = 3_000
+
+        /**
+         * Text-fragment count below which a settings harvest is treated as
+         * suspect and [logEmptyHarvest] runs.
+         *
+         * Not zero, which is what this started as. The device-admin list harvests
+         * *three* fragments — the toolbar title and its chrome — with none of the
+         * list rows, so a strictly-empty trigger never fired on the one screen the
+         * diagnostic was written for. Any real settings screen carries far more
+         * than this, so the floor buys the chrome-only case without firing on
+         * screens that are merely sparse.
+         */
+        private const val DIAGNOSTIC_TEXT_FLOOR = 8
     }
 }
