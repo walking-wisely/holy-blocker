@@ -30,12 +30,58 @@ Anything requiring Device Owner is out of scope permanently — see plan.md §7.
 
 ## Next
 
-### 1. Split-screen harvests the wrong window
+### 1. A guarded screen can sit unguarded because the harvest comes back empty
+
+**The headline case: the device admin list is not guarded.** It names this app, so it should hit
+the `SELF_IN_SETTINGS` catch-all — and it does not. Reproduced repeatedly on an android-36
+emulator: the list sits open showing our own row, service bound and subscribed, guard idle.
+
+This is *not* an event-delivery problem, which is what it looks like at first. Instrumenting
+`onAccessibilityEvent` showed the event arrives normally
+(`pkg=com.android.settings type=32`, i.e. `TYPE_WINDOW_STATE_CHANGED`). The failure is entirely
+in the harvest. Two distinct causes were measured, and only the first is fixed:
+
+**(a) `rootInActiveWindow` is null — fixed.** On a settings task restored from the background it
+returns null and *stays* null: still null 2s after the screen was drawn and interactive. Every
+logging and evaluation path sat behind `root != null`, so the guard was silent rather than
+visibly failing. Fixed by falling back to enumerating `windows` for a root matching the event's
+package (`ScreenGuardService.rootFor`), plus `RescanSchedule` to take a second look after the
+events stop. `flagRetrieveInteractiveWindows` was already set, so this cost no new capability.
+
+**(b) The node tree lacks the list rows — open, and this is what still breaks the case above.**
+With (a) fixed the re-looks now run against a real tree, and the tree is *still* wrong: the
+device-admin list harvests only `content_parent`, `collapsing_toolbar`, `recycler_view` — the
+chrome, with no row nodes at all — at 400 ms, 1 s and 2 s after the event, while a `uiautomator`
+dump of the same moment plainly shows the "Holy Blocker" row. So this is not slow rendering and
+no amount of waiting fixes it; the tree we are handed genuinely does not contain the rows.
+
+Unresolved. Candidates worth testing, cheapest first:
+
+- `AccessibilityNodeInfo.refresh()` on the root before walking — the tree may be a stale snapshot.
+- Fetching the root from the **active/focused** window specifically rather than the first
+  package match in `windows`; a backgrounded settings window from earlier in the same task would
+  present exactly this shape (correct chrome, no current rows).
+- Whether the `RecyclerView` children need `getChild()` to be driven differently to force the
+  fetch, or are gated by `importantForAccessibility`.
+
+The `texts=` count now in the `settings screen` debug log is the signal to work from: an empty
+harvest on a visibly populated screen is this bug, and is otherwise indistinguishable from a
+screen that simply did not match.
+
+Note this weakens the catch-all generally, not just for the device-admin list — `mentionsSelf`
+cannot fire on a tree with no text in it, on any screen where the harvest comes back empty.
+
+### 2. Split-screen harvests the wrong window
 
 `ScreenGuardService.guardSettingsScreen` takes `packageName`/`className` from the event but
 harvests text from `rootInActiveWindow` — the *focused* window. In split screen those differ, so
 a Settings event gets the other app's node tree, `mentionsSelf` fails, and the app-label
 catch-all that §7 calls load-bearing silently does nothing.
+
+Overlaps item 1(a), which added a `windows` fallback for the *null-root* case only. That fallback
+takes the first window whose root matches the package, which is not the same as taking the
+event's own window — so split screen is still wrong, and picking the wrong window there is a
+live suspect for 1(b).
 
 Fix: resolve the root for the event's own window via `getWindows()` / `event.windowId`, falling
 back to `rootInActiveWindow`. Better still, evaluate every window belonging to a watched package
@@ -46,7 +92,7 @@ capability is already paid for.
 Keep the decision in `SettingsGuard` (pass a list of `ScreenIdentity`, return the strongest
 decision) so it stays JVM-testable.
 
-### 2. `app_name` must never be localised
+### 3. `app_name` must never be localised
 
 The catch-all matches on the app's own label, which works only because it is a brand string.
 There is currently one `res/values/` directory, so the reasoning holds — but adding any
@@ -56,7 +102,7 @@ locale, reintroducing from our own side the exact failure §7 warns about for Se
 Fix: `translatable="false"`, or a dedicated non-localised match constant, plus a test asserting
 the matcher label is locale-independent.
 
-### 3. SystemUI is entirely unwatched
+### 4. SystemUI is entirely unwatched
 
 `watchesPackage` covers Settings and (now) the installers. `com.android.systemui` hosts Quick
 Settings and the accessibility floating panel. On AOSP the a11y panel toggles the *shortcut
@@ -67,7 +113,7 @@ about, and Xiaomi and Samsung both customise SystemUI heavily.
 Fix: watch it on a **self-mention-only** path, and **cover rather than back out**. Backing out of
 the notification shade or volume panel is indistinguishable from a broken phone.
 
-### 4. `OverlayController` can crash the service
+### 5. `OverlayController` can crash the service
 
 `hide()` calls `removeView` uncaught on the accessibility callback path; it throws
 `IllegalArgumentException` when the view is not attached. A throw there kills the event, and
@@ -76,7 +122,7 @@ repeated throws can take the service down — a bypass by way of a crash.
 Fix: wrap `addView`/`removeView`, and on `addView` failure leave `shownState` as `CLEAR` so the
 next event retries rather than believing a cover is up that is not.
 
-### 5. Foreground service
+### 6. Foreground service
 
 Does not keep the guard alive (plan.md, implementation order) and does not close recents-swipe on
 Pixel, where a bound accessibility service is not killed by swiping. It does raise priority
@@ -84,7 +130,7 @@ against low-memory kills and gives an always-visible status signal. Verify the r
 claim on real Samsung hardware before writing any mitigation for it — the claim in §7 comes from
 AppBlock's docs, and AppBlock ships to OEMs with aggressive task-killers that AOSP does not have.
 
-### 6. Dead `reset()` methods
+### 7. Dead `reset()` methods
 
 `ScanGate.reset()` and `SettingsGuard.reset()` are never called — `onServiceConnected` builds
 fresh instances. Harmless now, but `SettingsGuard.reset()` clears the release window, so wiring
