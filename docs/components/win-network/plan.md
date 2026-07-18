@@ -343,5 +343,5 @@ Links are grouped by the module that uses them. Read these before implementing e
 - **WFP callout driver** — kernel-mode packet filtering via Windows Filtering Platform is a future phase. The Wintun + userspace splice path in `net-shield` is sufficient for Phase 1.
 - **QUIC / UDP blocking** — blocking QUIC traffic to force HTTP/2 fallback is a policy decision documented in [decisions/](../../decisions/). Implementation is deferred.
 - **macOS `NEPacketTunnelProvider`** — handled in `native-modules/mac-network/`. Same `PacketSink` trait from `net-shield` applies; the adapter layer is Swift.
-- **Android VpnService** — handled in `native-modules/android-service/`. Out of scope here.
+- **Android VpnService** — handled in `apps/mobile/`. Out of scope here.
 - **Rule file format and sync** — how filter rules are authored, packaged, and delivered to the service is part of the broader policy pipeline. The `reload_rules` IPC command accepts a file path; what writes that file is a separate concern.

@@ -15,7 +15,7 @@ The packages below **exist in the repo today** and are actively being built:
 | `apps/desktop` | TypeScript / Electron + React | Skeleton — BrowserWindow, one IPC stub, status UI |
 | `packages/text-policy` | Rust | normalize + lexicon + verdict + scorer + evaluator + policy done; FFI surface done (see `packages/text-policy-ffi`) |
 | `packages/text-policy-ffi` | Rust | UniFFI wrapper over text-policy — PolicyEngine + evaluate exposed; Kotlin bindings generated for Android |
-| `apps/mobile` | Kotlin / Android | AccessibilityService text path MVP — policy core + ScanGate + overlay + onboarding done; text-policy wired in over UniFFI; smoke-test passes end-to-end on an android-36 arm64 emulator (blocks and clears a real screen); foreground service + VpnService/MediaProjection next |
+| `apps/mobile` | Kotlin / Android | AccessibilityService text path MVP — policy core + ScanGate + overlay + onboarding done; text-policy wired in over UniFFI; SettingsGuard blocks the accessibility/App Info screens that would remove the guard, with a timed in-app disable as the exit path; all verified on an android-36 arm64 emulator. Plain Device Admin only — never design around Device Owner. Foreground service + VpnService/MediaProjection next |
 | `packages/mitm-proxy` | Rust | Plain HTTP forwarding + TLS state/cert generation + CONNECT handler + HTTP/1.1 tunnel loop with phase 3/4/5 scan hooks done; text-policy wired into scan_url/scan_body; ProtectionMode next |
 | `packages/net-shield` | Rust | radix domain/IP filter done; SNI parser done; tun adapter + PacketSink dispatch done; NetShield struct + run loop done (Windows Wintun path); smoke-test done — all 5 plan steps complete |
 | `native-modules/win-daemon` | C++20 | WinEvent hooks + message loop; no capture/OCR/IPC yet |
@@ -24,9 +24,10 @@ The packages below **exist in the repo today** and are actively being built:
 The packages below are **planned but not yet created** — do not assume they exist:
 
 - `native-modules/win-network` — Windows Service: Wintun driver install, routing rules, named-pipe IPC for net-shield
-- `native-modules/android-service` — Android edge daemon: AccessibilityService, VpnService, MediaProjection, Compose overlay, Device Owner policy. Plan written (`docs/components/android-service/plan.md`); toolchain not yet bootstrapped (no JDK, no emulator image)
 - `packages/image-sandbox` — perceptual hashing + ONNX image classifier
 - `packages/video-watchdog` — async HLS/DASH segment sampler
+
+`native-modules/android-service` was planned but never created — the Android work shipped as `apps/mobile/` instead, and it targets plain Device Admin rather than the Device Owner model the old plan assumed. `docs/components/android-service/plan.md` is a superseded stub pointing at `docs/components/mobile/plan.md`; do not build against it.
 
 Each active package has a step-by-step implementation plan in `docs/components/<package>/plan.md`. Read the relevant plan before starting work on a package — it lists the next modules to add, their types, and the correct implementation order.
 
