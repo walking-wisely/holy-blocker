@@ -34,9 +34,40 @@ class RescanScheduleTest {
         // fires too early to see the rows or wastes a wait on every screen.
         val s = schedule(400, 1000, 2000)
 
+        // Deltas, not the offsets themselves — see the cumulative test below.
         assertEquals(400L, s.onWatchedEvent())
+        assertEquals(600L, s.onRescanMissed())
         assertEquals(1000L, s.onRescanMissed())
-        assertEquals(2000L, s.onRescanMissed())
+    }
+
+    @Test
+    fun `the offsets are absolute — the looks land where they say they do`() {
+        // Regression. The returned values are fed straight to postDelayed, which
+        // schedules relative to now, so returning the offsets verbatim made each
+        // wait stack on the last: [400, 1000, 2000] fired at 0.4s, 1.4s and 3.4s.
+        // Measured on device at 0.4s/1.5s/3.5s before the fix, against a KDoc
+        // promising the last look lands by ~2s.
+        val s = schedule(400, 1000, 2000)
+
+        var elapsed = 0L
+        elapsed += s.onWatchedEvent()!!
+        assertEquals(400L, elapsed)
+        elapsed += s.onRescanMissed()!!
+        assertEquals(1000L, elapsed)
+        elapsed += s.onRescanMissed()!!
+        assertEquals(2000L, elapsed)
+    }
+
+    @Test
+    fun `restarting the settle timer restarts the elapsed budget`() {
+        // A fresh event means a fresh screen, so the next look is 400ms from
+        // then — not 400ms from an event two screens ago.
+        val s = schedule(400, 1000, 2000)
+
+        s.onWatchedEvent()
+        s.onRescanMissed()
+
+        assertEquals(400L, s.onWatchedEvent())
     }
 
     @Test
