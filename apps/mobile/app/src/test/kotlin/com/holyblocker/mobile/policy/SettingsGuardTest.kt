@@ -662,28 +662,43 @@ class SettingsGuardTest {
     // --- unfocused windows (split screen) ---------------------------------
 
     @Test
-    fun `covers instead of backing out when the matched window is not focused`() {
-        // The hazard behind backlog item 2. GLOBAL_ACTION_BACK takes no window
-        // argument -- it lands on whatever is focused. Firing it for a matched
-        // window the user is *not* driving presses BACK inside their innocent
-        // foreground app, and never dismisses the pane that matched, so it would
-        // repeat until the bound trips: ~3.6s of stray BACK presses, then a cover
-        // over the wrong app anyway. Cover from the start instead.
+    fun `waits rather than acting when the matched window is not focused`() {
+        // GLOBAL_ACTION_BACK takes no window argument -- it lands on whatever is
+        // focused. Firing it for a matched window the user is *not* driving
+        // presses BACK inside their innocent foreground app and never dismisses
+        // the pane that matched.
+        //
+        // Covering instead is worse: the overlay spans the display, not the pane,
+        // so it would black out the innocent app -- and covering never trips the
+        // back-out bound, so nothing would end it.
         val guard = guard()
         val screen = accessibilityScreen().copy(windowFocused = false)
 
+        assertEquals(GuardDecision.Ignore, guard.evaluate(screen, nowMillis = 0))
+    }
+
+    @Test
+    fun `backs out as soon as the guarded pane takes focus`() {
+        // What makes waiting safe, and the reason this rule is specific to the
+        // guard: a guarded surface is a control, and a control cannot be operated
+        // without focus. The toggle is unreachable for exactly as long as we
+        // decline to act, and the moment it becomes reachable we act.
+        val guard = guard()
+
+        guard.evaluate(accessibilityScreen().copy(windowFocused = false), nowMillis = 0)
+
         assertEquals(
-            GuardDecision.CoverOnly(GuardedSurface.ACCESSIBILITY_SETTINGS),
-            guard.evaluate(screen, nowMillis = 0),
+            GuardDecision.BackOut(GuardedSurface.ACCESSIBILITY_SETTINGS),
+            guard.evaluate(accessibilityScreen(), nowMillis = 10),
         )
     }
 
     @Test
     fun `an unfocused match does not consume the back-out budget`() {
-        // Covering is not an attempt at leaving, so it must not count toward the
-        // bound. If it did, a settings pane parked unfocused in split screen
-        // would exhaust the budget without a single BACK being sent, and the
-        // guard would still be degraded once the user focused it.
+        // Declining to act is not an attempt at leaving, so it must not count
+        // toward the bound. If it did, a settings pane parked unfocused in split
+        // screen would exhaust the budget without a single BACK being sent, and
+        // the guard would already be degraded by the time the user focused it.
         val guard = guard()
         val unfocused = accessibilityScreen().copy(windowFocused = false)
 
