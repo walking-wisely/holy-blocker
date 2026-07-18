@@ -1,5 +1,9 @@
 # Machine Learning Pipeline — Implementation Plan
 
+**Measured performance lives in [results.md](results.md).** Planned experiments are
+under [experiments/](experiments/). The threshold and metric choices are recorded in
+[decisions/classifier-operating-point.md](../../decisions/classifier-operating-point.md).
+
 The classification strategy and model gating rationale live in [../content-classification.md](../../architecture/content-classification.md).
 This document is the build plan: what modules to add, in what order, and what each one is responsible for.
 
@@ -179,6 +183,17 @@ the classifier; `onnxruntime`'s shape inference rejects it during quantization
 ("Inferred shape and existing shape differ in dimension 0: (576) vs (1024)"),
 reproduced across opsets 17–21 at both 32px and 224px. `export.py` passes
 `dynamo=False`. The legacy exporter is deprecated, so this needs revisiting.
+
+## Next steps
+
+1. **Full unfreeze.** Training accuracy is 94.6% against 92.2% validation — a 2.4pp
+   gap. The model underfits, so more capacity is the cheapest remaining gain and a
+   prerequisite for judging whether more data helps.
+2. **Threshold from the miss budget**, not 0.5. See
+   [results.md](results.md#cost-of-a-miss-budget).
+3. **[Anime subsampling experiment](experiments/anime-subsampling.md)** — pre-registered,
+   run only after the full unfreeze.
+4. Relabelling study to settle the label-noise question, which remains open.
 
 ## What this does not cover
 
