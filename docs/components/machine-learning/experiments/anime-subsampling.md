@@ -224,54 +224,63 @@ of the training set. The drawn and photographic sub-problems really do occupy
 near-disjoint regions, which is what makes the decision rule's "preserve
 photographic" clause measurable at all.
 
-**The volume slope, which is the scale arm A has to be read against.** Halving
-the drawn training half costs 0.0146 drawn AUC. Fitting the usual log-linear
-learning curve (AUC deficit linear in log n) through the two points gives
-0.0211 AUC per natural-log unit of drawn training volume.
+**Drawn AUC is materially sensitive to drawn training volume.** Halving the
+drawn training half costs 0.0146 drawn AUC — larger than the +0.010 the decision
+rule asks arm A to gain. This is qualitative, and it is the part that matters:
+**some fraction of any arm A gain is volume, not labels**, and this experiment
+has no way to separate the two.
 
-Arm A adds 4,480 images, taking drawn volume 8,960 → 13,440. That is +0.406
-log-units, so the same curve predicts:
+### What arm B does *not* license
 
-> **+0.0085 drawn AUC — if the anime data were exactly as useful as more
-> in-distribution data.**
+An earlier version of this section converted the above into a numeric
+expectation for arm A: fit a log-linear learning curve through the two points,
+extrapolate to +4,480 images, predict +0.0085, and read that as the value of
+"data as useful as in-distribution data." **That was withdrawn.** It is wrong in
+three ways, each sufficient on its own.
 
-### The accept bar may be unreachable, and that is not a result about anime
+**There is no measured curve.** Two points determine a line with zero degrees of
+freedom. Nothing in the data tests whether the log-linear form holds, and the
+extrapolation runs *upward* from 8,960 while the only measured interval runs
+*downward* to 4,480 — 0.41 log-units of extrapolation off 0.69 log-units of
+measurement, in the untested direction. No correlation between volume and AUC
+was estimated anywhere; the functional form was assumed and its one parameter
+back-solved.
 
-The pre-registered accept threshold is **+0.010**. The extrapolation above puts a
-*perfect* 50% data increase at **+0.0085**, below it. Anime data is
-out-of-distribution relative to a validation set made entirely of `drawings` and
-`hentai`, so the realistic ceiling is lower still.
+**"Per image usefulness" is not a quantity the two arms share.** Arm B removes
+*in-distribution* images; arm A adds *out-of-distribution* ones. Treating these
+as inverse operations on one curve presumes a single latent usefulness-per-image
+that both measure. Adding anime data does not only add volume — it moves the
+training distribution away from the validation distribution, so images can add
+drawn signal and simultaneously pull the boundary toward Danbooru art. The net
+is not `N × quality`, and no comparison against an extrapolated scalar can
+establish "at least as good per image."
 
-So arm A can very plausibly return "inconclusive" while the anime data is doing
-everything data of its size could do. The threshold was fixed when the cost of a
-data intervention was unknown; arm B is the first measurement of that cost, and
-it suggests +0.010 asks for more than +4,480 images of *any* provenance can
-deliver.
+**The slope inherits unquantified seed noise.** The 0.0146 is a difference of
+two single unreplicated runs. Propagating a per-run seed sd through it:
 
-Consequences, fixed now:
+| per-run seed sd | predicted gain | 95% CI |
+|---|---|---|
+| 0.003 | +0.0085 | [+0.0037, +0.0134] |
+| 0.005 | +0.0085 | [+0.0004, +0.0166] |
+| 0.010 | +0.0085 | [−0.0077, +0.0248] |
 
-- A drawn gain in the **+0.005 to +0.010** band must not be written up as a
-  failure of the anime data. Against the slope it is close to the ceiling for
-  this volume, and the honest reading is "the intervention worked about as well
-  as data can at this scale, and the bar was set above that scale."
-- A gain **at or above +0.0085** means the anime data is performing at least as
-  well per image as in-distribution data — the strongest outcome available, and
-  a direct answer to the label-quality question, whether or not it clears
-  +0.010.
-- A gain **near zero or negative** is the genuine null: the data is not
-  contributing even what its volume would predict.
+At every plausible noise level the interval contains **both zero and the +0.010
+accept bar**, so it cannot adjudicate either. Quoting +0.0085 as a threshold
+gave a point estimate the design cannot support.
 
-The decision rule itself is **unchanged** — it still reports accept / reject /
-inconclusive on its original thresholds. This section constrains the *narrative*
-around a verdict, not the verdict.
+### What this actually changes
 
-### Caveats on the extrapolation
+Only this, and it is qualitative: **a drawn gain in arm A cannot be attributed
+to label quality**, because drawn AUC moves substantially with drawn volume
+alone and arm A changes volume and provenance together. Separating them needs an
+arm that adds 4,480 *in-distribution* drawn images — which this corpus cannot
+supply, since it is fully consumed — or a dose-response series at several anime
+volumes.
 
-One interval, two points, one seed. The log-linear form is a convention, not a
-law, and the slope is measured on the *downward* side where the curve is
-steepest — so +0.0085 is more likely an over-estimate than an under-estimate of
-what +50% buys. It is a calibration for reading a number, not a prediction to be
-scored.
+The decision rule is unchanged and no threshold is reinterpreted. Arm A reports
+accept / reject / inconclusive on its original numbers, and any gain is reported
+as "volume and provenance confounded," which is the honest description of what
+was run.
 
 ### Withdrawn: the substitution amendment
 
