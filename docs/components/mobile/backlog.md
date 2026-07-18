@@ -19,24 +19,18 @@ Anything requiring Device Owner is out of scope permanently — see plan.md §7.
 - ~~**Uninstall dialog was unwatched.**~~ Reproduced on device: launcher long-press → Uninstall
   lands in `com.google.android.packageinstaller`, which `watchesPackage` did not cover, so the
   guard never saw it. **Fixed** — installer packages are watched on a self-mention-only path.
+- ~~**`DeviceAdminReceiver` — the other half of the uninstall fix.**~~ **Built** — `adb uninstall`
+  now returns `DELETE_FAILED_DEVICE_POLICY_MANAGER` while the admin is active, verified on an
+  android-36 emulator. The `DeviceAdminAdd` entry it was blocking is confirmed as a real class,
+  but is **not** matched by class: the screen arrives as `android.widget.FrameLayout` and the
+  activity class only lands on a later, unreliable event. Matching moved to the
+  `admin_name` / `add_msg` / `admin_warning` resource ids, and `SettingsGuard` now exempts that
+  surface while the admin is inactive — without which the guard backed the user out of the only
+  screen that can turn the admin on. See [plan.md](plan.md) §7.
 
 ## Next
 
-### 1. `DeviceAdminReceiver` — the other half of the uninstall fix
-
-With an admin active, Android refuses the uninstall outright ("must be deactivated before
-uninstalling"). Framework behaviour, not a policy call, so it survives the device-admin
-deprecation and needs no owner privileges. Highest-value unbuilt item.
-
-Also the only way to verify the `DeviceAdminAdd` entry in `SettingsProfiles.AOSP`, which is
-currently an unconfirmed guess — the screen needs `EXTRA_DEVICE_ADMIN` naming a real receiver
-before it can be opened at all.
-
-Includes `onDisableRequested()`, which fires after the user confirms deactivation but before it
-takes effect — the last reliable moment to record the event. Warning only; never obstruct
-beyond that (plan.md §7).
-
-### 2. Split-screen harvests the wrong window
+### 1. Split-screen harvests the wrong window
 
 `ScreenGuardService.guardSettingsScreen` takes `packageName`/`className` from the event but
 harvests text from `rootInActiveWindow` — the *focused* window. In split screen those differ, so
@@ -52,7 +46,7 @@ capability is already paid for.
 Keep the decision in `SettingsGuard` (pass a list of `ScreenIdentity`, return the strongest
 decision) so it stays JVM-testable.
 
-### 3. `app_name` must never be localised
+### 2. `app_name` must never be localised
 
 The catch-all matches on the app's own label, which works only because it is a brand string.
 There is currently one `res/values/` directory, so the reasoning holds — but adding any
@@ -62,7 +56,7 @@ locale, reintroducing from our own side the exact failure §7 warns about for Se
 Fix: `translatable="false"`, or a dedicated non-localised match constant, plus a test asserting
 the matcher label is locale-independent.
 
-### 4. SystemUI is entirely unwatched
+### 3. SystemUI is entirely unwatched
 
 `watchesPackage` covers Settings and (now) the installers. `com.android.systemui` hosts Quick
 Settings and the accessibility floating panel. On AOSP the a11y panel toggles the *shortcut
@@ -73,7 +67,7 @@ about, and Xiaomi and Samsung both customise SystemUI heavily.
 Fix: watch it on a **self-mention-only** path, and **cover rather than back out**. Backing out of
 the notification shade or volume panel is indistinguishable from a broken phone.
 
-### 5. `OverlayController` can crash the service
+### 4. `OverlayController` can crash the service
 
 `hide()` calls `removeView` uncaught on the accessibility callback path; it throws
 `IllegalArgumentException` when the view is not attached. A throw there kills the event, and
@@ -82,7 +76,7 @@ repeated throws can take the service down — a bypass by way of a crash.
 Fix: wrap `addView`/`removeView`, and on `addView` failure leave `shownState` as `CLEAR` so the
 next event retries rather than believing a cover is up that is not.
 
-### 6. Foreground service
+### 5. Foreground service
 
 Does not keep the guard alive (plan.md, implementation order) and does not close recents-swipe on
 Pixel, where a bound accessibility service is not killed by swiping. It does raise priority
@@ -90,7 +84,7 @@ against low-memory kills and gives an always-visible status signal. Verify the r
 claim on real Samsung hardware before writing any mitigation for it — the claim in §7 comes from
 AppBlock's docs, and AppBlock ships to OEMs with aggressive task-killers that AOSP does not have.
 
-### 7. Dead `reset()` methods
+### 6. Dead `reset()` methods
 
 `ScanGate.reset()` and `SettingsGuard.reset()` are never called — `onServiceConnected` builds
 fresh instances. Harmless now, but `SettingsGuard.reset()` clears the release window, so wiring

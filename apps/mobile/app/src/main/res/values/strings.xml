@@ -45,4 +45,15 @@
       claiming otherwise would be the one thing worse than not having it.
     -->
     <string name="status_device_unsupported">Screen protection is unverified on this device — settings are not guarded.</string>
+
+    <!--
+      Device admin. The explanation is shown on the system activation screen and
+      the warning on the deactivation screen; both state the consequence and stop
+      there, per docs/decisions/formation-model.md.
+    -->
+    <string name="admin_status_on">Uninstall protection is on.</string>
+    <string name="admin_status_off">Uninstall protection is off.</string>
+    <string name="action_enable_admin">Turn on uninstall protection</string>
+    <string name="admin_add_explanation">While this is on, Holy Blocker cannot be uninstalled until you turn it off again. It grants no other permissions — it cannot lock, wipe, or change your device.</string>
+    <string name="admin_disable_warning">Turning this off lets Holy Blocker be uninstalled again.</string>
 </resources>
