@@ -195,6 +195,12 @@ def main() -> None:
         )
 
     print(report(result))
+
+    from holy_blocker_ml.metrics import report_metrics
+
+    print()
+    print(report_metrics(predictions))
+
     if not args.no_sweep:
         print("\nthreshold sweep")
         print(report_sweep(sweep_thresholds(predictions, DEFAULT_SWEEP)))
