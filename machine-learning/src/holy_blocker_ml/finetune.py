@@ -122,21 +122,38 @@ def finetune(
     num_workers: int = 4,
     pretrained: bool = True,
     resume: bool = True,
+    plan=None,
+    supplement_archive: Path | None = None,
 ) -> Path:
-    """Fine-tune against the archive and save a checkpoint. Returns its path."""
+    """Fine-tune against the archive and save a checkpoint. Returns its path.
+
+    `plan` (an `anime.MixturePlan`) adds a supplementary corpus to the drawn
+    training half, removes part of it, or both, while leaving the validation
+    half untouched so the run stays comparable to the pre-registered baselines.
+    Without it the split is the plain stratified one.
+    """
     config.output_dir.mkdir(parents=True, exist_ok=True)
     device = select_device()
 
     index = ZipImageDataset(archive_path, image_size=config.image_size, augment=False)
-    train_idx, val_idx = stratified_split(index.source_labels, val_fraction, seed)
-    print(f"train {len(train_idx)}  val {len(val_idx)}")
 
-    train_set = ZipImageDataset(
-        archive_path, image_size=config.image_size, augment=True, indices=train_idx
-    )
-    val_set = ZipImageDataset(
-        archive_path, image_size=config.image_size, augment=False, indices=val_idx
-    )
+    if plan is None:
+        train_idx, val_idx = stratified_split(index.source_labels, val_fraction, seed)
+        print(f"train {len(train_idx)}  val {len(val_idx)}")
+        train_set = ZipImageDataset(
+            archive_path, image_size=config.image_size, augment=True, indices=train_idx
+        )
+        val_set = ZipImageDataset(
+            archive_path, image_size=config.image_size, augment=False, indices=val_idx
+        )
+    else:
+        from holy_blocker_ml.anime import build_training_sets
+
+        train_set, val_set = build_training_sets(
+            archive_path, supplement_archive, plan, config.image_size
+        )
+        print(plan.describe(index.source_labels))
+        print(f"\ntrain {len(train_set)}  val {len(val_set)}")
     train_loader = DataLoader(
         train_set, batch_size=config.batch_size, shuffle=True, num_workers=num_workers
     )
@@ -271,6 +288,25 @@ def main() -> None:
         action="store_true",
         help="remove the corpus once training finishes",
     )
+    parser.add_argument(
+        "--supplement",
+        type=Path,
+        help="anime supplement archive from holy-blocker-anime; swaps part of the "
+        "drawn training half for it, leaving the validation half untouched",
+    )
+    parser.add_argument(
+        "--drop-fraction",
+        type=float,
+        default=0.0,
+        help="share of the drawn training half to remove; with no --supplement this "
+        "is the ablation control arm",
+    )
+    parser.add_argument(
+        "--anime-count",
+        type=int,
+        help="anime images the supplement holds; defaults to the supplement's size",
+    )
+    parser.add_argument("--drop-seed", type=int, default=0)
     args = parser.parse_args()
 
     config = TrainingConfig(
@@ -280,6 +316,39 @@ def main() -> None:
         epochs=args.epochs,
         learning_rate=args.head_lr,
     )
+    # A plan is built whenever an arm departs from the plain split — either by
+    # adding a supplement or by dropping drawn data. The ablation control arm
+    # is the second case, and was unreachable while this keyed on --supplement.
+    plan = None
+    if args.supplement is not None or args.drop_fraction > 0:
+        from holy_blocker_ml.anime import (
+            ANIME_LABEL_POLICY,
+            ANIME_SOURCE_CLASSES,
+            mixture_plan,
+        )
+
+        index = ZipImageDataset(args.archive, image_size=args.image_size, augment=False)
+        anime_count = args.anime_count
+        if anime_count is None:
+            if args.supplement is None:
+                anime_count = 0
+            else:
+                anime_count = len(
+                    ZipImageDataset(
+                        args.supplement,
+                        image_size=args.image_size,
+                        augment=False,
+                        policy=ANIME_LABEL_POLICY,
+                        classes=ANIME_SOURCE_CLASSES,
+                    )
+                )
+        plan = mixture_plan(
+            index.source_labels,
+            drop_fraction=args.drop_fraction,
+            anime_count=anime_count,
+            drop_seed=args.drop_seed,
+        )
+
     try:
         artifact = finetune(
             args.archive,
@@ -288,6 +357,8 @@ def main() -> None:
             backbone_lr=args.backbone_lr,
             num_workers=args.workers,
             resume=not args.no_resume,
+            plan=plan,
+            supplement_archive=args.supplement,
         )
         print(f"\nsaved {artifact}")
         print("cached feature artifacts are now stale — regenerate with")

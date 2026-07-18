@@ -23,6 +23,12 @@ __pycache__/
 # Extracted feature vectors — derived from explicit corpora, never committed.
 *.npz
 artifacts/
+# The corpus is large enough that worktrees share one copy and symlink to it.
+# A trailing slash matches directories only, so the patterns above skip a
+# symlink standing in for one — the same defect that left `machine-learning/`
+# unprotected until the `**/` prefixes were added.
+**/machine-learning/data
+**/machine-learning/artifacts
 .pytest_cache/
 # Dev-time credentials. .env.example is tracked; .env never is.
 .env

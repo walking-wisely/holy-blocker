@@ -6,6 +6,9 @@ with the commands in [`machine-learning/README.md`](../../../machine-learning/RE
 Numbers here are measured, not estimated. Where something is inferred or
 unverified it says so.
 
+Pre-registered experiments — their arms, decision rules, and verdicts — are
+indexed in [experiments/](experiments/README.md).
+
 ## Corpus
 
 [`deepghs/nsfw_detect`](https://huggingface.co/datasets/deepghs/nsfw_detect) —
@@ -115,6 +118,15 @@ full unfreeze is the cheapest remaining improvement.
 > throughout this document describe the unfreeze-3 model and are kept as the
 > record it was measured against.
 
+**More drawn data does not fix the drawn axis — and the wrong drawn data makes
+it worse.** Adding 4,480 subsampled `anime_dbrating` images to the drawn
+training half *lowered* drawn AUC 0.9604 → 0.9526, while an ablation control
+that removed 4,480 in-distribution drawn images lowered it to 0.9458. Since
+removing volume hurts, volume has positive marginal value, so the anime data's
+contribution net of volume is negative rather than merely absent. Inconclusive
+by the experiment's pre-registered rule; nothing supports adopting it. See
+[experiments/anime-subsampling.md](experiments/anime-subsampling.md).
+
 **Two confusion axes, not one.** A 5-way probe on the same features shows
 `drawings→hentai` (64% of drawings errors) and `sexy→porn` (62% of sexy errors)
 dominate, while cross-medium confusion is near zero (`drawings→sexy` = 1). The
@@ -132,6 +144,11 @@ no relabelling study has been run.
   (drawn-to-photographic 0.0314 → 0.0279) but does not close it. See
   [experiments/full-unfreeze.md](experiments/full-unfreeze.md).
 - The label-noise rate. No annotator agreement study or relabelling pass exists.
+- Whether *any* better-labelled drawn corpus helps. The anime experiment showed
+  that one corpus, mapped one way, at one volume, does not — most likely domain
+  mismatch rather than label quality. It did not test the general claim.
+- Whether per-medium routing beats mixing. It is the follow-up the anime
+  experiment's failure branch points to, and nothing has been built.
 - Whether these numbers transfer to real traffic. This corpus is a scraped
   taxonomy, not a sample of what users actually encounter.
 - Calibration. Scores are used as a ranking; they are not known to be

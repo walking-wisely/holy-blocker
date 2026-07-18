@@ -1,6 +1,8 @@
 # Experiment: does subsampled anime data improve the drawn axis?
 
-**Status:** planned, not run.
+**Status:** run. **Verdict: inconclusive by the pre-registered rule — treat as a
+null and do not adopt.** Substantively the drawn axis got *worse*, not merely
+flat. See [Result](#result).
 **Pre-registered:** criteria and baselines below were fixed *before* running, so
 the result cannot be reinterpreted after the fact.
 
@@ -47,10 +49,16 @@ Caveat: CC-BY-4.0 covers the curation, not the underlying third-party artwork.
    photographic. Sample `anime_dbrating` so the combined set holds that ratio.
    Naively mixing 1.2M against 28k is 40:1 and would let drawn content dominate
    gradient updates in a 2.5M-parameter backbone.
+   **Amended before the run — see [Protocol amendment](#protocol-amendment).**
+   As written this step admits only n=0, because the corpus is already exactly
+   40% drawn. Substitution replaces addition.
 2. **Map ratings to the binary policy.** `general` + `sensitive` → `safe`,
-   `explicit` → `explicit`. Hold `questionable` out of training entirely for the
-   first run — its whole value is as an evaluation set for the boundary, and
-   assigning it a side would re-import the arbitrariness being fixed.
+   `explicit` → `explicit`. ~~Hold `questionable` out of training entirely for
+   the first run — its whole value is as an evaluation set for the boundary, and
+   assigning it a side would re-import the arbitrariness being fixed.~~
+   **Reversed before the run:** `questionable` → `safe`. Holding it out biases
+   drawn AUC downward for reasons unrelated to label quality — see
+   [`questionable` maps to safe](#questionable-maps-to-safe-reversing-method-step-2).
 3. Fine-tune with identical hyperparameters to the current run (`--unfreeze 3`,
    6 epochs, cosine, backbone LR 1e-4 / head 1e-3) so the only variable is data.
 4. Score against the **frozen holdouts** below.
@@ -101,6 +109,306 @@ would show a ~1.8pp regression that is purely an artifact of the swap.
 The common holdout is a strict subset of the validation split, so any run
 sharing `seed=0` and `val_fraction=0.2` can be scored on both.
 
+## Protocol amendment
+
+Fixed **before** the run. The decision rule, its thresholds, and the baselines
+are untouched.
+
+An earlier version of this amendment proposed *substitution* — hold drawn volume
+fixed and swap half of it for anime data. It was withdrawn after review, before
+any run. The reasoning and the reason it fails are recorded in
+[Withdrawn: the substitution amendment](#withdrawn-the-substitution-amendment),
+because the failure is instructive.
+
+### The defect in method step 1
+
+Step 1 says to sample so the combined set holds 40% drawn / 60% photographic.
+The corpus is 5,600 images in each of five classes: `drawings` + `hentai` =
+11,200 of 28,000, which is **already exactly 40%**. Adding any drawn data pushes
+it above 40%, so the rule as written is satisfied only by adding nothing.
+
+But its purpose is stated in the risk table: *"Volume imbalance swamps
+photographic content → subsample to the 40:60 ratio."* That is a guard against
+the naive 40:1 mix, not a conservation law. The repair consistent with that
+intent is to bound the drift rather than forbid it.
+
+### The bound
+
+**Drawn may grow but must not exceed photographic.** At 4,480 added images the
+drawn share of the training half goes 40% → exactly 50%, and drawn never
+outweighs photographic in a gradient step. Recorded here so the number is fixed
+in advance rather than chosen once results are visible.
+
+### Three arms
+
+Addition alone cannot separate "better labels helped" from "more data helped",
+so a control arm runs beside it. The two are symmetric around the baseline —
+4,480 added, 4,480 removed — so their deltas share a scale.
+
+| arm | drawn (train) | photographic (train) | drawn share | what it measures |
+|---|---|---|---|---|
+| **baseline** | 8,960 original | 13,440 | 40% | the full-unfreeze run, already measured |
+| **A — addition** | 8,960 original + 4,480 anime | 13,440 | 50% | the pre-registered question |
+| **B — ablation** | 4,480 original | 13,440 | 25% | how much drawn AUC depends on drawn volume at all |
+
+Arm B is what makes arm A readable. If arm A moves drawn AUC by less than the
+slope implied by arm B, the anime data is doing no more than generic volume
+would; if it moves more, the labels are contributing something.
+
+The validation half is 5,600 frozen original samples in every arm.
+
+### `questionable` maps to safe, reversing method step 2
+
+Step 2 held `questionable` out of training entirely. That is withdrawn, because
+it biases the result in a way unrelated to what is being measured.
+
+`drawings` is a **residual** class — every drawn image that is not `hentai` —
+so on the Danbooru scale it spans `general`, `sensitive`, and much of
+`questionable`. Holding `questionable` out of the anime safe class while the
+validation set keeps such content inside `drawings` truncates the safe class's
+borderline support on the training side only. The predicted effect is more false
+positives on exactly the `drawings` images this experiment calls 62% of all
+over-blocks — a drawn AUC drop **by construction**, with no bearing on label
+quality.
+
+Mapping it to safe is also the choice consistent with the established policy,
+which already puts `sexy` (photographic suggestive) on the safe side.
+
+The original rationale — that assigning it a side "would re-import the
+arbitrariness being fixed" — mistakes the level. The arbitrariness this dataset
+fixes is *per-image*: `drawings` commits this content to the safe side wholesale,
+while Danbooru rates each image against published criteria. Keeping
+`questionable` and labelling it safe preserves that per-image judgement in the
+training signal; dropping it discards the images the experiment most wants.
+
+### Recorded deviation
+
+Method step 3's "identical hyperparameters" means those of the full-unfreeze
+run, as the Prerequisite section established.
+
+### What this does not fix
+
+**A single run per arm cannot decide the rule.** The thresholds are ±0.003 to
+0.010; run-to-run variance from the training seed alone is plausibly the same
+size. Against sampling noise the thresholds are defensible — the drawn AUC
+standard error at n=2,240 and AUC 0.9604 is 0.0042 (Hanley–McNeil), so a paired
++0.010 is roughly 3σ at a score correlation of 0.7 — but seed variance is
+unmeasured and unaccounted for.
+
+Three seeds per arm would fix this and is the right design; it is not what is
+being run. **The verdict from this run is therefore a screen, not a test.** A
+result near a threshold should be read as "worth replicating", never as
+"accepted" or "rejected". Recorded in advance so the write-up cannot quietly
+claim more than the design supports.
+
+## Result
+
+All three arms, identical hyperparameters, full unfreeze, `seed=0`,
+`val_fraction=0.2`, one run each. Scored with `holy-blocker-score` on the frozen
+holdouts.
+
+### Validation split — the set the decision rule is evaluated on
+
+| | baseline | arm A (+4,480 anime) | arm B (−4,480 drawn) | A − base | B − base |
+|---|---|---|---|---|---|
+| photographic | 0.9883 | 0.9872 | 0.9883 | −0.0011 | +0.0000 |
+| **drawn** | **0.9604** | **0.9526** | **0.9458** | **−0.0078** | **−0.0146** |
+| combined | 0.9796 | 0.9769 | 0.9757 | −0.0027 | −0.0039 |
+| FP at 5% miss | 10.09% | 11.55% | 13.51% | +1.46pp | +3.42pp |
+
+### Common holdout — reported alongside
+
+| | baseline | arm A | arm B |
+|---|---|---|---|
+| photographic | 0.9881 | 0.9886 | 0.9894 |
+| drawn | 0.9699 | 0.9573 | 0.9466 |
+| combined | 0.9832 | 0.9802 | 0.9778 |
+| FP at 5% miss | 8.2% | 9.4% | 11.1% |
+
+### Applying the rule
+
+- **Accept** needs drawn ≥ +0.010. Drawn moved **−0.0078**. Not met.
+- **Reject** triggers if photographic drops > 0.005. It dropped **0.0011**. Not
+  triggered.
+- **Verdict: inconclusive.** Per the rule, treat as a null result and do not
+  adopt.
+
+"Inconclusive" understates it, though: drawn AUC did not fail to improve, it
+**declined**, and the miss-budget cost rose 1.5pp. Nothing here supports adopting
+the anime data.
+
+### What the control arm adds
+
+Arm B is what makes arm A interpretable, and the two together say more than
+either alone.
+
+Ordering the three arms by drawn training volume:
+
+| drawn training images | composition | drawn AUC |
+|---|---|---|
+| 4,480 | in-distribution only | 0.9458 |
+| 8,960 | in-distribution only | **0.9604** |
+| 13,440 | 8,960 in-distribution + 4,480 anime | 0.9526 |
+
+Arm B establishes that drawn volume has **positive marginal value** on this
+validation distribution — removing 4,480 images cost 0.0146. Arm A *added* 4,480
+images and drawn AUC fell anyway. So the anime data has to be doing enough harm
+to overcome a volume effect that points the other way: its contribution net of
+volume is **negative**, not merely zero.
+
+That inference needs only the *sign* of the volume effect, so it does not rest
+on the log-linear extrapolation withdrawn below. It is the one conclusion the
+three-arm design buys that the pre-registered two-arm comparison could not have
+reached — a bare "drawn went down" would have been indistinguishable from "we
+happened to add unhelpful data."
+
+**The confound that worried this design did not bite.** The concern was that a
+*gain* could not be attributed between volume and labels. There was no gain, and
+volume and outcome point in opposite directions, so the ambiguity never arose.
+
+### Strength of the claim
+
+Single seed per arm, so per the pre-registered framing this is a **screen, not a
+test**. Against seed noise of the plausible size (per-run sd 0.003–0.010, giving
+a paired difference sd of roughly 0.004–0.014), the −0.0078 drawn delta is on the
+order of 1σ. The *direction* is consistent across both holdouts and across both
+arms, which is weak corroboration, but a single run cannot establish the
+magnitude and this write-up does not claim it does.
+
+What is solid is the negative: **nothing here clears the accept bar, and no
+reading of these numbers argues for adopting the intervention.**
+
+### Photographic performance was preserved
+
+The clause the rule protects most carefully never came under pressure:
+photographic AUC moved −0.0011 on the validation split and +0.0005 on the common
+holdout. Adding 4,480 drawn images did not disturb the photographic
+sub-problem — the third independent confirmation of medium separability in this
+experiment, after arm B's exact 0.9883 and the near-zero cross-medium confusion
+that motivated `medium.py`.
+
+### Follow-up
+
+The pre-registration's [If it fails](#if-it-fails) branch applies: **per-medium
+routing** rather than mixing. Medium is ~99% separable and this experiment has
+now confirmed the two sub-problems do not interfere, so a cheap
+drawn-vs-photographic classifier plus one specialist per medium avoids the
+interference entirely, at 2 × 6 MB against the 15 MB budget.
+
+Worth noting what was *not* shown: that better-labelled drawn data cannot help.
+What was shown is that **this** corpus, mapped **this** way, at **this** volume,
+does not help a model evaluated on `nsfw_detect`'s own drawn distribution. The
+most likely mechanism is domain mismatch — Danbooru artwork against whatever
+`drawings` and `hentai` were scraped from — which a routing architecture would
+also sidestep.
+
+## Interim result: arm B, and what it says about the accept bar
+
+**Recorded before arm A was run.** Arm B finished first because it needs no
+supplement. Its numbers change how arm A must be read, so they are written down
+while arm A's are still unknown.
+
+Arm B — 4,480 drawn training images removed, nothing added, everything else
+identical:
+
+| | baseline | arm B | Δ |
+|---|---|---|---|
+| photographic (val) | 0.9883 | 0.9883 | **0.0000** |
+| drawn (val) | 0.9604 | 0.9458 | **−0.0146** |
+| combined (val) | 0.9796 | 0.9757 | −0.0039 |
+| FP at 5% miss (val) | 10.1% | 13.5% | +3.4pp |
+| drawn (common) | 0.9699 | 0.9466 | −0.0233 |
+
+### Two things this establishes
+
+**The medium invariant holds empirically, not just by construction.**
+Photographic AUC is *identical to four decimal places* after removing a quarter
+of the training set. The drawn and photographic sub-problems really do occupy
+near-disjoint regions, which is what makes the decision rule's "preserve
+photographic" clause measurable at all.
+
+**Drawn AUC is materially sensitive to drawn training volume.** Halving the
+drawn training half costs 0.0146 drawn AUC — larger than the +0.010 the decision
+rule asks arm A to gain. This is qualitative, and it is the part that matters:
+**some fraction of any arm A gain is volume, not labels**, and this experiment
+has no way to separate the two.
+
+### What arm B does *not* license
+
+An earlier version of this section converted the above into a numeric
+expectation for arm A: fit a log-linear learning curve through the two points,
+extrapolate to +4,480 images, predict +0.0085, and read that as the value of
+"data as useful as in-distribution data." **That was withdrawn.** It is wrong in
+three ways, each sufficient on its own.
+
+**There is no measured curve.** Two points determine a line with zero degrees of
+freedom. Nothing in the data tests whether the log-linear form holds, and the
+extrapolation runs *upward* from 8,960 while the only measured interval runs
+*downward* to 4,480 — 0.41 log-units of extrapolation off 0.69 log-units of
+measurement, in the untested direction. No correlation between volume and AUC
+was estimated anywhere; the functional form was assumed and its one parameter
+back-solved.
+
+**"Per image usefulness" is not a quantity the two arms share.** Arm B removes
+*in-distribution* images; arm A adds *out-of-distribution* ones. Treating these
+as inverse operations on one curve presumes a single latent usefulness-per-image
+that both measure. Adding anime data does not only add volume — it moves the
+training distribution away from the validation distribution, so images can add
+drawn signal and simultaneously pull the boundary toward Danbooru art. The net
+is not `N × quality`, and no comparison against an extrapolated scalar can
+establish "at least as good per image."
+
+**The slope inherits unquantified seed noise.** The 0.0146 is a difference of
+two single unreplicated runs. Propagating a per-run seed sd through it:
+
+| per-run seed sd | predicted gain | 95% CI |
+|---|---|---|
+| 0.003 | +0.0085 | [+0.0037, +0.0134] |
+| 0.005 | +0.0085 | [+0.0004, +0.0166] |
+| 0.010 | +0.0085 | [−0.0077, +0.0248] |
+
+At every plausible noise level the interval contains **both zero and the +0.010
+accept bar**, so it cannot adjudicate either. Quoting +0.0085 as a threshold
+gave a point estimate the design cannot support.
+
+### What this actually changes
+
+Only this, and it is qualitative: **a drawn gain in arm A cannot be attributed
+to label quality**, because drawn AUC moves substantially with drawn volume
+alone and arm A changes volume and provenance together. Separating them needs an
+arm that adds 4,480 *in-distribution* drawn images — which this corpus cannot
+supply, since it is fully consumed — or a dose-response series at several anime
+volumes.
+
+The decision rule is unchanged and no threshold is reinterpreted. Arm A reports
+accept / reject / inconclusive on its original numbers, and any gain is reported
+as "volume and provenance confounded," which is the honest description of what
+was run.
+
+### Withdrawn: the substitution amendment
+
+The first amendment held drawn volume fixed at 11,200 and replaced 4,480
+original drawn training images with anime ones. The argument was that adding
+data confounds label quality with volume, so holding volume fixed isolates
+label quality.
+
+It is wrong, for three reasons:
+
+1. **It confounds worse, not better.** Substitution changes label provenance,
+   visual domain, *and* in-distribution drawn volume simultaneously. Volume is
+   at least monotone and ablatable; domain shift is neither.
+2. **It is biased toward a decline.** The validation half is 100% original
+   `drawings`/`hentai`. Halving matched training data and replacing it with
+   mismatched data should lower in-distribution drawn AUC on priors, making the
+   +0.010 accept bar close to unreachable and the modal outcome a drop.
+3. **It answers a different question.** The pre-registration asks whether
+   *adding* better-labelled drawn data helps. A null from substitution would
+   have been written up as "data did not help" — a claim the run never tested.
+
+The general lesson: finding a real defect in a protocol does not license
+replacing the question. The minimal repair consistent with the stated intent is
+the one to make.
+
 ## Decision rule
 
 Fixed in advance.
@@ -132,6 +440,33 @@ underfitting) rather than data volume.
 If that prediction holds, the experiment is **inconclusive by its own rule** and
 the correct follow-up is a full unfreeze, not more data.
 
+### How it scored
+
+Half right, and right for the stated reason on the half it got.
+
+| claim | predicted | actual | |
+|---|---|---|---|
+| photographic moves < 0.003 | < 0.003 | −0.0011 | ✅ |
+| drawn improves, but < 0.010 | small **gain** | −0.0078 **loss** | ❌ |
+| verdict is inconclusive | inconclusive | inconclusive | ✅ |
+
+The photographic call was correct and its reasoning held up — cross-medium
+confusion is near zero, the sub-problems are close to independent, and adding
+4,480 drawn images left the photographic axis alone. That reasoning has now been
+confirmed three separate ways in this experiment.
+
+The drawn call had the right *magnitude* intuition and the wrong *sign*. It
+assumed added drawn data would help a little; it hurt a little. The error was
+treating "data from a better-labelled source" as necessarily non-negative — a
+distribution far enough from the target can carry negative marginal value even
+when its labels are cleaner, and the reasoning never considered that direction.
+
+The verdict was predicted correctly but partly by luck: "inconclusive" was
+forecast via a sub-threshold gain and arrived via a loss. Counting it as a hit
+would overstate the model of the problem that produced it.
+
+**Running tally for this work: three of five predictions wrong.**
+
 ## Risks
 
 | risk | mitigation |
@@ -147,6 +482,37 @@ Per-medium **routing** instead of mixing. Medium is ~99% separable, so a cheap
 drawn-vs-photographic classifier plus one specialist per medium removes the
 interference entirely. Cost is two on-device models — 2 × 6 MB against the 15 MB
 budget in `TrainingConfig.max_model_mb`, which fits.
+
+## How to run it
+
+`CORPUS=data/eval/.archive/nsfw_dataset_v1.zip` throughout.
+
+```sh
+# Inspect either arm's plan without fetching anything.
+holy-blocker-anime --archive $CORPUS --dry-run                          # arm A
+holy-blocker-anime --archive $CORPUS --anime-count 0 --drop-fraction 0.5 --dry-run
+
+# Build the supplement for arm A. Ranged reads pull only the selected members,
+# so the 68 GB of rating archives is never downloaded whole.
+holy-blocker-anime --archive $CORPUS --out data/eval/anime_supplement.zip
+
+# Arm A — addition.
+holy-blocker-finetune --archive $CORPUS \
+                      --supplement data/eval/anime_supplement.zip \
+                      --output-dir artifacts/anime-addition \
+                      --epochs 6 --backbone-lr 1e-4 --head-lr 1e-3
+
+# Arm B — ablation control. No supplement; --drop-fraction alone builds the plan.
+holy-blocker-finetune --archive $CORPUS --drop-fraction 0.5 \
+                      --output-dir artifacts/anime-ablation \
+                      --epochs 6 --backbone-lr 1e-4 --head-lr 1e-3
+
+# Score each arm on the frozen holdouts — the command the baselines came from.
+holy-blocker-score --archive $CORPUS --common-idx data/eval/common_idx.npy \
+                   --checkpoint artifacts/anime-addition/finetuned-v0.pt
+```
+
+`anime_dbrating` is ungated, so no `HF_TOKEN` is needed — unlike `nsfw_detect`.
 
 ## Prerequisite
 
