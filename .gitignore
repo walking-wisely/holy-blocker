@@ -14,3 +14,9 @@ __pycache__/
 *.pth
 data/raw/
 data/processed/
+# Local evaluation sets and exported model artifacts stay out of the repo.
+data/eval/
+data/train/
+data/val/
+artifacts/
+.pytest_cache/

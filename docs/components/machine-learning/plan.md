@@ -5,20 +5,19 @@ This document is the build plan: what modules to add, in what order, and what ea
 
 ## Current state
 
-The package at `machine-learning/` already has:
+All six planned steps are complete. The package at `machine-learning/` has:
 
 - `config.py` — `TrainingConfig` dataclass with `data_dir`, `output_dir`, `image_size`, `batch_size`, `epochs`, `learning_rate`, and `max_model_mb`.
-- `model.py` — `create_classifier(class_count: int) -> nn.Module` fine-tunes MobileNetV3-Small with a replaced classifier head. `example_input(image_size: int) -> Tensor` provides a synthetic trace input.
-- `train.py` — `train(config: TrainingConfig) -> Path` placeholder; creates a model and saves a `.pt` checkpoint but contains no real dataset loading or training loop.
-- `export.py` — `export_onnx(checkpoint_path: Path, output_path: Path, config: TrainingConfig) -> Path` loads a checkpoint and traces to ONNX opset 17.
-
-What is missing:
-
-- Real dataset loading and augmentation (`dataset.py`).
-- Evaluation metrics — accuracy, per-class precision/recall, confusion matrix (`eval.py`).
-- TFLite export for Android (`export_tflite.py`).
-- ONNX dynamic quantization for smaller Windows artifacts (`quantize.py`).
-- A `pytest` test suite; there are currently no tests at all.
+- `labels.py` — pinned `BINARY_LABELS = ("safe", "explicit")` and `POSITIVE_INDEX`. Class order is fixed here rather than derived from sorted directory names, which would invert FP/FN readings.
+- `model.py` — `create_classifier(class_count, pretrained)` fine-tunes MobileNetV3-Small with a replaced head; `example_input(image_size)` provides a trace input.
+- `dataset.py` — `LocalImageDataset` and `load_dataset` over `root/<label>/`, with train-time augmentation and deterministic validation transforms.
+- `train.py` — real fine-tuning loop: per-epoch training over `load_dataset`, validation via `evaluate`, device selection (MPS/CUDA/CPU), and a checkpoint carrying the label order.
+- `eval.py` — pure metrics: `collect_predictions`, `score`, `evaluate`, `sweep_thresholds`, `misclassified`, `report`, `report_sweep`.
+- `harness.py` — `holy-blocker-eval` CLI: FP/FN report, threshold sweep, and worst-misclassification listing against a local (gitignored) evaluation set.
+- `export.py` — ONNX export for Windows.
+- `quantize.py` — ONNX dynamic quantization (5.81 MB → 1.61 MB verified).
+- `export_tflite.py` — TFLite export for Android via `litert-torch` (5.90 MB verified, loads and runs in the LiteRT interpreter).
+- `tests/` — 40 tests covering dataset, eval, harness, model, train, and both export paths. All fixtures are synthetic; no real imagery is required.
 
 ## What to add
 
@@ -143,12 +142,43 @@ testpaths = ["tests"]
 
 ## Implementation order
 
-1. Add `pytest` to `pyproject.toml` `[project.optional-dependencies]` as `test = ["pytest"]`; add `[tool.pytest.ini_options]` pointing at `tests/`. No code changes yet — this is the harness.
-2. `dataset.py` — implement `LocalImageDataset` and `load_dataset`; write `tests/test_dataset.py` with synthetic images using `tmp_path`. Run `pytest tests/test_dataset.py`.
-3. `eval.py` — implement `evaluate` and `report`; write `tests/test_eval.py` with a trivially correct model on a two-label synthetic loader. Run `pytest tests/test_eval.py`.
-4. Wire `dataset.py` and `eval.py` into `train.py` — replace the placeholder training loop with a real epoch loop over `load_dataset`, a validation call to `evaluate` after each epoch, and progress printing via `report`.
-5. `quantize.py` — implement `quantize_onnx`; extend `tests/test_export.py` to verify the quantized model loads and has a smaller file size than the original. Run `pytest tests/test_export.py`.
-6. `export_tflite.py` — implement TFLite export; add `tests/test_export.py` coverage for the TFLite path using a tiny synthetic model. Run `pytest tests/test_export.py`.
+1. ~~Add `pytest` to `pyproject.toml` `[project.optional-dependencies]` as `test = ["pytest"]`; add `[tool.pytest.ini_options]` pointing at `tests/`.~~ **Done.**
+2. ~~`dataset.py` — implement `LocalImageDataset` and `load_dataset`; write `tests/test_dataset.py` with synthetic images using `tmp_path`.~~ **Done.**
+3. ~~`eval.py` — implement `evaluate` and `report`; write `tests/test_eval.py` with a trivially correct model on a two-label synthetic loader.~~ **Done.** Extended past the original scope with `collect_predictions`, `sweep_thresholds`, `misclassified`, and a `harness.py` CLI (`holy-blocker-eval`) that reports false positives and negatives against a local evaluation set.
+4. ~~Wire `dataset.py` and `eval.py` into `train.py` — replace the placeholder training loop with a real epoch loop over `load_dataset`, a validation call to `evaluate` after each epoch, and progress printing via `report`.~~ **Done.**
+5. ~~`quantize.py` — implement `quantize_onnx`; extend `tests/test_export.py` to verify the quantized model loads and has a smaller file size than the original.~~ **Done.** Verified at 5.81 MB → 1.61 MB.
+6. ~~`export_tflite.py` — implement TFLite export; add `tests/test_export.py` coverage for the TFLite path using a tiny synthetic model.~~ **Done.** Verified end to end: a trained checkpoint converts to a 5.90 MB flatbuffer that loads and runs in the LiteRT interpreter.
+
+## Deviations from the original plan
+
+Two decisions above differ from what this document originally specified.
+
+**TFLite conversion no longer goes through TensorFlow.** The planned path was
+`torch → ONNX → TF SavedModel → TFLite`, which requires `tensorflow` as a
+dependency. `tensorflow` publishes no wheel for current Python builds, and the
+route pulls in a second full framework purely as a conversion middleman.
+`export_tflite.py` instead uses `litert-torch` (the renamed successor to
+`ai-edge-torch`), which converts a torch `ExportedProgram` straight to a LiteRT
+flatbuffer. `tensorflow` has been dropped from `pyproject.toml`; the converter
+lives behind an optional `tflite` extra.
+
+**Dynamic range quantization is not applied to the TFLite artifact.** The plan
+called for it on the first export. `litert-torch` exposes PT2E quantization,
+which is static int8 and needs a calibration dataset — the same prerequisite
+this plan defers under "What this does not cover". The float32 artifact is
+~6 MB against a 15 MB budget, so the size pressure that motivated quantization
+is not there yet. ONNX dynamic quantization for Windows *is* implemented in
+`quantize.py`, since `onnxruntime` supports it without calibration data.
+
+**Python version ceiling.** `litert-torch` depends on `torchao`, which does not
+import on Python 3.14. The package now declares `requires-python = ">=3.11,<3.14"`.
+
+**ONNX export pins the legacy exporter.** `torch>=2.9` defaults to the dynamo
+ONNX exporter, whose MobileNetV3 graph carries inconsistent shape metadata in
+the classifier; `onnxruntime`'s shape inference rejects it during quantization
+("Inferred shape and existing shape differ in dimension 0: (576) vs (1024)"),
+reproduced across opsets 17–21 at both 32px and 224px. `export.py` passes
+`dynamo=False`. The legacy exporter is deprecated, so this needs revisiting.
 
 ## What this does not cover
 
