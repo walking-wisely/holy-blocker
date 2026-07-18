@@ -47,7 +47,7 @@ original archive. So:
 
 import random
 import zipfile
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -339,12 +339,67 @@ def open_remote_archive(filename: str) -> zipfile.ZipFile:
     return zipfile.ZipFile(handle)
 
 
+#: Concurrent member fetches. Each selected image is one ranged HTTP request, so
+#: a sequential build runs at ~0.2 images/s — about seven hours for a full
+#: supplement. The work is entirely latency-bound, so it parallelises almost
+#: linearly; 32 is well inside what the Hub tolerates for ranged reads.
+DEFAULT_FETCH_WORKERS = 32
+
+#: Members held in memory at once. `ThreadPoolExecutor.map` would submit every
+#: task upfront and buffer every result, which at ~200 KB an image is close to a
+#: gigabyte of resident bytes. Batching bounds it.
+FETCH_BATCH = 256
+
+
+def _fetch_source(
+    open_archive: Callable[[str], zipfile.ZipFile],
+    filename: str,
+    names: Sequence[str],
+    workers: int,
+    batch_size: int = FETCH_BATCH,
+) -> Iterator[tuple[str, bytes]]:
+    """Yield `(name, bytes)` for one rating archive, in order, fetched concurrently.
+
+    Each worker opens its own archive handle: `zipfile` seeks on a shared file
+    object, so threads sharing one would interleave seeks and return corrupt
+    members — the same hazard `ZipImageDataset` handles for forked workers.
+
+    The pool spans every batch rather than being rebuilt per batch. Opening a
+    handle parses the archive's central directory, and these hold ~341k members,
+    so a per-batch pool re-parsed it 32 times per batch — hundreds of times over
+    a build, which dominated the runtime and the memory it needed.
+    """
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    local = threading.local()
+    opened: list[zipfile.ZipFile] = []
+    lock = threading.Lock()
+
+    def read(name: str) -> tuple[str, bytes]:
+        handle = getattr(local, "handle", None)
+        if handle is None:
+            handle = local.handle = open_archive(filename)
+            with lock:
+                opened.append(handle)
+        return name, handle.read(name)
+
+    try:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            for start in range(0, len(names), batch_size):
+                yield from pool.map(read, names[start : start + batch_size])
+    finally:
+        for handle in opened:
+            handle.close()
+
+
 def build_supplement(
     counts: dict[str, int],
     output_path: Path,
     open_archive: Callable[[str], zipfile.ZipFile] = open_remote_archive,
     seed: int = 0,
     progress: bool = False,
+    workers: int = DEFAULT_FETCH_WORKERS,
 ) -> Path:
     """Write a local zip holding `counts[source]` images per anime rating.
 
@@ -389,12 +444,19 @@ def build_supplement(
                 # that would reselect the training set on every invocation
                 # while still reporting the same seed.
                 chosen = select_members(names, wanted, seed=source_seed(source, seed))
-                for position, name in enumerate(chosen, start=1):
-                    out.writestr(f"{source}/{Path(name).name}", remote.read(name))
-                    if progress and position % 250 == 0:
-                        print(f"  {source}: {position}/{wanted}", flush=True)
+
+            # The listing handle is closed before fetching: the workers open
+            # their own, and holding a fifth idle connection buys nothing.
+            done = 0
+            for name, payload in _fetch_source(
+                open_archive, RATING_ARCHIVES[source], chosen, workers
+            ):
+                out.writestr(f"{source}/{Path(name).name}", payload)
+                done += 1
+                if progress and done % FETCH_BATCH == 0:
+                    print(f"  {source}: {done}/{wanted}", flush=True)
             if progress:
-                print(f"  {source}: {wanted}/{wanted} done", flush=True)
+                print(f"  {source}: {done}/{wanted} done", flush=True)
 
     return output_path
 
@@ -426,6 +488,12 @@ def main() -> None:
     parser.add_argument("--drop-seed", type=int, default=0)
     parser.add_argument("--seed", type=int, default=0, help="seed for member selection")
     parser.add_argument("--image-size", type=int, default=TrainingConfig.image_size)
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=DEFAULT_FETCH_WORKERS,
+        help="concurrent member fetches; the build is latency-bound, not CPU-bound",
+    )
     parser.add_argument("--dry-run", action="store_true", help="print the plan and exit")
     args = parser.parse_args()
 
@@ -447,5 +515,5 @@ def main() -> None:
         return
 
     print(f"\nfetching from {DATASET_REPO} (ranged reads; the corpus is never downloaded whole)")
-    build_supplement(counts, args.out, seed=args.seed, progress=True)
+    build_supplement(counts, args.out, seed=args.seed, progress=True, workers=args.workers)
     print(f"\nwrote {args.out} ({sum(counts.values())} images)")
