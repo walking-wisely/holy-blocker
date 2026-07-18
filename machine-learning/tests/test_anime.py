@@ -1,15 +1,17 @@
-"""Tests for the anime-subsampling substitution plan.
+"""Tests for the anime-subsampling mixture plan.
 
 The [experiment](../../docs/components/machine-learning/experiments/anime-subsampling.md)
 is judged against baselines fixed on `stratified_split(seed=0, val_fraction=0.2)`
-over the original archive. Everything here exists to keep that comparison valid:
+over the original archive, across three arms: a baseline, an **addition** arm
+that adds anime data, and an **ablation** arm that removes drawn data and adds
+nothing. Everything here exists to keep those comparable:
 
-- the validation half must come back **byte-identical** to the unmodified split,
-  or the run is scored against samples the baselines never covered;
-- substitution must be **volume-neutral**, or a result attributed to label
-  quality is really a result about data volume;
-- `questionable` must never reach training, because assigning it a side
-  re-imports the arbitrariness the experiment is trying to remove.
+- the validation half must come back **byte-identical** to the unmodified split
+  in every arm, or a run is scored against samples the baselines never covered;
+- photographic training data must never move, because the decision rule rejects
+  on a photographic regression and that is only readable if the half is fixed;
+- the anime budget must stay balanced across safe and explicit, or an arm moves
+  the class prior as well as the data and the delta cannot be attributed.
 
 A defect in any of these changes the verdict silently rather than failing, which
 is the failure mode pre-registration exists to prevent.
@@ -27,26 +29,49 @@ from holy_blocker_ml.anime import (
     ANIME_LABEL_POLICY,
     ANIME_SAFE_SOURCES,
     ANIME_SOURCE_CLASSES,
+    DEFAULT_ANIME_COUNT,
     QUESTIONABLE,
     RATING_ARCHIVES,
     build_supplement,
+    mixture_plan,
     select_members,
-    substitution_plan,
 )
-from holy_blocker_ml.features import map_source_label
 from holy_blocker_ml.finetune import stratified_split
 from holy_blocker_ml.labels import EXPLICIT, SAFE
 from holy_blocker_ml.medium import medium_of
 
 #: The real archive: five classes, 5,600 each.
-CORPUS = ["drawings"] * 5600 + ["hentai"] * 5600 + ["neutral"] * 5600 + ["porn"] * 5600 + [
-    "sexy"
-] * 5600
+CORPUS = (
+    ["drawings"] * 5600
+    + ["hentai"] * 5600
+    + ["neutral"] * 5600
+    + ["porn"] * 5600
+    + ["sexy"] * 5600
+)
+
+#: Drawn samples in the training half: 11,200 drawn x 0.8.
+DRAWN_TRAIN = 8960
+
+
+def split_of(labels=CORPUS):
+    return stratified_split(labels, val_fraction=0.2, seed=0)
 
 
 @pytest.fixture
-def plan():
-    return substitution_plan(CORPUS, replace_fraction=0.5)
+def addition():
+    """The arm that answers the pre-registered question."""
+    return mixture_plan(CORPUS, drop_fraction=0.0, anime_count=DEFAULT_ANIME_COUNT)
+
+
+@pytest.fixture
+def ablation():
+    """The control arm: remove drawn data, add nothing."""
+    return mixture_plan(CORPUS, drop_fraction=0.5, anime_count=0)
+
+
+@pytest.fixture
+def baseline():
+    return mixture_plan(CORPUS)
 
 
 class TestRatingMapping:
@@ -57,98 +82,159 @@ class TestRatingMapping:
     def test_explicit_is_explicit(self):
         assert ANIME_LABEL_POLICY["anime_explicit"] == EXPLICIT
 
-    def test_questionable_is_absent_from_the_policy(self):
-        # Absence is the mechanism, not an oversight: map_source_label returns
-        # None for unmapped classes and the dataset drops them, so holding
-        # `questionable` out of training is enforced by the pipeline rather
-        # than by remembering to filter it.
-        assert QUESTIONABLE not in ANIME_LABEL_POLICY
+    def test_questionable_is_safe(self):
+        # `drawings` is a residual class covering every drawn image that is not
+        # `hentai`, which on the Danbooru scale includes much of questionable.
+        # Holding it out would truncate the safe class's borderline support on
+        # the training side only, moving drawn AUC for reasons unrelated to
+        # label quality. Safe is also the side `sexy` already sits on.
+        assert ANIME_LABEL_POLICY[QUESTIONABLE] == SAFE
 
-    def test_questionable_maps_to_no_training_label(self):
-        assert map_source_label(QUESTIONABLE, ANIME_LABEL_POLICY) is None
+    def test_every_anime_source_has_a_training_label(self):
+        for source in ANIME_DRAWN_SOURCES:
+            assert source in ANIME_LABEL_POLICY
 
     def test_every_anime_source_is_drawn(self):
-        for source in ANIME_DRAWN_SOURCES:
+        for source in ANIME_SOURCE_CLASSES:
             assert medium_of(source) == "drawn"
 
     def test_a_rating_archive_is_known_for_every_rating(self):
-        for source in (*ANIME_DRAWN_SOURCES, QUESTIONABLE):
+        for source in ANIME_SOURCE_CLASSES:
             assert source in RATING_ARCHIVES
+
+    def test_the_source_order_is_frozen(self):
+        # `source_seed` indexes into this tuple, so reordering it silently
+        # reselects every supplement while still reporting the same seed.
+        assert ANIME_SOURCE_CLASSES == (
+            "anime_general",
+            "anime_sensitive",
+            "anime_questionable",
+            "anime_explicit",
+        )
 
 
 class TestValidationHalfIsUntouched:
-    def test_validation_indices_match_the_unmodified_split(self, plan):
-        _, expected_val = stratified_split(CORPUS, val_fraction=0.2, seed=0)
+    """The invariant every arm depends on."""
+
+    @pytest.mark.parametrize("arm", ["addition", "ablation", "baseline"])
+    def test_validation_indices_match_the_unmodified_split(self, arm, request):
+        plan = request.getfixturevalue(arm)
+        _, expected_val = split_of()
         assert plan.val_indices == expected_val
 
-    def test_no_validation_index_is_dropped(self, plan):
-        assert not set(plan.dropped_indices) & set(plan.val_indices)
-
-    def test_no_validation_index_survives_into_the_training_half(self, plan):
+    @pytest.mark.parametrize("arm", ["addition", "ablation", "baseline"])
+    def test_no_validation_index_leaks_into_training(self, arm, request):
+        plan = request.getfixturevalue(arm)
         assert not set(plan.kept_train_indices) & set(plan.val_indices)
 
-
-class TestSubstitutionIsVolumeNeutral:
-    def test_training_size_is_unchanged(self, plan):
-        expected_train, _ = stratified_split(CORPUS, val_fraction=0.2, seed=0)
-        assert len(plan.kept_train_indices) + plan.anime_total == len(expected_train)
-
-    def test_drawn_training_volume_is_preserved(self, plan):
-        kept_drawn = sum(1 for i in plan.kept_train_indices if medium_of(CORPUS[i]) == "drawn")
-        assert kept_drawn + plan.anime_total == 8960
-
-    def test_photographic_training_data_is_untouched(self, plan):
-        kept_photo = sorted(
+    @pytest.mark.parametrize("arm", ["addition", "ablation", "baseline"])
+    def test_photographic_training_data_never_moves(self, arm, request):
+        plan = request.getfixturevalue(arm)
+        train, _ = split_of()
+        expected = sorted(i for i in train if medium_of(CORPUS[i]) == "photographic")
+        actual = sorted(
             i for i in plan.kept_train_indices if medium_of(CORPUS[i]) == "photographic"
         )
-        train, _ = stratified_split(CORPUS, val_fraction=0.2, seed=0)
-        original_photo = sorted(i for i in train if medium_of(CORPUS[i]) == "photographic")
-        assert kept_photo == original_photo
-
-    def test_only_drawn_samples_are_dropped(self, plan):
-        assert {medium_of(CORPUS[i]) for i in plan.dropped_indices} == {"drawn"}
-
-    def test_dropped_samples_all_come_from_the_training_half(self, plan):
-        train, _ = stratified_split(CORPUS, val_fraction=0.2, seed=0)
-        assert set(plan.dropped_indices) <= set(train)
+        assert actual == expected
 
 
-class TestClassBalanceIsPreserved:
-    def test_equal_numbers_are_dropped_from_each_drawn_class(self, plan):
-        dropped = [CORPUS[i] for i in plan.dropped_indices]
+class TestAdditionArm:
+    def test_nothing_is_dropped(self, addition):
+        assert addition.dropped_indices == []
+
+    def test_the_whole_original_training_half_is_kept(self, addition):
+        train, _ = split_of()
+        assert addition.kept_train_indices == train
+
+    def test_the_training_half_grows_by_the_anime_budget(self, addition):
+        train, _ = split_of()
+        total = len(addition.kept_train_indices) + addition.anime_total
+        assert total == len(train) + DEFAULT_ANIME_COUNT
+
+    def test_the_default_budget_takes_drawn_to_exactly_half(self, addition):
+        # The bound this experiment adopts in place of the unsatisfiable
+        # "hold 40%": drawn may grow but must not exceed photographic.
+        drawn = DRAWN_TRAIN + addition.anime_total
+        total = len(addition.kept_train_indices) + addition.anime_total
+        assert drawn / total == 0.5
+
+    def test_drawn_never_exceeds_photographic_at_the_default_budget(self, addition):
+        train, _ = split_of()
+        photographic = sum(1 for i in train if medium_of(CORPUS[i]) == "photographic")
+        assert DRAWN_TRAIN + addition.anime_total <= photographic
+
+
+class TestAblationArm:
+    def test_it_adds_no_anime_data(self, ablation):
+        assert ablation.anime_counts == {}
+        assert ablation.anime_total == 0
+
+    def test_it_removes_half_the_drawn_training_half(self, ablation):
+        assert len(ablation.dropped_indices) == DRAWN_TRAIN // 2
+
+    def test_only_drawn_samples_are_dropped(self, ablation):
+        assert {medium_of(CORPUS[i]) for i in ablation.dropped_indices} == {"drawn"}
+
+    def test_dropped_samples_all_come_from_the_training_half(self, ablation):
+        train, _ = split_of()
+        assert set(ablation.dropped_indices) <= set(train)
+
+    def test_equal_numbers_are_dropped_from_each_drawn_class(self, ablation):
+        dropped = [CORPUS[i] for i in ablation.dropped_indices]
         assert dropped.count("drawings") == dropped.count("hentai") == 2240
 
-    def test_safe_and_explicit_anime_counts_match_what_they_replace(self, plan):
-        safe = sum(plan.anime_counts[s] for s in ANIME_SAFE_SOURCES)
-        explicit = sum(plan.anime_counts[s] for s in ANIME_EXPLICIT_SOURCES)
-        assert safe == 2240  # replaces the dropped `drawings`
-        assert explicit == 2240  # replaces the dropped `hentai`
-
-    def test_the_safe_allocation_splits_evenly_across_its_two_ratings(self, plan):
-        assert plan.anime_counts["anime_general"] == plan.anime_counts["anime_sensitive"] == 1120
-
-    def test_questionable_is_never_allocated_training_samples(self, plan):
-        assert QUESTIONABLE not in plan.anime_counts
+    def test_its_removal_matches_the_addition_arm_s_budget(self, ablation):
+        # The two arms are symmetric around the baseline so their deltas share
+        # a scale; that is what lets the addition arm's magnitude be read.
+        assert len(ablation.dropped_indices) == DEFAULT_ANIME_COUNT
 
 
-class TestReplaceFraction:
-    def test_a_zero_fraction_changes_nothing(self):
-        empty = substitution_plan(CORPUS, replace_fraction=0.0)
-        train, _ = stratified_split(CORPUS, val_fraction=0.2, seed=0)
-        assert empty.dropped_indices == []
-        assert empty.kept_train_indices == train
-        assert empty.anime_total == 0
+class TestBaselineArm:
+    def test_it_is_the_plain_stratified_split(self, baseline):
+        train, val = split_of()
+        assert baseline.kept_train_indices == train
+        assert baseline.val_indices == val
+        assert baseline.dropped_indices == []
+        assert baseline.anime_total == 0
 
-    def test_a_full_fraction_replaces_every_drawn_training_sample(self):
-        full = substitution_plan(CORPUS, replace_fraction=1.0)
+
+class TestAnimeAllocation:
+    def test_the_budget_splits_evenly_between_safe_and_explicit(self, addition):
+        safe = sum(addition.anime_counts.get(s, 0) for s in ANIME_SAFE_SOURCES)
+        explicit = sum(addition.anime_counts.get(s, 0) for s in ANIME_EXPLICIT_SOURCES)
+        assert safe == explicit == DEFAULT_ANIME_COUNT // 2
+
+    def test_the_safe_budget_spreads_across_all_three_safe_ratings(self, addition):
+        allocated = [addition.anime_counts.get(s, 0) for s in ANIME_SAFE_SOURCES]
+        assert all(count > 0 for count in allocated)
+        assert max(allocated) - min(allocated) <= 1
+
+    def test_questionable_receives_training_samples(self, addition):
+        assert addition.anime_counts.get(QUESTIONABLE, 0) > 0
+
+    def test_the_allocation_sums_to_the_requested_budget(self, addition):
+        assert addition.anime_total == DEFAULT_ANIME_COUNT
+
+    @pytest.mark.parametrize("budget", [1, 2, 3, 7, 99, 4481])
+    def test_an_odd_budget_is_allocated_without_loss(self, budget):
+        plan = mixture_plan(CORPUS, anime_count=budget)
+        assert plan.anime_total == budget
+
+    def test_a_negative_budget_is_rejected(self):
+        with pytest.raises(ValueError, match="non-negative"):
+            mixture_plan(CORPUS, anime_count=-1)
+
+
+class TestDropFraction:
+    def test_a_full_fraction_removes_every_drawn_training_sample(self):
+        full = mixture_plan(CORPUS, drop_fraction=1.0)
         kept_drawn = [i for i in full.kept_train_indices if medium_of(CORPUS[i]) == "drawn"]
         assert kept_drawn == []
-        assert full.anime_total == 8960
 
     @pytest.mark.parametrize("fraction", [-0.1, 1.1])
     def test_a_fraction_outside_the_unit_interval_is_rejected(self, fraction):
-        with pytest.raises(ValueError):
-            substitution_plan(CORPUS, replace_fraction=fraction)
+        with pytest.raises(ValueError, match=r"\[0, 1\]"):
+            mixture_plan(CORPUS, drop_fraction=fraction)
 
 
 class TestSelectMembers:
@@ -179,25 +265,42 @@ class TestSelectMembers:
             select_members(self.NAMES, 5000, seed=0)
 
 
-def make_rating_zip(path, count):
+def make_rating_zip(path, count, extras=()):
     """A stand-in for one remote rating archive, laid out flat like the real one."""
     with zipfile.ZipFile(path, "w") as archive:
         for i in range(count):
             buffer = io.BytesIO()
             Image.new("RGB", (8, 8), (i % 256, 0, 0)).save(buffer, format="WEBP")
             archive.writestr(f"danbooru_{i}.webp", buffer.getvalue())
+        for name in extras:
+            archive.writestr(name, b"not an image")
+
+
+@pytest.fixture
+def sources(tmp_path):
+    """Local stand-ins for the four remote rating archives."""
+    root = tmp_path / "remote"
+    root.mkdir()
+    for filename in RATING_ARCHIVES.values():
+        make_rating_zip(root / filename, count=100)
+    return lambda filename: zipfile.ZipFile(root / filename)
+
+
+@pytest.fixture
+def noisy_sources(tmp_path):
+    """Rating archives that also carry metadata and a gif, as the real ones do."""
+    root = tmp_path / "noisy"
+    root.mkdir()
+    for filename in RATING_ARCHIVES.values():
+        make_rating_zip(
+            root / filename,
+            count=20,
+            extras=("meta.json", "readme.txt", "danbooru_anim.gif"),
+        )
+    return lambda filename: zipfile.ZipFile(root / filename)
 
 
 class TestBuildSupplement:
-    @pytest.fixture
-    def sources(self, tmp_path):
-        """Local stand-ins for the four remote rating archives."""
-        root = tmp_path / "remote"
-        root.mkdir()
-        for source, filename in RATING_ARCHIVES.items():
-            make_rating_zip(root / filename, count=100)
-        return lambda filename: zipfile.ZipFile(root / filename)
-
     def test_it_writes_the_planned_number_of_each_source(self, tmp_path, sources):
         out = tmp_path / "supplement.zip"
         counts = {"anime_general": 5, "anime_sensitive": 5, "anime_explicit": 10}
@@ -207,6 +310,41 @@ class TestBuildSupplement:
             written = [n for n in archive.namelist() if n.endswith(".webp")]
         for source, expected in counts.items():
             assert sum(1 for n in written if n.startswith(f"{source}/")) == expected
+
+    def test_non_image_members_are_never_selected(self, tmp_path, noisy_sources):
+        # The rating archives carry metadata alongside images, and `.gif` is not
+        # in IMAGE_SUFFIXES. Selecting either yields a supplement that loads
+        # short and aborts the run at the volume check, after the whole fetch.
+        out = tmp_path / "supplement.zip"
+        build_supplement({"anime_general": 20}, out, open_archive=noisy_sources, seed=0)
+
+        with zipfile.ZipFile(out) as archive:
+            written = archive.namelist()
+        assert len(written) == 20
+        assert all(n.endswith(".webp") for n in written)
+
+    def test_a_supplement_from_noisy_sources_still_loads_at_full_size(
+        self, tmp_path, noisy_sources
+    ):
+        from holy_blocker_ml.dataset import ZipImageDataset
+
+        out = tmp_path / "supplement.zip"
+        build_supplement({"anime_general": 20}, out, open_archive=noisy_sources, seed=0)
+        dataset = ZipImageDataset(
+            out,
+            image_size=32,
+            augment=False,
+            policy=ANIME_LABEL_POLICY,
+            classes=ANIME_SOURCE_CLASSES,
+        )
+        assert len(dataset) == 20
+
+    def test_asking_for_more_images_than_a_rating_holds_is_rejected(
+        self, tmp_path, noisy_sources
+    ):
+        out = tmp_path / "supplement.zip"
+        with pytest.raises(ValueError, match="decodable images"):
+            build_supplement({"anime_general": 50}, out, open_archive=noisy_sources, seed=0)
 
     def test_the_layout_is_readable_as_a_training_dataset(self, tmp_path, sources):
         from holy_blocker_ml.dataset import ZipImageDataset
@@ -227,37 +365,29 @@ class TestBuildSupplement:
         assert image.shape == (3, 32, 32)
         assert label in (0, 1)
 
-    def test_safe_and_explicit_ratings_get_the_right_binary_labels(self, tmp_path, sources):
+    def test_each_rating_gets_the_right_binary_label(self, tmp_path, sources):
         from holy_blocker_ml.dataset import ZipImageDataset
         from holy_blocker_ml.labels import BINARY_LABELS
 
         out = tmp_path / "supplement.zip"
         build_supplement(
-            {"anime_general": 3, "anime_explicit": 3}, out, open_archive=sources, seed=0
+            {s: 3 for s in ANIME_SOURCE_CLASSES}, out, open_archive=sources, seed=0
         )
         dataset = ZipImageDataset(
-            out, image_size=32, augment=False, policy=ANIME_LABEL_POLICY,
+            out,
+            image_size=32,
+            augment=False,
+            policy=ANIME_LABEL_POLICY,
             classes=ANIME_SOURCE_CLASSES,
         )
-        by_source = dict(zip(dataset.source_labels, [lbl for _, lbl in dataset.samples]))
-        assert BINARY_LABELS[by_source["anime_general"]] == SAFE
-        assert BINARY_LABELS[by_source["anime_explicit"]] == EXPLICIT
+        seen = dict(zip(dataset.source_labels, [label for _, label in dataset.samples]))
+        for source in ANIME_SAFE_SOURCES:
+            assert BINARY_LABELS[seen[source]] == SAFE
+        assert BINARY_LABELS[seen["anime_explicit"]] == EXPLICIT
 
-    def test_a_questionable_supplement_yields_no_trainable_samples(self, tmp_path, sources):
-        from holy_blocker_ml.dataset import ZipImageDataset
-
-        # The boundary set is buildable, but the training policy must refuse to
-        # give it a label — that is what keeps it out of gradient updates.
-        out = tmp_path / "boundary.zip"
-        build_supplement({QUESTIONABLE: 8}, out, open_archive=sources, seed=0)
-
-        from holy_blocker_ml.features import ArchiveLayoutError
-
-        with pytest.raises((ArchiveLayoutError, ValueError)):
-            ZipImageDataset(
-                out, image_size=32, augment=False, policy=ANIME_LABEL_POLICY,
-                classes=ANIME_SOURCE_CLASSES,
-            )
+    def test_an_unknown_source_is_rejected(self, tmp_path, sources):
+        with pytest.raises(ValueError, match="unknown anime source"):
+            build_supplement({"anime_nope": 1}, tmp_path / "x.zip", open_archive=sources)
 
     def test_the_per_source_seed_survives_a_fresh_interpreter(self):
         # PYTHONHASHSEED randomises str hashing per process. A per-source seed
@@ -320,58 +450,56 @@ class TestBuildTrainingSets:
     def test_the_validation_half_is_the_unmodified_split(self, corpus, labels):
         from holy_blocker_ml.anime import build_training_sets
 
-        plan = substitution_plan(labels, replace_fraction=0.5)
+        plan = mixture_plan(labels, drop_fraction=0.5)
         _, val_set = build_training_sets(corpus, None, plan, image_size=32)
 
         _, expected_val = stratified_split(labels, val_fraction=0.2, seed=0)
         assert len(val_set) == len(expected_val)
         assert val_set.source_labels == [labels[i] for i in expected_val]
 
-    def test_the_training_half_holds_its_planned_volume(self, tmp_path, corpus, labels, sources_for):
+    def test_the_ablation_arm_needs_no_supplement(self, corpus, labels):
         from holy_blocker_ml.anime import build_training_sets
 
-        plan = substitution_plan(labels, replace_fraction=0.5)
-        supplement = tmp_path / "supp.zip"
-        build_supplement(plan.anime_counts, supplement, open_archive=sources_for, seed=0)
+        plan = mixture_plan(labels, drop_fraction=0.5)
+        train_set, _ = build_training_sets(corpus, None, plan, image_size=32)
+        assert len(train_set) == len(plan.kept_train_indices)
 
-        train_set, _ = build_training_sets(corpus, supplement, plan, image_size=32)
-        original_train, _ = stratified_split(labels, val_fraction=0.2, seed=0)
-        assert len(train_set) == len(original_train)
-
-    def test_a_supplement_of_the_wrong_size_is_refused(
-        self, tmp_path, corpus, labels, sources_for
+    def test_the_addition_arm_concatenates_the_supplement(
+        self, tmp_path, corpus, labels, sources
     ):
         from holy_blocker_ml.anime import build_training_sets
 
-        plan = substitution_plan(labels, replace_fraction=0.5)
+        plan = mixture_plan(labels, anime_count=8)
+        supplement = tmp_path / "supp.zip"
+        build_supplement(plan.anime_counts, supplement, open_archive=sources, seed=0)
+
+        train_set, _ = build_training_sets(corpus, supplement, plan, image_size=32)
+        original_train, _ = stratified_split(labels, val_fraction=0.2, seed=0)
+        assert len(train_set) == len(original_train) + 8
+
+    def test_a_supplement_of_the_wrong_size_is_refused(self, tmp_path, corpus, labels, sources):
+        from holy_blocker_ml.anime import build_training_sets
+
+        plan = mixture_plan(labels, anime_count=8)
         wrong = tmp_path / "wrong.zip"
-        build_supplement({"anime_general": 3}, wrong, open_archive=sources_for, seed=0)
+        build_supplement({"anime_general": 3}, wrong, open_archive=sources, seed=0)
 
-        with pytest.raises(ValueError, match="volume-neutral"):
+        with pytest.raises(ValueError, match="could not be attributed"):
             build_training_sets(corpus, wrong, plan, image_size=32)
-
-
-@pytest.fixture
-def sources_for(tmp_path):
-    root = tmp_path / "remote_shared"
-    root.mkdir()
-    for filename in RATING_ARCHIVES.values():
-        make_rating_zip(root / filename, count=100)
-    return lambda filename: zipfile.ZipFile(root / filename)
 
 
 class TestDeterminism:
     def test_the_same_seed_gives_the_same_plan(self):
-        first = substitution_plan(CORPUS, replace_fraction=0.5, seed=0)
-        second = substitution_plan(CORPUS, replace_fraction=0.5, seed=0)
+        first = mixture_plan(CORPUS, drop_fraction=0.5, seed=0)
+        second = mixture_plan(CORPUS, drop_fraction=0.5, seed=0)
         assert first.dropped_indices == second.dropped_indices
 
     def test_a_different_drop_seed_drops_different_samples(self):
-        first = substitution_plan(CORPUS, replace_fraction=0.5, drop_seed=1)
-        second = substitution_plan(CORPUS, replace_fraction=0.5, drop_seed=2)
+        first = mixture_plan(CORPUS, drop_fraction=0.5, drop_seed=1)
+        second = mixture_plan(CORPUS, drop_fraction=0.5, drop_seed=2)
         assert first.dropped_indices != second.dropped_indices
 
     def test_the_drop_seed_does_not_disturb_the_validation_split(self):
-        first = substitution_plan(CORPUS, replace_fraction=0.5, drop_seed=1)
-        second = substitution_plan(CORPUS, replace_fraction=0.5, drop_seed=2)
+        first = mixture_plan(CORPUS, drop_fraction=0.5, drop_seed=1)
+        second = mixture_plan(CORPUS, drop_fraction=0.5, drop_seed=2)
         assert first.val_indices == second.val_indices

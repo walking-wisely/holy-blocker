@@ -127,10 +127,10 @@ def finetune(
 ) -> Path:
     """Fine-tune against the archive and save a checkpoint. Returns its path.
 
-    `plan` (a `anime.SubstitutionPlan`) swaps part of the drawn training half
-    for a supplementary corpus while leaving the validation half untouched, so
-    the run stays comparable to the pre-registered baselines. Without it the
-    split is the plain stratified one.
+    `plan` (an `anime.MixturePlan`) adds a supplementary corpus to the drawn
+    training half, removes part of it, or both, while leaving the validation
+    half untouched so the run stays comparable to the pre-registered baselines.
+    Without it the split is the plain stratified one.
     """
     config.output_dir.mkdir(parents=True, exist_ok=True)
     device = select_device()
@@ -152,7 +152,7 @@ def finetune(
         train_set, val_set = build_training_sets(
             archive_path, supplement_archive, plan, config.image_size
         )
-        print(plan.describe())
+        print(plan.describe(index.source_labels))
         print(f"\ntrain {len(train_set)}  val {len(val_set)}")
     train_loader = DataLoader(
         train_set, batch_size=config.batch_size, shuffle=True, num_workers=num_workers
@@ -295,10 +295,16 @@ def main() -> None:
         "drawn training half for it, leaving the validation half untouched",
     )
     parser.add_argument(
-        "--replace-fraction",
+        "--drop-fraction",
         type=float,
-        default=0.5,
-        help="share of the drawn training half the supplement stands in for",
+        default=0.0,
+        help="share of the drawn training half to remove; with no --supplement this "
+        "is the ablation control arm",
+    )
+    parser.add_argument(
+        "--anime-count",
+        type=int,
+        help="anime images the supplement holds; defaults to the supplement's size",
     )
     parser.add_argument("--drop-seed", type=int, default=0)
     args = parser.parse_args()
@@ -310,14 +316,36 @@ def main() -> None:
         epochs=args.epochs,
         learning_rate=args.head_lr,
     )
+    # A plan is built whenever an arm departs from the plain split — either by
+    # adding a supplement or by dropping drawn data. The ablation control arm
+    # is the second case, and was unreachable while this keyed on --supplement.
     plan = None
-    if args.supplement is not None:
-        from holy_blocker_ml.anime import substitution_plan
+    if args.supplement is not None or args.drop_fraction > 0:
+        from holy_blocker_ml.anime import (
+            ANIME_LABEL_POLICY,
+            ANIME_SOURCE_CLASSES,
+            mixture_plan,
+        )
 
         index = ZipImageDataset(args.archive, image_size=args.image_size, augment=False)
-        plan = substitution_plan(
+        anime_count = args.anime_count
+        if anime_count is None:
+            if args.supplement is None:
+                anime_count = 0
+            else:
+                anime_count = len(
+                    ZipImageDataset(
+                        args.supplement,
+                        image_size=args.image_size,
+                        augment=False,
+                        policy=ANIME_LABEL_POLICY,
+                        classes=ANIME_SOURCE_CLASSES,
+                    )
+                )
+        plan = mixture_plan(
             index.source_labels,
-            replace_fraction=args.replace_fraction,
+            drop_fraction=args.drop_fraction,
+            anime_count=anime_count,
             drop_seed=args.drop_seed,
         )
 
