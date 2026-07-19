@@ -12,6 +12,20 @@ data class ScreenIdentity(
     val className: String?,
     val resourceIds: Set<String> = emptySet(),
     val texts: List<String> = emptyList(),
+    /**
+     * Whether the window this was harvested from holds input focus.
+     *
+     * Load-bearing for the decision, not descriptive: `GLOBAL_ACTION_BACK` takes
+     * no window argument and lands on whatever is focused, so backing out of an
+     * unfocused match would press BACK inside the app the user is actually
+     * using. Defaults true because the single-window case — every screen outside
+     * split screen — is exactly that.
+     *
+     * Meaningful for the *guard* only. Focus decides whether a control can be
+     * operated, which is what tamper resistance turns on; it says nothing about
+     * whether content is being consumed, which is what the content path turns on.
+     */
+    val windowFocused: Boolean = true,
 )
 
 /** A screen whose purpose is removing the guard. */
@@ -303,6 +317,37 @@ class SettingsGuard(
         if (surface == null) {
             // The user left, so any loop we were in has ended.
             resetBound()
+            return GuardDecision.Ignore
+        }
+
+        // A guarded screen we cannot act on yet, so we wait rather than act
+        // wrongly.
+        //
+        // `GLOBAL_ACTION_BACK` takes no window argument; it goes to the focused
+        // window. In split screen the matched settings pane need not be the
+        // focused one, and firing BACK then presses it inside whatever app the
+        // user is actually driving while never dismissing the pane that matched.
+        //
+        // Covering instead — which the backlog originally proposed and an earlier
+        // version of this did — is worse, not better. `OverlayController` adds a
+        // MATCH_PARENT window to the service's own `WindowManager`, so the cover
+        // spans the **display**, not the pane: an unfocused match would black out
+        // the innocent app the user is actually using and swallow its touches.
+        // Because covering is not a back-out it also never trips the bound, so
+        // there would be nothing to end it.
+        //
+        // Waiting is safe here, and that is specific to tamper resistance rather
+        // than a general rule: a guarded surface is a *control*, and a control
+        // cannot be operated without focus. The toggle cannot be flipped until
+        // the user focuses that pane, and focusing it fires this path again with
+        // `windowFocused` true, where BACK lands correctly. The caller arms the
+        // deferred re-look on a non-decision, so a focus change that arrives
+        // without an event is still picked up.
+        //
+        // The content path must NOT copy this. Media plays in an unfocused pane
+        // without anyone touching it, so ignoring an unfocused window there is
+        // the evasion rather than the fix. See plan.md workstream 3.
+        if (!screen.windowFocused) {
             return GuardDecision.Ignore
         }
 

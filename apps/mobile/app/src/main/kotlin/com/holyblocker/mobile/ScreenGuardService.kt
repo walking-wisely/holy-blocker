@@ -17,6 +17,8 @@ import com.holyblocker.mobile.policy.ScanGate
 import com.holyblocker.mobile.policy.ScreenIdentity
 import com.holyblocker.mobile.policy.SettingsGuard
 import com.holyblocker.mobile.policy.SettingsProfiles
+import com.holyblocker.mobile.policy.WindowCandidate
+import com.holyblocker.mobile.policy.WindowResolver
 
 /**
  * Layer 2's workhorse on Android: reads on-screen text from other apps, runs it
@@ -139,7 +141,14 @@ class ScreenGuardService : AccessibilityService() {
 
         syncSuspension(guard)
 
-        val identity = currentScreenIdentity(packageName, event.className?.toString())
+        // windowId is the point of backlog item 2: the event names the window
+        // that actually changed, which in split screen is the only way to tell
+        // the two settings-adjacent panes apart.
+        val identity = currentScreenIdentity(
+            packageName,
+            event.className?.toString(),
+            eventWindowId = event.windowId,
+        )
         val acted = identity != null && applyDecision(guard, identity, overlay)
 
         if (acted) {
@@ -185,7 +194,15 @@ class ScreenGuardService : AccessibilityService() {
         // root node reports a view class rather than the activity. That costs
         // nothing worth having — the class is the unreliable signal here, while
         // resource ids and the self-mention catch-all both still apply.
-        val identity = currentScreenIdentity(packageName, className = null) ?: return false
+        //
+        // eventWindowId is null for the same reason, which is why WindowResolver
+        // needs the focus/active fallback: this path has no event to name a
+        // window and must choose one on the display's own evidence.
+        val identity = currentScreenIdentity(
+            packageName,
+            className = null,
+            eventWindowId = null,
+        ) ?: return false
         return applyDecision(guard, identity, overlay)
     }
 
@@ -212,18 +229,67 @@ class ScreenGuardService : AccessibilityService() {
         rootInActiveWindow?.packageName?.toString()
             ?: windows.firstOrNull { it.isActive }?.root?.packageName?.toString()
 
-    private fun rootFor(packageName: String): AccessibilityNodeInfo? {
-        rootInActiveWindow
-            ?.takeIf { it.packageName?.toString() == packageName }
-            ?.let { return it }
+    /**
+     * The window to evaluate, paired with its root — see [WindowResolver].
+     *
+     * `rootInActiveWindow` is no longer a shortcut here even when it matches the
+     * package: it says nothing about *which* window it came from, and picking a
+     * window is the whole point. Enumerating gives ids and focus for every
+     * candidate, which is what [WindowResolver] needs and what the decision
+     * downstream needs.
+     */
+    private fun resolveWindow(packageName: String, eventWindowId: Int?): ResolvedWindow? {
+        val roots = windows.mapNotNull { window ->
+            window.root?.let { root -> window to root }
+        }
+        val candidates = roots.map { (window, root) ->
+            WindowCandidate(
+                id = window.id,
+                packageName = root.packageName?.toString(),
+                isActive = window.isActive,
+                isFocused = window.isFocused,
+            )
+        }
 
-        return windows.asSequence()
-            .mapNotNull { it.root }
-            .firstOrNull { it.packageName?.toString() == packageName }
+        val chosen = WindowResolver.choose(candidates, packageName, eventWindowId)
+            // The window list can come back empty on a task being restored, which
+            // is case 1(a) all over again. rootInActiveWindow is the last resort
+            // rather than the first choice, and it carries no focus information —
+            // treat it as focused, since a single active window is.
+            ?: return rootInActiveWindow
+                ?.takeIf { it.packageName?.toString() == packageName }
+                ?.let { ResolvedWindow(root = it, isFocused = true) }
+
+        val root = roots.first { (window, _) -> window.id == chosen.id }.second
+        return ResolvedWindow(root = root, isFocused = chosen.isFocused)
     }
 
-    private fun currentScreenIdentity(packageName: String, className: String?): ScreenIdentity? {
-        val root = rootFor(packageName) ?: return null
+    /** A window the guard has decided to evaluate. */
+    private data class ResolvedWindow(val root: AccessibilityNodeInfo, val isFocused: Boolean)
+
+    private fun currentScreenIdentity(
+        packageName: String,
+        className: String?,
+        eventWindowId: Int?,
+    ): ScreenIdentity? {
+        val resolved = resolveWindow(packageName, eventWindowId) ?: run {
+            // Not silent, deliberately. Case 1(a) was invisible for as long as it
+            // was because every log sat behind `root != null`, so a guard that
+            // never saw the screen looked identical to one that saw it and found
+            // nothing to match. This is the same failure one layer up from
+            // logEmptyHarvest, and it needs its own signal or that diagnostic
+            // simply never runs.
+            //
+            // Shape only — window ids and package names, never titles or text.
+            Log.w(
+                TAG,
+                "no root pkg=$packageName windows=${windows.size} " +
+                    "pkgs=${windows.mapNotNull { it.root?.packageName?.toString() }.distinct()} " +
+                    "activeRoot=${rootInActiveWindow?.packageName}",
+            )
+            return null
+        }
+        val root = resolved.root
         val texts = mutableListOf<String>()
         val resourceIds = mutableSetOf<String>()
         collectIdentity(root, texts, resourceIds, depth = 0, budget = NodeBudget())
@@ -236,18 +302,20 @@ class ScreenGuardService : AccessibilityService() {
         // without it that looks identical to a screen that simply did not match.
         Log.d(
             TAG,
-            "settings screen class=$className texts=${texts.size} ids=${resourceIds.take(12)}",
+            "settings screen class=$className texts=${texts.size} " +
+                "focused=${resolved.isFocused} ids=${resourceIds.take(12)}",
         )
 
-        // An empty harvest on a screen the user can plainly read is the open bug
-        // (backlog.md item 1b). Three hypotheses produce it and they need
-        // different fixes, so dump what tells them apart — but only on the
-        // failing case, since this walks the tree a second time.
-        if (texts.isEmpty()) logEmptyHarvest(packageName, root)
+        // A chrome-only harvest on a screen the user can plainly read is what
+        // backlog item 1(b) was. It is closed, but a regression here is otherwise
+        // silent, so the dump stays — on the failing case only, since it walks
+        // the tree a second time.
+        if (texts.size < DIAGNOSTIC_TEXT_FLOOR) logEmptyHarvest(packageName, root)
 
         return ScreenIdentity(
             packageName = packageName,
             className = className,
+            windowFocused = resolved.isFocused,
             resourceIds = resourceIds,
             texts = texts,
         )
@@ -256,19 +324,26 @@ class ScreenGuardService : AccessibilityService() {
     /**
      * Diagnostic for an empty harvest on a populated screen — backlog item 1(b).
      *
-     * Discriminates the three candidate causes in one dump:
+     * Kept after that item was closed, because it is the signal that says a
+     * guarded screen is being harvested blind — a regression here is silent
+     * otherwise. What it discriminates, corrected against what it measured:
      *
      *  - **Wrong window.** More than one window for [packageName] means [rootFor]
-     *    picking the first match is a real suspect. Exactly one means it is not,
-     *    and window-resolution work would be wasted.
-     *  - **Filtered subtree.** `declared` counts children the tree says exist;
-     *    `fetched` counts the ones `getChild` actually returned. A gap is the
-     *    signature of nodes filtered out of this service's view — the case
-     *    `flagIncludeNotImportantViews` would address, and the reason a
-     *    `uiautomator` dump seeing the row proves nothing about what we can see.
-     *  - **Genuinely absent.** `declared == fetched` with no text means the rows
-     *    are not in the tree we were handed at all, and neither of the above
-     *    helps.
+     *    picking the first match is a real suspect. Exactly one means it is not.
+     *    This held: the device-admin list reported `windows=1`, which is what
+     *    ruled item 2 out as a cause of 1(b) rather than merely ranking it last.
+     *  - **Fetch failure.** `declared` counts children the tree says exist;
+     *    `fetched` counts the ones `getChild` actually returned. A gap means
+     *    nodes are being lost on the way out.
+     *  - **Withheld subtree.** `declared == fetched` and still no text. Note this
+     *    does *not* distinguish "absent" from "filtered", which is what the
+     *    original version of this comment claimed: both `importantForAccessibility`
+     *    filtering and `accessibilityDataSensitive` are applied by the framework
+     *    before `childCount` is reported, so a withheld subtree shows no gap at
+     *    all. 1(b) turned out to be exactly this case — `declared == fetched == 16`
+     *    with the rows withheld — and was closed by `isAccessibilityTool`. Compare
+     *    against a `uiautomator` dump to size the gap, remembering UiAutomation is
+     *    exempt from both mechanisms.
      *
      * No text and no window titles are logged, only shape — the screen's contents
      * stay on the screen, same rule as the harvest log above.
@@ -473,5 +548,18 @@ class ScreenGuardService : AccessibilityService() {
          * an ANR rather than a limit normal operation should ever reach.
          */
         private const val MAX_NODES = 3_000
+
+        /**
+         * Text-fragment count below which a settings harvest is treated as
+         * suspect and [logEmptyHarvest] runs.
+         *
+         * Not zero, which is what this started as. The device-admin list harvests
+         * *three* fragments — the toolbar title and its chrome — with none of the
+         * list rows, so a strictly-empty trigger never fired on the one screen the
+         * diagnostic was written for. Any real settings screen carries far more
+         * than this, so the floor buys the chrome-only case without firing on
+         * screens that are merely sparse.
+         */
+        private const val DIAGNOSTIC_TEXT_FLOOR = 8
     }
 }
