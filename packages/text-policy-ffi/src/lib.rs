@@ -183,18 +183,22 @@ mod tests {
 
     #[test]
     fn url_source_matches_domain_tokens() {
+        // UrlTokenSequence carries full confidence, so a High term in a path
+        // reaches 80 and blocks.
         let v = engine().evaluate(
             "https://example.com/adult-platform/watch".into(),
             SourceKind::BrowserUrl,
         );
+        assert_eq!(v.score, 80);
         assert_eq!(v.action, Action::Block);
     }
 
     #[test]
     fn custom_thresholds_are_honoured() {
-        // "nudity" alone scores ~61 → Warn at defaults; a block cutoff of 60
-        // must turn the same text into a Block.
-        let strict = PolicyEngine::with_thresholds(60, 30);
+        // "mentions nudity once" is one Medium occurrence → 35, which is Allow
+        // at the default 80/50 bands. Lowering the block cutoff under 35 must
+        // turn the same text into a Block.
+        let strict = PolicyEngine::with_thresholds(30, 15);
         assert_eq!(
             strict
                 .evaluate("mentions nudity once".into(), SourceKind::BrowserTitle)
@@ -205,7 +209,7 @@ mod tests {
             engine()
                 .evaluate("mentions nudity once".into(), SourceKind::BrowserTitle)
                 .action,
-            Action::Warn
+            Action::Allow
         );
     }
 

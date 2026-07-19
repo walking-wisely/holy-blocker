@@ -93,26 +93,30 @@ mod tests {
 
     #[test]
     fn high_severity_exact_match_blocks() {
-        // ExactPhrase (80) + TokenSequence (80*0.8=64) → 144 → clamped to 100 → Block
+        // One occurrence, matched at its best mode (ExactPhrase, x1.00): 80.
+        // The term also fires TokenSequence, but that is the same occurrence
+        // seen through another view and must not be added on top.
         let v = engine().evaluate("contains explicit act here", SourceKind::BrowserTitle);
         assert_eq!(v.action, Action::Block);
-        assert_eq!(v.score, 100);
+        assert_eq!(v.score, 80);
     }
 
     #[test]
-    fn medium_severity_matches_accumulate() {
-        // Each "nudity" fires ExactPhrase (35) + Compact (35*0.75≈26); two occurrences → >80 → Block
+    fn medium_severity_occurrences_accumulate_without_blocking() {
+        // Two occurrences x 35 = 70 → Warn. A Medium term must not reach the
+        // Block band on repetition alone; that band is for High severity.
         let v = engine().evaluate("nudity nudity here", SourceKind::BrowserTitle);
-        assert_eq!(v.action, Action::Block);
-        assert!(v.score >= 80);
+        assert_eq!(v.action, Action::Warn);
+        assert_eq!(v.score, 70);
     }
 
     #[test]
-    fn single_medium_severity_warns() {
-        // ExactPhrase (35) + Compact (≈26) = ≈61 → Warn
+    fn single_medium_severity_scores_below_warn_band() {
+        // One occurrence of a Medium term is 35, under the warn threshold of
+        // 50 — a single ambiguous word on its own says nothing.
         let v = engine().evaluate("mentions nudity once", SourceKind::BrowserTitle);
-        assert_eq!(v.action, Action::Warn);
-        assert!(v.score >= 50 && v.score < 80);
+        assert_eq!(v.score, 35);
+        assert_eq!(v.action, Action::Allow);
     }
 
     #[test]
@@ -142,10 +146,11 @@ mod tests {
 
     #[test]
     fn low_confidence_ocr_lowers_score() {
-        // ExactPhrase 80*0.4=32, TokenSequence 80*0.8*0.4=25.6 → 57 → Warn (not Block)
+        // 80 x 1.00 (best mode) x 0.40 (OcrLow) = 32 → Allow. Text this
+        // unreliably extracted should not drive a user-visible action.
         let v = engine().evaluate("explicit act", SourceKind::OcrLow);
-        assert_eq!(v.action, Action::Warn);
-        assert!(v.score < 80);
+        assert_eq!(v.score, 32);
+        assert_eq!(v.action, Action::Allow);
     }
 
     #[test]
