@@ -7,7 +7,7 @@ description = "Local ML pipeline for Holy Blocker baseline classifiers."
 requires-python = ">=3.11,<3.14"
 dependencies = [
   "torch>=2.12,<2.13",
-  "torchvision>=0.27,<0.28",
+  "torchvision>=0.27,<0.29",
   "onnx>=1.16",
   # torch>=2.9 routes torch.onnx.export through the dynamo exporter, which
   # requires onnxscript at runtime.
