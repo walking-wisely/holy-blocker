@@ -6,7 +6,7 @@ description = "Local ML pipeline for Holy Blocker baseline classifiers."
 # 3.14 (it mutates `__module__` on a typing.Union, rejected since 3.14).
 requires-python = ">=3.11,<3.14"
 dependencies = [
-  "torch>=2.12,<2.13",
+  "torch>=2.12,<2.14",
   "torchvision>=0.27,<0.28",
   "onnx>=1.16",
   # torch>=2.9 routes torch.onnx.export through the dynamo exporter, which
