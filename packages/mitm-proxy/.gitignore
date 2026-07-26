@@ -1,0 +1,4 @@
+
+# Local development CA. The private key here can mint a trusted certificate for
+# any domain on a machine that trusts it — never commit it.
+data/ca/

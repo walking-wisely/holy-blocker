@@ -19,6 +19,7 @@ The packages below **exist in the repo today** and are actively being built:
 | `packages/mitm-proxy` | Rust | Plain HTTP forwarding + TLS state/cert generation + CONNECT handler + HTTP/1.1 tunnel loop with phase 3/4/5 scan hooks done; text-policy wired into scan_url/scan_body; ProtectionMode next |
 | `packages/net-shield` | Rust | radix domain/IP filter done; SNI parser done; tun adapter + PacketSink dispatch done; NetShield struct + run loop done (Windows Wintun path); smoke-test done — all 5 plan steps complete |
 | `native-modules/win-daemon` | C++20 | WinEvent hooks + message loop; no capture/OCR/IPC yet |
+| `native-modules/mac-daemon` | Swift / SwiftPM | Layer 1 (network path) in progress. `CommandRunner` edge + `FakeCommandRunner`, `NetworkServices` parsers, `CATrust` (System-keychain root install/trust/remove), `ProxyConfiguration` (per-service snapshot → apply → restore, `DefaultBypass`), and the `holy-blocker-macd` CLI verbs — unit-tested **and verified live on macOS 26.5**: CA install is idempotent and independently confirmed trusted via `security verify-cert`, uninstall leaves no residue, and apply → restore returns all network services byte-identically. Note `networksetup` proxy changes need **no root** for an admin user, which makes the standard-user split a prerequisite rather than hardening. `ProxySupervisor` and Firefox NSS trust next; Layer 2 (ScreenCaptureKit capture, NSWindow overlay, AXObserver/CGEventTap) not started. **Run tests with `scripts/test.sh`, never bare `swift test`** — see `docs/components/mac-daemon/plan.md` |
 
 The packages below are **planned but not yet created** — do not assume they exist:
 
@@ -137,6 +138,10 @@ Before finishing a code change, run the narrowest relevant checks:
 - Desktop build or bundling changes: `pnpm --filter @holy-blocker/desktop build`
 - Rust policy changes: `cargo test` from `packages/text-policy`
 - Python logic changes: run the package's unit tests, adding a test command if needed
-- Native daemon changes: build with CMake and run any added unit tests
+- Windows daemon changes: build with CMake and run any added unit tests
+- macOS daemon changes: `./scripts/test.sh` from `native-modules/mac-daemon`. Do **not** use bare
+  `swift test` — under a Command Line Tools toolchain it cannot locate swift-testing, and moving
+  the needed flags into `Package.swift` as `unsafeFlags` makes SwiftPM silently run zero tests
+  while still exiting 0.
 
 If a relevant check cannot be run, report the reason clearly.
