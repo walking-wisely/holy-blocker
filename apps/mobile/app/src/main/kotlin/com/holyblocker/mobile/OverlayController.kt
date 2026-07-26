@@ -5,6 +5,7 @@ import android.graphics.Color
 import android.graphics.PixelFormat
 import android.os.Build
 import android.provider.Settings
+import android.util.Log
 import android.view.Gravity
 import android.view.View
 import android.view.WindowManager
@@ -46,15 +47,24 @@ class OverlayController(private val context: Context) {
 
     fun apply(state: CoverState) {
         if (state == shownState) return
-        when (state) {
+        val applied = when (state) {
             CoverState.COVER -> show(opaque = true)
             CoverState.WARN -> show(opaque = false)
-            CoverState.CLEAR -> hide()
+            CoverState.CLEAR -> {
+                hide()
+                true
+            }
         }
-        shownState = state
+
+        // Only record a state that actually took. A failed `addView` leaving
+        // `shownState` at COVER would make `apply` believe a cover is up that is
+        // not, and the early return above would then suppress every retry — the
+        // screen stays uncovered for as long as the user keeps it open. Leaving
+        // it CLEAR costs one redundant attempt per event and self-heals.
+        if (applied) shownState = state
     }
 
-    private fun show(opaque: Boolean) {
+    private fun show(opaque: Boolean): Boolean {
         hide()
 
         val label = TextView(context).apply {
@@ -98,13 +108,40 @@ class OverlayController(private val context: Context) {
             PixelFormat.TRANSLUCENT,
         )
 
-        windowManager.addView(container, params)
-        view = container
+        // Every call here is on the accessibility callback path, and an uncaught
+        // throw there kills the event — repeated, it takes the service down,
+        // which is a bypass by way of a crash. WindowManager throws for reasons
+        // outside this class's control: the token is rejected once the service
+        // is being unbound, and the window can already be gone.
+        return try {
+            windowManager.addView(container, params)
+            view = container
+            true
+        } catch (e: WindowManager.BadTokenException) {
+            Log.w(TAG, "overlay rejected by the window manager", e)
+            view = null
+            false
+        } catch (e: IllegalStateException) {
+            // "View has already been added to the window manager" — the view is
+            // fresh here, so this means our own bookkeeping drifted.
+            Log.w(TAG, "overlay could not be attached", e)
+            view = null
+            false
+        }
     }
 
     private fun hide() {
-        view?.let { windowManager.removeView(it) }
+        val attached = view
         view = null
+        if (attached == null) return
+        try {
+            windowManager.removeView(attached)
+        } catch (e: IllegalArgumentException) {
+            // "View not attached to window manager". The window is gone, which
+            // is the state this was asking for, so there is nothing to recover —
+            // but it must not propagate: see the note in `show`.
+            Log.w(TAG, "overlay was already detached", e)
+        }
     }
 
     /** Releases the window; call from the service's teardown. */
@@ -114,6 +151,8 @@ class OverlayController(private val context: Context) {
     }
 
     companion object {
+        private const val TAG = "ScreenGuard"
+
         private val COVER_COLOR = Color.rgb(18, 20, 24)
         private val WARN_COLOR = Color.argb(140, 18, 20, 24)
 

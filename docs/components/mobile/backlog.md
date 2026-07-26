@@ -36,6 +36,20 @@ Anything requiring Device Owner is out of scope permanently — see plan.md §7.
   whole fix. See [the closed investigation](#closed-1-the-empty-harvest) below for the evidence
   and for what was ruled out, and plan.md §7 for what the declaration means.
 
+- ~~**Split screen harvested the wrong window.**~~ **Fixed** — every watched window is evaluated
+  now, not the first one matching the event's package, and the back action is gated on the matched
+  window holding input focus. Verified in real split screen on an android-36 emulator, both
+  directions. The premise was right and incomplete: the wrong-window read was real, but the
+  reason it mattered most turned out to be the *action*, not the matching. See
+  [the closed investigation](#closed-2-split-screen) for what the emulator showed, including two
+  things the item did not predict.
+
+- ~~**`OverlayController` could crash the service.**~~ **Fixed** — `addView`/`removeView` are
+  wrapped, and a failed `addView` leaves `shownState` at `CLEAR` so the next event retries instead
+  of believing a cover is up that is not. Not reproduced on device; this is a hardening fix
+  written from the API contract, and it is untested for the same reason the throw is hard to
+  provoke deliberately.
+
 ## Next
 
 ### 1. The device-admin list is unreachable from Settings while armed but not yet an admin
@@ -68,50 +82,7 @@ Do **not** fix this by exempting `SELF_IN_SETTINGS` whenever the admin is inacti
 precisely the pre-onboarding state, and the accessibility list — the primary removal route, which
 has nothing to do with device admin — would be unguarded throughout it.
 
-### 2. Split-screen harvests the wrong window
-
-`guardSettingsScreen` goes through `currentScreenIdentity` → `rootFor`, which already enumerates
-`windows` filtered by package. The remaining gap is narrower: `rootFor` takes the *first* window
-whose root matches the package, which is not necessarily the event's own window. In split screen
-two Settings-adjacent windows can coexist, so the guard can evaluate the wrong one, `mentionsSelf`
-fails, and the app-label catch-all §7 calls load-bearing silently does nothing.
-
-**This was never the empty-harvest bug**, and an earlier planning pass treating the two as one
-cost real time. The diagnostic settled it on device: `windows=1` on the device-admin list, and the
-cause was `accessibilityDataSensitive` filtering, which is per node and has nothing to do with
-which window is picked. This item stands on its own and is still unverified — split screen has not
-been exercised on the emulator.
-
-Fix: resolve the root for the event's own window via `getWindows()` / `event.windowId`, falling
-back to `rootInActiveWindow`. **Note this mechanism is unavailable on the re-look path** —
-`evaluateCurrentScreen` is deliberately event-less, so there is no `windowId` to match; it needs
-a separate criterion (prefer `isActive`/`isFocused` among matches).
-
-Do **not** "evaluate every window belonging to a watched package" without also fixing the action:
-`applyDecision` fires `performGlobalAction(GLOBAL_ACTION_BACK)`, which is global and lands on the
-*focused* window. Matching a non-focused Settings pane would press BACK in whatever app the user
-is actually using, and would never dismiss the pane that matched, so it loops until the bound
-trips — ~3.6 s of stray BACK presses, then a cover over the innocent app. Gate `BackOut` on the
-matched window being focused; cover instead when it is not.
-
-`flagRetrieveInteractiveWindows` is already set in `accessibility_service_config.xml`, so the
-capability is paid for.
-
-Keep the decision in `SettingsGuard` (pass a list of `ScreenIdentity`, return the strongest
-decision) so it stays JVM-testable — but this is not just a signature change. `evaluate` mutates
-`consecutiveBackOuts`, `lastSurface` and `lastBackOutAtMillis` on every call, so iterating a list
-through it breaks the one-decision-per-event invariant in both directions: N identities burn N
-increments and hit `MAX_CONSECUTIVE_BACK_OUTS` within about two events, while two windows matching
-two *different* surfaces alternate `lastSurface` and reset the bound forever, so it never trips.
-The note under "checked and found not to be holes" that calls alternating surfaces safe holds
-only for the single-screen case.
-
-`match()` is already a pure private function, so the shape is: match every identity, merge, then
-call the counter-updating decision **once**. Define "strongest" carefully — `CoverOnly` is the
-*give-up* state, weaker enforcement than `BackOut` despite being the escalation, so ranking it
-higher lets one window's exhausted budget silence a window that still has one.
-
-### 3. `app_name` must never be localised
+### 2. `app_name` must never be localised
 
 The catch-all matches on the app's own label, which works only because it is a brand string.
 There is currently one `res/values/` directory, so the reasoning holds — but adding any
@@ -121,7 +92,7 @@ locale, reintroducing from our own side the exact failure §7 warns about for Se
 Fix: `translatable="false"`, or a dedicated non-localised match constant, plus a test asserting
 the matcher label is locale-independent.
 
-### 4. SystemUI is entirely unwatched
+### 3. SystemUI is entirely unwatched
 
 `watchesPackage` covers Settings and (now) the installers. `com.android.systemui` hosts Quick
 Settings and the accessibility floating panel. On AOSP the a11y panel toggles the *shortcut
@@ -132,16 +103,7 @@ about, and Xiaomi and Samsung both customise SystemUI heavily.
 Fix: watch it on a **self-mention-only** path, and **cover rather than back out**. Backing out of
 the notification shade or volume panel is indistinguishable from a broken phone.
 
-### 5. `OverlayController` can crash the service
-
-`hide()` calls `removeView` uncaught on the accessibility callback path; it throws
-`IllegalArgumentException` when the view is not attached. A throw there kills the event, and
-repeated throws can take the service down — a bypass by way of a crash.
-
-Fix: wrap `addView`/`removeView`, and on `addView` failure leave `shownState` as `CLEAR` so the
-next event retries rather than believing a cover is up that is not.
-
-### 6. Foreground service
+### 4. Foreground service
 
 Does not keep the guard alive (plan.md, implementation order) and does not close recents-swipe on
 Pixel, where a bound accessibility service is not killed by swiping. It does raise priority
@@ -149,7 +111,7 @@ against low-memory kills and gives an always-visible status signal. Verify the r
 claim on real Samsung hardware before writing any mitigation for it — the claim in §7 comes from
 AppBlock's docs, and AppBlock ships to OEMs with aggressive task-killers that AOSP does not have.
 
-### 7. Dead `ScanGate.reset()`
+### 5. Dead `ScanGate.reset()`
 
 Never called — `onServiceConnected` builds a fresh instance. Either call it on reconnect instead
 of reallocating, or delete it.
@@ -182,7 +144,9 @@ Recorded so they are not re-investigated.
   stricter. This stays true only while the stored state is a *request* rather than a grant.
 - **Tripping the back-out bound** is not a walk-in. `CoverOnly` still shows the opaque,
   touch-swallowing cover, and `lastSurface` is a single field, so alternating surfaces resets the
-  counter rather than accumulating.
+  counter rather than accumulating. The alternating-surfaces half of this held only because one
+  screen was evaluated per event; `evaluate` now takes the whole window list and folds it to a
+  single decision before touching the counter, which is what keeps it true in split screen.
 - **Settings' search box** collapses into the existing window-state-event reliability problem
   rather than being a distinct route: results naming the app hit the catch-all, and tapping
   through lands on a guarded activity.
@@ -190,6 +154,57 @@ Recorded so they are not re-investigated.
   toggle the enable-state. Assigning it happens on the guarded per-service page.
 - **A boot receiver is not needed for the guard to survive reboot** — the system rebinds enabled
   accessibility services automatically. It is still worth adding for tamper-log gap detection.
+
+## Closed: 2, split screen
+
+Measured on an `android-36 google_apis arm64-v8a` emulator in genuine split screen — Settings
+parked on the Accessibility page in one pane, a clock app in the other — with a temporary probe
+logging the whole window list on every event.
+
+**The window list is fine; the action was the problem.** `getWindows()` reports both panes
+truthfully:
+
+```
+id=135 pkg=com.google.android.deskclock active=true  focused=true  type=1
+id=147 pkg=com.android.settings         active=false focused=false type=1
+```
+
+So `isFocused` is a real signal and not something that has to be inferred. Both branches then
+behaved as intended: unfocused reads `window=222 focused=false` and covers, and the instant the
+pane is tapped it reads `focused=true` and is backed out — matching `ACCESSIBILITY_SETTINGS`
+**by class**, which is also the proof that the event's class is being attached to the event's own
+window rather than to a sibling pane.
+
+Two things the item did not predict, both of which matter more than the wrong-window read did:
+
+- **An unfocused pane emits no accessibility events at all.** Not delayed — none. A config change
+  (`cmd uimode night`, `font_scale`) produced events from the focused app and from SystemUI and
+  nothing whatsoever from the pane sitting beside them. The only way to make it emit was to drag
+  the split divider, forcing a re-layout. The consequence is that the cover-when-unfocused branch
+  is **defence in depth, not the load-bearing path** — the guard cannot see a quiet pane. What
+  carries the protection is that the toggle is not operable without focus, and taking focus emits
+  events, which is the case that gets backed out.
+- **A focused pane's events were cancelling the re-look for the guarded pane.** `foregroundPackage`
+  returned the clock app, so `classifyUnwatchedEvent` read every one of its events as the user
+  having left. Fixed by passing the visible-window packages alongside the foreground: a watched
+  window visible anywhere means `STILL_WATCHED`. This is the same shape as the SystemUI-chrome bug
+  closed in investigation 1, one layer out.
+
+Also observed, and deliberately not "fixed": the cover flaps. It goes up when the unfocused pane
+emits, and comes down again as soon as the focused app's next content scan returns `ALLOW`. That
+is the ordinary scan path doing its job, and it is what keeps this from becoming the failure §7
+forbids — a touch-swallowing cover that cannot be dismissed. Do not make the cover sticky here
+without an answer for how the user gets out from under it.
+
+**Not attempted: evaluating watched windows on every unrelated app's event.** It would close the
+quiet-pane gap above, and it would also mean any guarded Settings page left open in a pane covers
+the whole screen indefinitely, with touches swallowed and no route to the in-app disarm. That is
+the device-unusable outcome plan.md §7 rules out, so the gap is documented rather than traded for
+it.
+
+Reproduction scripts are not committed — split screen on Android 12+ is driven by the SystemUI
+shell, so it has to be entered through the recents UI (`am start --windowingMode 6` only makes one
+task multi-window at full-screen bounds, and any `am start` breaks out of an existing split).
 
 ## Closed: 1, the empty harvest
 

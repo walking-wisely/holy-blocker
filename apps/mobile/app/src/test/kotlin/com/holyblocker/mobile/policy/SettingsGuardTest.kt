@@ -554,11 +554,56 @@ class SettingsGuardTest {
         )
     }
 
+    @Test
+    fun `a guarded pane beside the focused app is not a departure`() {
+        // Measured on an android-36 emulator in real split screen: Settings sat
+        // in one pane reporting focused=false while the clock app in the other
+        // owned focus and fired every event. Reading the foreground alone made
+        // each of those events look like the user leaving, which cancelled the
+        // re-look aimed at the pane that was still sitting there.
+        assertEquals(
+            UnwatchedEvent.STILL_WATCHED,
+            guard().classifyUnwatchedEvent(
+                foregroundPackage = "com.google.android.deskclock",
+                visiblePackages = listOf("com.google.android.deskclock", "com.android.settings"),
+            ),
+        )
+    }
+
+    @Test
+    fun `a split screen with no guarded pane is still a departure`() {
+        assertEquals(
+            UnwatchedEvent.LEFT,
+            guard().classifyUnwatchedEvent(
+                foregroundPackage = "com.google.android.deskclock",
+                visiblePackages = listOf("com.google.android.deskclock", "com.android.chrome"),
+            ),
+        )
+    }
+
+    @Test
+    fun `a visible guarded pane outranks an unresolvable foreground`() {
+        // UNKNOWN exists because a foreground that cannot be read must not
+        // cancel the re-look. Seeing the guarded window directly is strictly
+        // better information than that, so it wins.
+        assertEquals(
+            UnwatchedEvent.STILL_WATCHED,
+            guard().classifyUnwatchedEvent(
+                foregroundPackage = null,
+                visiblePackages = listOf("com.android.settings"),
+            ),
+        )
+    }
+
     // --- re-fire suppression ----------------------------------------------
 
     /** One deliberate visit, spaced past the suppression window each time. */
     private fun attempts(guard: SettingsGuard, screen: ScreenIdentity, n: Int, from: Long = 0) =
         (0 until n).map { guard.evaluate(screen, from + it * (SettingsGuard.BACK_OUT_REFIRE_MILLIS + 50)) }
+
+    /** The same, for the split-screen cases. */
+    private fun attempts(guard: SettingsGuard, windows: List<WindowScreen>, n: Int, from: Long = 0) =
+        (0 until n).map { guard.evaluate(windows, from + it * (SettingsGuard.BACK_OUT_REFIRE_MILLIS + 50)) }
 
     @Test
     fun `fires once while a single screen renders`() {
@@ -703,6 +748,176 @@ class SettingsGuardTest {
         assertEquals(
             GuardDecision.BackOut(GuardedSurface.APP_INFO_SELF),
             guard.evaluate(appInfoScreen(), nowMillis = step * 4),
+        )
+    }
+
+    // --- split screen -------------------------------------------------------
+    //
+    // Two windows are visible at once and only one of them has input focus.
+    // `performGlobalAction(GLOBAL_ACTION_BACK)` takes no window argument, so
+    // where the focus sits decides which of the two enforcement actions is even
+    // available. None of this is reachable through the single-window overload —
+    // that one declares its screen focused, which is true of a lone window and
+    // false of a split-screen pane.
+
+    private fun focused(screen: ScreenIdentity) = WindowScreen(screen, isFocused = true)
+    private fun beside(screen: ScreenIdentity) = WindowScreen(screen, isFocused = false)
+
+    @Test
+    fun `backs out of a guarded pane the user is actually in`() {
+        val decision = guard().evaluate(
+            listOf(beside(unrelatedScreen()), focused(accessibilityScreen())),
+            nowMillis = 0,
+        )
+
+        assertEquals(GuardDecision.BackOut(GuardedSurface.ACCESSIBILITY_SETTINGS), decision)
+    }
+
+    @Test
+    fun `covers rather than backs out of a guarded pane beside the focused app`() {
+        // The reason this is not a BackOut: BACK would be delivered to the app
+        // the user is in, not to the pane that matched. That pane would still be
+        // there on the next event, so the guard would press BACK through an
+        // innocent app until the bound tripped — ~3.6 s of stray presses,
+        // ending in a cover over the wrong window anyway.
+        val decision = guard().evaluate(
+            listOf(focused(unrelatedScreen()), beside(accessibilityScreen())),
+            nowMillis = 0,
+        )
+
+        assertEquals(GuardDecision.CoverOnly(GuardedSurface.ACCESSIBILITY_SETTINGS), decision)
+    }
+
+    @Test
+    fun `spends no back-out budget on a pane it only covers`() {
+        // The budget exists to stop a BACK loop. Covering fires no back action,
+        // so charging it would leave nothing for the moment the user taps into
+        // the pane — which is exactly when the toggle becomes reachable.
+        val guard = guard()
+        val step = SettingsGuard.BACK_OUT_REFIRE_MILLIS + 50
+
+        repeat(SettingsGuard.MAX_CONSECUTIVE_BACK_OUTS * 3) { i ->
+            assertEquals(
+                "covering pass $i",
+                GuardDecision.CoverOnly(GuardedSurface.ACCESSIBILITY_SETTINGS),
+                guard.evaluate(
+                    listOf(focused(unrelatedScreen()), beside(accessibilityScreen())),
+                    nowMillis = i * step,
+                ),
+            )
+        }
+
+        val after = SettingsGuard.MAX_CONSECUTIVE_BACK_OUTS * 3 * step
+        assertEquals(
+            GuardDecision.BackOut(GuardedSurface.ACCESSIBILITY_SETTINGS),
+            guard.evaluate(listOf(focused(accessibilityScreen())), nowMillis = after),
+        )
+    }
+
+    @Test
+    fun `charges one attempt per event however many windows match`() {
+        // The hazard in folding a list through `evaluate`: each call used to
+        // mutate the counter, so N matching windows would burn N increments and
+        // hit the bound within about two events instead of three visits.
+        val guard = guard()
+        val windows = listOf(
+            focused(accessibilityScreen()),
+            beside(appInfoScreen()),
+            beside(deviceAdminListScreen()),
+        )
+
+        attempts(guard, windows, SettingsGuard.MAX_CONSECUTIVE_BACK_OUTS).forEachIndexed { i, d ->
+            assertEquals(
+                "attempt $i should still back out",
+                GuardDecision.BackOut(GuardedSurface.ACCESSIBILITY_SETTINGS),
+                d,
+            )
+        }
+    }
+
+    @Test
+    fun `still trips the bound when two windows match different surfaces`() {
+        // The other direction of the same hazard. Iterating a list through the
+        // counter alternates `lastSurface` between the two matches, which resets
+        // the run every single event — so the bound never trips and the release
+        // valve for a wrong matcher is gone. One decision per event is what
+        // makes this hold.
+        val guard = guard()
+        val windows = listOf(focused(accessibilityScreen()), beside(appInfoScreen()))
+
+        assertEquals(
+            GuardDecision.CoverOnly(GuardedSurface.ACCESSIBILITY_SETTINGS),
+            attempts(guard, windows, SettingsGuard.MAX_CONSECUTIVE_BACK_OUTS + 1).last(),
+        )
+    }
+
+    @Test
+    fun `prefers a focused match over an unfocused one whatever the surface`() {
+        // Focus outranks the surface ordering, because it decides which action
+        // is possible. Ranking the covered window first would let a pane the
+        // user is not in silence the screen they are looking at.
+        val decision = guard().evaluate(
+            listOf(beside(deviceAdminListScreen()), focused(appInfoScreen())),
+            nowMillis = 0,
+        )
+
+        assertEquals(GuardDecision.BackOut(GuardedSurface.APP_INFO_SELF), decision)
+    }
+
+    @Test
+    fun `names the identified surface rather than the catch-all`() {
+        // Between two unfocused matches the ordering only affects which surface
+        // is reported and held in `lastSurface` — except at the catch-all, which
+        // must lose. The exemptions in `narrow` are keyed on the real surface,
+        // so recording a device-admin screen as a generic settings page loses
+        // the only distinction that changes behaviour.
+        val genericSelfPage = ScreenIdentity(
+            packageName = "com.android.settings",
+            className = "com.android.settings.SomeOtherHost",
+            texts = listOf(label),
+        )
+
+        val decision = guard().evaluate(
+            listOf(beside(genericSelfPage), beside(deviceAdminListScreen())),
+            nowMillis = 0,
+        )
+
+        assertEquals(GuardDecision.CoverOnly(GuardedSurface.DEVICE_ADMIN_SETTINGS), decision)
+    }
+
+    @Test
+    fun `ignores a split screen with nothing guarded in it`() {
+        assertEquals(
+            GuardDecision.Ignore,
+            guard().evaluate(
+                listOf(focused(unrelatedScreen()), beside(unrelatedScreen())),
+                nowMillis = 0,
+            ),
+        )
+    }
+
+    @Test
+    fun `ignores an empty window list`() {
+        // The service's fallback when neither the window list nor
+        // rootInActiveWindow yields a tree to read.
+        assertEquals(GuardDecision.Ignore, guard().evaluate(emptyList(), nowMillis = 0))
+    }
+
+    @Test
+    fun `resets the bound when the guarded pane closes`() {
+        val guard = guard()
+        val step = SettingsGuard.BACK_OUT_REFIRE_MILLIS + 50
+
+        attempts(
+            guard,
+            listOf(focused(accessibilityScreen()), beside(unrelatedScreen())),
+            SettingsGuard.MAX_CONSECUTIVE_BACK_OUTS,
+        )
+        guard.evaluate(listOf(focused(unrelatedScreen())), nowMillis = step * 4)
+
+        assertEquals(
+            GuardDecision.BackOut(GuardedSurface.ACCESSIBILITY_SETTINGS),
+            guard.evaluate(listOf(focused(accessibilityScreen())), nowMillis = step * 5),
         )
     }
 

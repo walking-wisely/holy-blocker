@@ -7,6 +7,7 @@ import android.os.Looper
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import android.view.accessibility.AccessibilityWindowInfo
 import com.holyblocker.mobile.admin.HolyBlockerAdminReceiver
 import com.holyblocker.mobile.policy.CoverState
 import com.holyblocker.mobile.policy.GateOutcome
@@ -18,6 +19,7 @@ import com.holyblocker.mobile.policy.ScreenIdentity
 import com.holyblocker.mobile.policy.SettingsGuard
 import com.holyblocker.mobile.policy.SettingsProfiles
 import com.holyblocker.mobile.policy.UnwatchedEvent
+import com.holyblocker.mobile.policy.WindowScreen
 
 /**
  * Layer 2's workhorse on Android: reads on-screen text from other apps, runs it
@@ -136,7 +138,7 @@ class ScreenGuardService : AccessibilityService() {
             // and, taken as a departure, cancelled that screen's entire re-look
             // budget — which is why the list then sat unguarded for as long as
             // it was open.
-            when (guard.classifyUnwatchedEvent(foregroundPackage())) {
+            when (guard.classifyUnwatchedEvent(foregroundPackage(), visiblePackages())) {
                 // Chrome over a screen we are still guarding. Nothing to do,
                 // and nothing to cancel.
                 UnwatchedEvent.STILL_WATCHED -> return false
@@ -162,8 +164,7 @@ class ScreenGuardService : AccessibilityService() {
 
         syncProtection(guard)
 
-        val identity = currentScreenIdentity(packageName, event.className?.toString())
-        val acted = identity != null && applyDecision(guard, identity, overlay)
+        val acted = applyDecision(guard, watchedWindows(guard, event), overlay)
 
         if (acted) {
             cancelRescan()
@@ -204,52 +205,117 @@ class ScreenGuardService : AccessibilityService() {
 
         syncProtection(guard)
 
-        // className is null on purpose: there is no event to carry it, and the
-        // root node reports a view class rather than the activity. That costs
-        // nothing worth having — the class is the unreliable signal here, while
-        // resource ids and the self-mention catch-all both still apply.
-        val identity = currentScreenIdentity(packageName, className = null) ?: return false
-        return applyDecision(guard, identity, overlay)
+        // No event, so no class and no window id. The class is the unreliable
+        // signal here anyway — resource ids and the self-mention catch-all both
+        // still apply — but the missing window id does matter: focus is what
+        // [watchedWindows] falls back on, and it is read from the window list
+        // rather than from any event, so this path resolves windows exactly as
+        // the event path does.
+        return applyDecision(guard, watchedWindows(guard, event = null), overlay)
     }
 
     /**
-     * The node tree for [packageName], preferring the active window.
-     *
-     * `rootInActiveWindow` alone is not enough. Returning to a backgrounded
-     * settings task leaves it null indefinitely — measured on an android-36
-     * emulator, still null two seconds after the screen was fully drawn and
-     * interactive — so a guard that only reads it never sees that screen at all.
-     * Enumerating windows finds the tree that is genuinely there.
-     *
-     * `flagRetrieveInteractiveWindows` is already set in
-     * `accessibility_service_config.xml`, so this costs no new capability.
-     */
-    /**
      * Which app the user is looking at, for a re-look that has no event to ask.
      *
-     * Falls back to the window list for the same reason as [rootFor]: on a
-     * restored task `rootInActiveWindow` is null, and that is exactly when the
-     * deferred look needs to work.
+     * Falls back to the window list because on a settings task restored from
+     * the background `rootInActiveWindow` is null — measured on an android-36
+     * emulator, still null two seconds after the screen was fully drawn and
+     * interactive — and that is exactly when the deferred look needs to work.
      */
     private fun foregroundPackage(): String? =
         rootInActiveWindow?.packageName?.toString()
             ?: windows.firstOrNull { it.isActive }?.root?.packageName?.toString()
 
-    private fun rootFor(packageName: String): AccessibilityNodeInfo? {
-        rootInActiveWindow
-            ?.takeIf { it.packageName?.toString() == packageName }
-            ?.let { return it }
+    /**
+     * Every package with a window on screen, focused or not.
+     *
+     * Separate from [foregroundPackage] because in split screen they genuinely
+     * disagree, and the disagreement is the point — see the argument doc on
+     * `SettingsGuard.classifyUnwatchedEvent`.
+     */
+    private fun visiblePackages(): List<String> =
+        windows.mapNotNull { it.root?.packageName?.toString() }
 
-        return windows.asSequence()
-            .mapNotNull { it.root }
-            .firstOrNull { it.packageName?.toString() == packageName }
+    /**
+     * Every visible window the guard watches, focused one first.
+     *
+     * Enumerating rather than reading a single root is what makes split screen
+     * work. The previous version took the *first* window matching the event's
+     * package, which in split screen is not necessarily the event's own window
+     * and not necessarily the guarded one — so `mentionsSelf` was evaluated
+     * against the wrong tree and the catch-all silently did nothing.
+     *
+     * Ordering matters twice over. [SettingsGuard] reads focus to choose
+     * between backing out and covering, and the walk below shares one
+     * [NodeBudget] across the whole pass — a per-window budget would multiply
+     * the worst-case IPC cost on the UI-event path by the window count. Putting
+     * the focused window first means the window the guard can actually act on
+     * is the one that gets the allowance.
+     *
+     * `flagRetrieveInteractiveWindows` is already set in
+     * `accessibility_service_config.xml`, so [windows] costs no new capability.
+     */
+    private fun watchedWindows(
+        guard: SettingsGuard,
+        event: AccessibilityEvent?,
+    ): List<WindowScreen> {
+        val budget = NodeBudget()
+
+        val candidates = windows
+            .mapNotNull { window -> window.root?.let { window to it } }
+            .filter { (_, root) -> root.packageName?.toString()?.let(guard::watchesPackage) == true }
+            .sortedByDescending { (window, _) -> window.isFocused }
+
+        if (candidates.isNotEmpty()) {
+            return candidates.map { (window, root) ->
+                WindowScreen(
+                    identity = identityOf(
+                        root = root,
+                        // The event's class describes the event's own window and
+                        // nothing else. Attaching it to a sibling pane would
+                        // hand that pane a class it does not have, and class is
+                        // what several profile entries match on.
+                        className = event?.className?.toString()
+                            ?.takeIf { event.windowId == window.id },
+                        window = window,
+                        budget = budget,
+                    ),
+                    isFocused = window.isFocused,
+                )
+            }
+        }
+
+        // No usable window list. `rootInActiveWindow` is the only tree there is,
+        // and a lone window is where BACK lands, so it is treated as focused —
+        // which is exactly what the guard assumed before windows were resolved
+        // at all.
+        val root = rootInActiveWindow ?: return emptyList()
+        val packageName = root.packageName?.toString() ?: return emptyList()
+        if (!guard.watchesPackage(packageName)) return emptyList()
+
+        return listOf(
+            WindowScreen(
+                identity = identityOf(
+                    root = root,
+                    className = event?.className?.toString(),
+                    window = null,
+                    budget = budget,
+                ),
+                isFocused = true,
+            ),
+        )
     }
 
-    private fun currentScreenIdentity(packageName: String, className: String?): ScreenIdentity? {
-        val root = rootFor(packageName) ?: return null
+    private fun identityOf(
+        root: AccessibilityNodeInfo,
+        className: String?,
+        window: AccessibilityWindowInfo?,
+        budget: NodeBudget,
+    ): ScreenIdentity {
+        val packageName = root.packageName?.toString().orEmpty()
         val texts = mutableListOf<String>()
         val resourceIds = mutableSetOf<String>()
-        collectIdentity(root, texts, resourceIds, depth = 0, budget = NodeBudget())
+        collectIdentity(root, texts, resourceIds, depth = 0, budget = budget)
 
         // Kept rather than removed after bring-up: this is how per-OEM
         // identifiers get collected, and the docs point contributors at it.
@@ -257,9 +323,15 @@ class ScreenGuardService : AccessibilityService() {
         // screen. It is here because an empty harvest on a visibly populated
         // screen is the signature of the node tree lagging the display, and
         // without it that looks identical to a screen that simply did not match.
+        //
+        // The window id and focus are logged because with more than one window
+        // in play "which screen is this line about" is no longer obvious, and
+        // focus is now what decides between backing out and covering.
         Log.d(
             TAG,
-            "settings screen class=$className texts=${texts.size} ids=${resourceIds.take(12)}",
+            "settings screen pkg=$packageName class=$className " +
+                "window=${window?.id ?: -1} focused=${window?.isFocused ?: true} " +
+                "texts=${texts.size} ids=${resourceIds.take(12)}",
         )
 
         // Kept after the empty harvest was diagnosed (see backlog.md, "Closed:
@@ -269,7 +341,7 @@ class ScreenGuardService : AccessibilityService() {
         // shape of the tree is still the only evidence available when a screen
         // on an untested build comes back thin. Only on the failing case, since
         // it walks the tree a second time.
-        if (texts.isEmpty()) logEmptyHarvest(packageName, root)
+        if (texts.isEmpty()) logEmptyHarvest(packageName, root, starved = budget.exhausted)
 
         return ScreenIdentity(
             packageName = packageName,
@@ -285,11 +357,12 @@ class ScreenGuardService : AccessibilityService() {
      * This is what found the empty-harvest bug, and each number rules
      * something out:
      *
-     *  - **Wrong window.** More than one window for [packageName] means [rootFor]
-     *    picking the first match is a real suspect. Exactly one means it is not,
-     *    and window-resolution work would be wasted. It read `windows=1` on the
+     *  - **Wrong window.** More than one window for [packageName] used to mean
+     *    the guard could be reading the wrong tree. It read `windows=1` on the
      *    device-admin list, which is why that item and split screen turned out to
-     *    be unrelated bugs.
+     *    be unrelated bugs. Every watched window is now evaluated, so this is a
+     *    cross-check rather than a suspect — but it is still the number that says
+     *    whether split screen is in play.
      *  - **Fetch failure.** `declared` counts children the tree says exist;
      *    `fetched` counts the ones `getChild` actually returned. A gap means
      *    children are failing to materialise. There was none: the two matched at
@@ -304,7 +377,20 @@ class ScreenGuardService : AccessibilityService() {
      * No text and no window titles are logged, only shape — the screen's contents
      * stay on the screen, same rule as the harvest log above.
      */
-    private fun logEmptyHarvest(packageName: String, root: AccessibilityNodeInfo) {
+    private fun logEmptyHarvest(
+        packageName: String,
+        root: AccessibilityNodeInfo,
+        /**
+         * Whether the pass ran out of node budget before reaching this window.
+         *
+         * The budget is shared across every window in a pass, so with split
+         * screen an empty harvest now has a fourth possible cause that has
+         * nothing to do with the tree: an earlier window spent the allowance.
+         * Reading the numbers below without this would repeat the mistake the
+         * whole diagnostic exists to prevent.
+         */
+        starved: Boolean,
+    ) {
         val matching = windows.filter { it.root?.packageName?.toString() == packageName }
         val shape = matching.joinToString { "id=${it.id} active=${it.isActive} focused=${it.isFocused} type=${it.type}" }
 
@@ -330,29 +416,35 @@ class ScreenGuardService : AccessibilityService() {
             TAG,
             "empty harvest pkg=$packageName windows=${matching.size} [$shape] " +
                 "rootChildren=${root.childCount} declared=$declared fetched=$fetched " +
-                "truncated=${budget.exhausted}",
+                "truncated=${budget.exhausted} starved=$starved",
         )
     }
 
     /** Applies a guard decision. Returns whether it acted. */
     private fun applyDecision(
         guard: SettingsGuard,
-        identity: ScreenIdentity,
+        screens: List<WindowScreen>,
         overlay: OverlayController,
-    ): Boolean = when (val decision = guard.evaluate(identity, System.currentTimeMillis())) {
+    ): Boolean = when (val decision = guard.evaluate(screens, System.currentTimeMillis())) {
         is GuardDecision.BackOut -> {
             Log.i(TAG, "backing out of ${decision.surface}")
             // Clear first: leaving is the action, and a cover left behind
             // would sit over whatever screen we land on.
             overlay.apply(CoverState.CLEAR)
+            // Safe to fire globally only because the guard returns BackOut for a
+            // focused window and nothing else — this action takes no window
+            // argument and lands wherever input focus is. See WindowScreen.
             performGlobalAction(GLOBAL_ACTION_BACK)
             true
         }
 
         is GuardDecision.CoverOnly -> {
-            // Backing out is not working — release navigation so a wrong
-            // matcher cannot make the device unusable, and cover instead.
-            Log.w(TAG, "back-out bound reached on ${decision.surface}; covering only")
+            // Two different situations, both of which mean "do not press BACK":
+            // the bound has been reached, so navigation is released before a
+            // wrong matcher can make the device unusable; or the guarded screen
+            // is an unfocused split-screen pane, where BACK would land on the
+            // app the user is actually in.
+            Log.w(TAG, "covering only on ${decision.surface}")
             overlay.apply(CoverState.COVER)
             true
         }
