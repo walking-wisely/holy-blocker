@@ -21,6 +21,16 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
 
     <!--
+      Android 14+ requires the type-specific permission alongside the service's
+      foregroundServiceType. Without it startForeground(..., MEDIA_PROJECTION)
+      throws SecurityException — and it throws inside the five-second window the
+      service has to reach the foreground, so the failure arrives as an ANR-shaped
+      crash rather than as a permission error.
+      https://developer.android.com/develop/background-work/services/fgs/service-types#media-projection
+    -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
+
+    <!--
       Android 13+ runtime permission. Without it the foreground service still
       runs but its notification is not shown, which for a service whose entire
       output is that notification is indistinguishable from it not running.
@@ -132,6 +142,21 @@
                 <action android:name="android.net.VpnService" />
             </intent-filter>
         </service>
+
+        <!--
+          The capture service. Not exported: the only legal way in is an
+          activity result this app just received, and a projection started by
+          anything else would be one nobody consented to.
+
+          There is deliberately no <intent-filter> and no boot restore. A
+          MediaProjection grant lives for one session and its token is single-use
+          from Android 14, so there is nothing for a receiver to restore — unlike
+          the VPN, which BootReceiver does bring back.
+        -->
+        <service
+            android:name=".ScreenCaptureService"
+            android:exported="false"
+            android:foregroundServiceType="mediaProjection" />
 
         <!--
           Restores the status service after a restart or an app update. Both

@@ -99,6 +99,22 @@ enum class TamperEvent(
      */
     NETWORK_GUARD_REVOKED("net_revoked"),
 
+    /** A screen-capture session began, with the user's per-session consent. */
+    SCREEN_CAPTURE_STARTED("capture_on"),
+
+    /** The capture session ended the way it is meant to — disarmed, or torn down. */
+    SCREEN_CAPTURE_STOPPED("capture_off"),
+
+    /**
+     * The projection was stopped from outside this app.
+     *
+     * The system's own cast chip ends a projection in one tap and there is no
+     * permission that prevents it — the same ceiling as
+     * [NETWORK_GUARD_REVOKED], recorded for the same reason. Distinct from
+     * [SCREEN_CAPTURE_STOPPED] because only this one is removal-shaped.
+     */
+    SCREEN_CAPTURE_REVOKED("capture_revoked"),
+
     /** The log reached its cap and the oldest entries were dropped. */
     LOG_TRIMMED("log_trimmed"),
     ;

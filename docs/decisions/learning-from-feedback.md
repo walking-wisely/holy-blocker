@@ -132,6 +132,63 @@ flags are gated.
   and even centralized far more freely than the explicit side. The two channels
   should be structurally separated by content type.
 
+## On-device runtime and where the head lives (Decided 2026-07-18)
+
+`docs/components/machine-learning/plan.md` cross-references this section for the
+runtime findings behind its export contract; they are recorded here.
+
+**The decision: the frozen backbone runs on the platform's inference runtime, and the
+head — forward, and later backward — is hand-written in Rust behind UniFFI, shared by
+Android and Windows.** Not a fallback. Every framework on-device-training path was
+evaluated and each is inference-only, experimental and stagnant, or effectively
+abandoned:
+
+- **LiteRT / TFLite** — inference-only by positioning. On-device training requires a
+  **TensorFlow SavedModel** exposing `train`/`infer`/`save`/`restore` `tf.function`
+  signatures, driven through the legacy `Interpreter.runSignature`. A `litert-torch`
+  model cannot produce those: the converter requires a `torch.export`-compliant module
+  in `.eval()`, and its multi-signature API exposes several *inference* entry points
+  over an immutable graph. Getting training signatures would mean authoring the head in
+  TensorFlow — a second modelling stack, plus the API LiteRT 2.x is steering away from.
+- **ExecuTorch** — the only torch-native training path, and stalled. The extension
+  exists (`_export_forward_backward` → joint fwd/bwd `.pte`, C++ `TrainingModule`, SGD)
+  but its own README still calls it experimental at v1.3, with no weight serialization
+  and no delegate support; every 2026 commit under `extension/training` is janitorial.
+  **There is no Android training binding at all** — the AAR is `Module`/`Tensor`/
+  `EValue`, inference only.
+- **ONNX Runtime** — the disappointing one, because ORT-everywhere would have paired
+  neatly with the Windows path. `onnxruntime-training-android` last published **1.19.2
+  on 2024-09-03** and never again, while the inference AAR tracks mainline monthly;
+  `onnxruntime-training-examples` was archived by its owner on 2026-05-20. Read
+  "unmaintained on mobile" as verified fact and "officially deprecated" as inference.
+- **MediaPipe Model Maker** — no longer actively maintained, and server-side anyway.
+
+**Why the hand-written head is the right call rather than a workaround.** For
+`logits = W·e + b` with softmax cross-entropy, the backward pass is
+`dlogits = softmax(logits) − onehot(y)`, `dW = dlogits ⊗ e`, `db = dlogits` — on the
+order of 100–200 lines of Rust with an optimizer, textbook-derivable, and testable
+against PyTorch `autograd` on fixed fixtures plus a finite-difference check. It is also
+the only option with a real Android surface; it reuses the `text-policy` /
+`text-policy-ffi` pattern this repo already runs on an emulator; it decouples training
+from the export format entirely; and Secure Aggregation needs the flat parameter vector
+it produces anyway, which ExecuTorch cannot even serialize. If the head ever outgrows
+hand-written gradients, **Burn** is the in-language upgrade — not a day-one dependency.
+
+**Consequences that bind other components:**
+
+- The export contract is backbone-only, terminating at the embedding — see
+  `machine-learning/plan.md`. The embedding dtype and scale are a versioned interface:
+  a silently re-exported int8 backbone invalidates every head in the field.
+- **The Android and Windows runtimes differ on purpose.** LiteRT on Android, ONNX
+  Runtime on Windows, one head crate over both. `packages/image-sandbox` is the ONNX
+  side of that split and is not the mobile path.
+- Federated learning is **our own protocol over that parameter vector**, not a
+  framework adoption. TensorFlow Federated is effectively dead (v0.88.0, 2024-09-26,
+  simulation-only, no Android client); Flower's Android example is a 2022 demo resting
+  on exactly the TFLite training signatures a PyTorch pipeline cannot emit; Google's
+  `federated-compute` is production-proven but its server side is not open source. Any
+  such path stays opt-in and off by default, per the local-first rule in AGENTS.md.
+
 ## Evaluation (Decided strategy)
 
 The asymmetry works in our favor: **the quantity users can corrupt
