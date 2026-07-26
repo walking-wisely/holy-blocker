@@ -1,6 +1,8 @@
 use anyhow::{Context, Result};
-use rcgen::{CertificateParams, DistinguishedName, DnType, Issuer, KeyPair, SanType};
-type OwnedIssuer = Issuer<'static, KeyPair>;
+use rcgen::{
+    CertificateParams, DistinguishedName, DnType, ExtendedKeyUsagePurpose, Issuer, KeyPair,
+    KeyUsagePurpose, SanType,
+};
 use rustls::{
     ClientConfig, ServerConfig,
     pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer},
@@ -11,6 +13,23 @@ use std::{
     path::Path,
     sync::{Arc, Mutex},
 };
+use time::{Duration, OffsetDateTime};
+
+type OwnedIssuer = Issuer<'static, KeyPair>;
+
+/// Apple refuses TLS server certificates whose validity period exceeds 398 days.
+/// See "Requirements for trusted certificates in iOS 13 and macOS 10.15"
+/// (https://support.apple.com/en-us/103769). The generated window must stay under this
+/// *including* the backdating below.
+const MAX_LEAF_VALIDITY_DAYS: i64 = 398;
+
+/// Forward validity of a generated leaf.
+const LEAF_VALIDITY_DAYS: i64 = 397;
+
+/// Backdate `notBefore` so a client whose clock trails ours still accepts the leaf. Certificates
+/// are minted at the moment of the handshake, so without this a client even seconds behind would
+/// see a not-yet-valid certificate.
+const LEAF_BACKDATE_HOURS: i64 = 1;
 
 pub struct TlsState {
     ca_issuer: OwnedIssuer,
@@ -92,6 +111,21 @@ impl TlsState {
         params.subject_alt_names = vec![SanType::DnsName(
             sni.to_owned().try_into().context("invalid SNI for SAN")?,
         )];
+
+        // rcgen defaults to 1975-01-01 through 4096-01-01. That window contains the present
+        // moment, so chain verification succeeds and webpki raises no objection — but Firefox
+        // rejects the handshake with `BadCertificate`, and the period is far past Apple's limit.
+        // These dates must be set explicitly; there is no sane default to fall back on.
+        let now = OffsetDateTime::now_utc();
+        params.not_before = now - Duration::hours(LEAF_BACKDATE_HOURS);
+        params.not_after = now + Duration::days(LEAF_VALIDITY_DAYS);
+
+        // Apple requires id-kp-serverAuth on TLS server certificates, and rcgen sets no
+        // extended key usage at all by default.
+        params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
+        // digitalSignature is what an ECDSA server certificate needs; the shared leaf key is
+        // ECDSA P-256, so keyEncipherment (RSA key transport) does not apply.
+        params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
 
         let leaf_cert = params
             .signed_by(key_pair, &self.ca_issuer)
@@ -216,6 +250,58 @@ mod tests {
             matches!(gn, x509_parser::extensions::GeneralName::DNSName(n) if *n == sni)
         });
         assert!(has_dns, "SAN must contain DNS:{sni}");
+    }
+
+    /// The leaf must carry a bounded, currently-valid lifetime.
+    ///
+    /// `rcgen`'s default is 1975-01-01 to 4096-01-01. That window *does* contain the present
+    /// moment, so a chain-verification test would pass and webpki raises no objection — but
+    /// Firefox rejects the handshake outright with `BadCertificate`, and Apple caps TLS server
+    /// certificates at 398 days. Only an explicit bound catches this.
+    #[test]
+    fn leaf_cert_validity_is_bounded_and_current() {
+        let state = make_test_state();
+        let cert_der = state
+            .generate_leaf_cert_der("example.com", &state.leaf_key)
+            .unwrap();
+        let (_, parsed) =
+            x509_parser::parse_x509_certificate(&cert_der).expect("parse leaf DER");
+
+        let not_before = parsed.validity().not_before.timestamp();
+        let not_after = parsed.validity().not_after.timestamp();
+        let now = time::OffsetDateTime::now_utc().unix_timestamp();
+
+        assert!(
+            not_before <= now,
+            "leaf must already be valid (notBefore {not_before} is after now {now})"
+        );
+        assert!(
+            not_after > now,
+            "leaf must not be expired (notAfter {not_after} is before now {now})"
+        );
+
+        let days = (not_after - not_before) / 86_400;
+        assert!(
+            days <= MAX_LEAF_VALIDITY_DAYS,
+            "leaf validity of {days} days exceeds Apple's {MAX_LEAF_VALIDITY_DAYS}-day maximum"
+        );
+    }
+
+    /// Apple requires TLS server certificates to declare `id-kp-serverAuth`.
+    #[test]
+    fn leaf_cert_declares_server_auth() {
+        let state = make_test_state();
+        let cert_der = state
+            .generate_leaf_cert_der("example.com", &state.leaf_key)
+            .unwrap();
+        let (_, parsed) =
+            x509_parser::parse_x509_certificate(&cert_der).expect("parse leaf DER");
+
+        let eku = parsed
+            .extended_key_usage()
+            .unwrap()
+            .expect("ExtendedKeyUsage extension must be present");
+        assert!(eku.value.server_auth, "EKU must include serverAuth");
     }
 
     /// Verify that calling `server_config` twice for the same hostname returns
