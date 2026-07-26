@@ -5,6 +5,7 @@ import android.os.SystemClock
 import com.holyblocker.mobile.policy.ProtectionPhase
 import com.holyblocker.mobile.policy.ProtectionSchedule
 import com.holyblocker.mobile.policy.ProtectionState
+import com.holyblocker.mobile.policy.TamperEvent
 
 /**
  * Storage for the protection mode: armed or not, and where a disarm has got to.
@@ -27,6 +28,17 @@ class ProtectionStore(context: Context) {
     private val prefs =
         context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
+    /**
+     * Every transition below is recorded.
+     *
+     * The mode is the supported route to removing this app, so its history is
+     * what a user reconstructing "when did I turn it off, and how often" needs —
+     * and a disarm confirmed is the one moment the guard stops on purpose. The
+     * store outlives any single writer, so the log is taken from the context
+     * rather than passed in.
+     */
+    private val tamperLog = TamperLogStore.of(context)
+
     fun state(nowElapsed: Long = SystemClock.elapsedRealtime()): ProtectionState =
         ProtectionSchedule.evaluate(
             armed = prefs.getBoolean(KEY_ARMED, false),
@@ -48,12 +60,14 @@ class ProtectionStore(context: Context) {
             .remove(KEY_REQUESTED_AT)
             .remove(KEY_DISARMED_AT)
             .apply()
+        tamperLog.record(TamperEvent.PROTECTION_ARMED)
     }
 
     /** Starts the cooldown. Re-requesting while one is live does not restart it. */
     fun requestDisarm(nowElapsed: Long = SystemClock.elapsedRealtime()) {
         if (state(nowElapsed).phase != ProtectionPhase.ARMED) return
         prefs.edit().putLong(KEY_REQUESTED_AT, nowElapsed).apply()
+        tamperLog.record(TamperEvent.DISARM_REQUESTED, elapsedMillis = nowElapsed)
     }
 
     /**
@@ -69,12 +83,17 @@ class ProtectionStore(context: Context) {
             .putLong(KEY_DISARMED_AT, nowElapsed)
             .remove(KEY_REQUESTED_AT)
             .apply()
+        tamperLog.record(TamperEvent.DISARM_CONFIRMED, elapsedMillis = nowElapsed)
         return true
     }
 
     /** Abandons a pending or ready request, leaving protection armed. */
     fun cancelDisarm() {
+        // Unconditional, unlike the calls above: cancelling when there is nothing
+        // to cancel is a no-op on the prefs but would be a phantom entry here.
+        val hadRequest = prefs.contains(KEY_REQUESTED_AT)
         prefs.edit().remove(KEY_REQUESTED_AT).apply()
+        if (hadRequest) tamperLog.record(TamperEvent.DISARM_CANCELLED)
     }
 
     companion object {
