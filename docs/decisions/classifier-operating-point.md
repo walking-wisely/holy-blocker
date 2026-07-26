@@ -7,16 +7,38 @@ are the price**. The deployed threshold is chosen by fixing an acceptable miss
 rate and accepting whatever over-blocking that costs — not by maximising
 accuracy.
 
-Concretely, for the current fine-tuned model:
+Concretely, for the **deployed full-unfreeze model under the tile-max geometry**,
+on the validation split:
 
 | max miss rate | threshold | resulting over-block rate |
 |---|---|---|
-| 10% | 0.44 | 7.1% |
-| **5%** | **0.20** | **11.4%** |
-| 2% | 0.07 | 19.7% |
+| 10% | 0.7523 | 4.94% |
+| **5%** | **0.4650** | **10.09%** |
+| 2% | 0.1634 | 19.67% |
 
 The 5% row is the current default. **0.5 is not the threshold** and never was —
 it is an artefact of `argmax` over two logits.
+
+### A threshold belongs to a model *and* a geometry
+
+Both halves of that are load-bearing, and getting it wrong has already happened
+here. `packages/image-sandbox` shipped a provisional **0.20**, which was the
+5%-miss threshold of the superseded *unfreeze-3* model — a different checkpoint
+whose scores were never comparable. The deployed checkpoint's centre-crop
+threshold is **0.2717**, and under tile-max it is **0.4650**, because taking a
+max over overlapping tiles shifts the whole score distribution upward. Applying
+any of those three numbers to the wrong pairing silently changes the operating
+point, in the direction of either missing content or over-blocking, with no
+error anywhere.
+
+Superseded values, kept so an old number found in code can be identified rather
+than guessed at:
+
+| model | geometry | 5%-miss threshold |
+|---|---|---|
+| unfreeze-3 | centre crop | 0.20 |
+| full-unfreeze | centre crop | 0.2717 |
+| **full-unfreeze** | **tile-max** | **0.4650** |
 
 ## Why the miss rate is the budget
 
@@ -87,6 +109,11 @@ FN-averse product.
 - The `warn` mode matters more under this decision than it would under a
   balanced one. At an 11% over-block rate, a pass-through path for ambiguous
   verdicts is doing real work.
-- The threshold is model-specific. It must be re-derived from the miss-budget
-  table after any retraining, because scores are not calibrated across
-  checkpoints.
+- The threshold is model- **and geometry-** specific. It must be re-derived from
+  the miss-budget table after any retraining *or* any change to how images are
+  fitted into the 224×224 input, because scores are not calibrated across either.
+- **Below 96px on the shorter side, nothing is classified at all** — the verdict
+  is `Allow` without inference. That is a coverage decision made in
+  [experiments/input-handling.md](../components/machine-learning/experiments/input-handling.md),
+  and it is not a threshold: no operating point applies, because the model is
+  never consulted. Content served under that size is unfiltered.
