@@ -52,8 +52,34 @@ enum class GuardedSurface {
     SELF_IN_SETTINGS,
 }
 
+/**
+ * What an event from a package the guard does not watch actually means.
+ *
+ * Not every such event is the user leaving. `com.android.systemui` fires
+ * content-changed events for the status bar and navigation chrome drawn *over*
+ * whatever is in the foreground, so a guarded settings screen can sit open while
+ * events arrive naming a package that is not being guarded at all.
+ */
+enum class UnwatchedEvent {
+    /** A guarded package is still in front — the event is chrome over it. */
+    STILL_WATCHED,
+
+    /** The user is somewhere else; any loop the guard was in has ended. */
+    LEFT,
+
+    /**
+     * The foreground could not be resolved.
+     *
+     * Handled as neither: the case that produces it is a settings task restored
+     * from the background, where `rootInActiveWindow` is null — precisely the
+     * situation the deferred re-look exists to cover, so an unknown foreground
+     * must not be what cancels it.
+     */
+    UNKNOWN,
+}
+
 sealed interface GuardDecision {
-    /** Not a guarded screen, or guarding is suspended. */
+    /** Not a guarded screen, or protection is not armed. */
     data object Ignore : GuardDecision
 
     /** Leave the screen before the control is reachable. */
@@ -174,6 +200,22 @@ object SettingsProfiles {
                 "com.android.settings.applications.specialaccess.deviceadmin.DeviceAdminAdd",
                 GuardedSurface.DEVICE_ADMIN_SETTINGS,
             ),
+            // The device-admin *list*, one screen before the prompt. This is
+            // the alias class the window-state event actually reports, dumped
+            // from an android-36 emulator — not `com.android.settings.Settings`,
+            // the target it resolves to, which would match all of Settings.
+            //
+            // It is here for the exemption as much as for the guard. The list
+            // names this app, so the self-mention catch-all guards it whether
+            // or not this entry exists — and while the admin is inactive that
+            // ejects the user from the settings route to the activation prompt,
+            // observed on device. Naming the surface is what lets the same
+            // "only once the admin is on" rule reach it.
+            GuardedScreen(
+                "com.android.settings.Settings\$DeviceAdminSettingsActivity",
+                GuardedSurface.DEVICE_ADMIN_SETTINGS,
+                requiresSelfMention = true,
+            ),
             // App Info is rendered by Settings' Compose SPA host, which is as
             // generic as SubSettings and needs the same narrowing.
             GuardedScreen(
@@ -249,12 +291,18 @@ class SettingsGuard(
     private var lastSurface: GuardedSurface? = null
     private var consecutiveBackOuts = 0
     private var lastBackOutAtMillis = 0L
-    private var suspendedUntilMillis = 0L
+
+    /**
+     * Whether the user has protection turned on.
+     *
+     * Starts false. Blocking a user's own settings is something this app does
+     * *because it was asked to*, so the default is to do nothing, and the
+     * service supplies the answer from `ProtectionStore` on every event.
+     */
+    private var guardActive = false
 
     /** False when the device has no verified identifiers; the UI must say so. */
     val isDeviceSupported: Boolean get() = profile != null
-
-    fun isSuspended(nowMillis: Long): Boolean = nowMillis < suspendedUntilMillis
 
     /**
      * Cheap pre-check letting the caller skip harvesting entirely.
@@ -267,16 +315,40 @@ class SettingsGuard(
         (packageName in profile.settingsPackages || packageName in profile.uninstallerPackages)
 
     /**
-     * Releases the guard until [untilMillis].
+     * Turns blocking on or off, from `ProtectionSchedule`'s reading of the mode.
      *
-     * The exit path is required, not optional. Until the per-OEM identifiers are
-     * verified on real hardware, a matcher that is wrong on an untested build
-     * would otherwise leave the user locked out of their own settings with no
-     * in-app recovery.
+     * There is no timing here on purpose. Everything about *when* a disarm takes
+     * effect is monotonic and lives in `ProtectionSchedule`, which keeps this
+     * class free of clock reasoning entirely — the wall-clock timestamps it does
+     * take are only for spacing back actions apart.
+     *
+     * The exit path this serves is required, not optional. Until the per-OEM
+     * identifiers are verified on real hardware, a matcher that is wrong on an
+     * untested build would otherwise leave the user locked out of their own
+     * settings with no in-app recovery.
      */
-    fun suspendUntil(untilMillis: Long) {
-        suspendedUntilMillis = untilMillis
+    fun setGuardActive(active: Boolean) {
+        if (active == guardActive) return
+        guardActive = active
+        // The episode is over either way: a disarm ends whatever loop was in
+        // progress, and re-arming must not inherit a spent budget from before it.
         resetBound()
+    }
+
+    /**
+     * Reads an event from an unwatched package against what is in front.
+     *
+     * The caller cannot answer this from the event alone: the package that fired
+     * it is often chrome layered over the screen the user is actually on. See
+     * [UnwatchedEvent] for what each answer costs if it is wrong.
+     */
+    fun classifyUnwatchedEvent(foregroundPackage: String?): UnwatchedEvent = when {
+        // No profile means nothing is guarded, so there is no re-look worth
+        // keeping armed and no bound worth preserving.
+        profile == null -> UnwatchedEvent.LEFT
+        foregroundPackage == null -> UnwatchedEvent.UNKNOWN
+        watchesPackage(foregroundPackage) -> UnwatchedEvent.STILL_WATCHED
+        else -> UnwatchedEvent.LEFT
     }
 
     /**
@@ -295,7 +367,7 @@ class SettingsGuard(
     }
 
     fun evaluate(screen: ScreenIdentity, nowMillis: Long): GuardDecision {
-        if (profile == null || isSuspended(nowMillis)) {
+        if (profile == null || !guardActive) {
             return GuardDecision.Ignore
         }
 
@@ -328,12 +400,6 @@ class SettingsGuard(
         } else {
             GuardDecision.BackOut(surface)
         }
-    }
-
-    /** Drops memoised state, e.g. when the service reconnects. */
-    fun reset() {
-        resetBound()
-        suspendedUntilMillis = 0
     }
 
     private fun resetBound() {

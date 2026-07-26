@@ -28,81 +28,59 @@ Anything requiring Device Owner is out of scope permanently — see plan.md §7.
   surface while the admin is inactive — without which the guard backed the user out of the only
   screen that can turn the admin on. See [plan.md](plan.md) §7.
 
+- ~~**A guarded screen sat unguarded because the harvest came back empty.**~~ **Fixed** — the
+  cause was neither of the two candidates this item was built around. The device-admin list rows
+  are marked `accessibilityDataSensitive` (Android 14, `View#setAccessibilityDataSensitive`), and
+  the framework withholds such nodes from every service that does not declare
+  `android:isAccessibilityTool="true"`. Declaring it in `accessibility_service_config.xml` is the
+  whole fix. See [the closed investigation](#closed-1-the-empty-harvest) below for the evidence
+  and for what was ruled out, and plan.md §7 for what the declaration means.
+
 ## Next
 
-### 1. A guarded screen can sit unguarded because the harvest comes back empty
+### 1. The device-admin list is unreachable from Settings while armed but not yet an admin
 
-**The headline case: the device admin list is not guarded.** It names this app, so it should hit
-the `SELF_IN_SETTINGS` catch-all — and it does not. Reproduced repeatedly on an android-36
-emulator: the list sits open showing our own row, service bound and subscribed, guard idle.
+Introduced by the fix above and verified on an `android-36` emulator: now that the list's rows are
+visible, the list names this app, so the `SELF_IN_SETTINGS` catch-all ejects the user from it —
+including while the admin is *off*, when there is nothing on that screen to protect.
 
-This is *not* an event-delivery problem, which is what it looks like at first. Instrumenting
-`onAccessibilityEvent` showed the event arrives normally
-(`pkg=com.android.settings type=32`, i.e. `TYPE_WINDOW_STATE_CHANGED`). The failure is entirely
-in the harvest. Two distinct causes were measured, and only the first is fixed:
+**The protection mode shrank this to a corner.** Nothing is blocked until the user arms
+protection, so ordinary setup — enable the service, activate the admin, then arm — never meets it.
+What remains is the state where protection is armed but device admin is not yet active, and the
+user tries to activate it from Settings rather than from the app's own button.
 
-**(a) `rootInActiveWindow` is null — fixed.** On a settings task restored from the background it
-returns null and *stays* null: still null 2s after the screen was drawn and interactive. Every
-logging and evaluation path sat behind `root != null`, so the guard was silent rather than
-visibly failing. Fixed by falling back to enumerating `windows` for a root matching the event's
-package (`ScreenGuardService.rootFor`), plus `RescanSchedule` to take a second look after the
-events stop. `flagRetrieveInteractiveWindows` was already set, so this cost no new capability.
+`SettingsProfiles.AOSP` has an entry for the list's own alias class
+(`com.android.settings.Settings$DeviceAdminSettingsActivity`, dumped, not inferred) so the
+"only once the admin is active" exemption reaches it. That entry is correct but does not close
+the case: the first event for the screen carries `android.widget.FrameLayout`, the catch-all
+fires on it, and the back-out has already happened by the time a class-carrying event arrives.
+This is the same failure that forced resource-id matching for `DeviceAdminAdd` — but unlike that
+screen, the list exposes only generic Settings chrome (`content_parent`, `collapsing_toolbar`,
+`recycler_view`), so the same remedy is not available.
 
-**(b) The node tree lacks the list rows — open, and this is what still breaks the case above.**
-With (a) fixed the re-looks now run against a real tree, and the tree is *still* wrong: the
-device-admin list harvests only `content_parent`, `collapsing_toolbar`, `recycler_view` — the
-chrome, with no row nodes at all — at 400 ms, 1 s and 2 s after the event, while a `uiautomator`
-dump of the same moment plainly shows the "Holy Blocker" row. So this is not slow rendering and
-no amount of waiting fixes it; the tree we are handed genuinely does not contain the rows.
+**Not blocking, and deliberately left open.** Activation from the app's own onboarding button is
+unaffected — verified end to end on device with the guard running: the prompt opens, activation
+succeeds, and `adb uninstall` then returns `DELETE_FAILED_DEVICE_POLICY_MANAGER`. The rule in
+plan.md §7 is that the feature must remain enable-able, and it does; what is lost is a secondary
+route to a screen that does nothing while the admin is off.
 
-Unresolved. **Run the `empty harvest` diagnostic first** — `ScreenGuardService.logEmptyHarvest`
-fires on exactly this condition and discriminates all three candidates below in one dump
-(`windows=` count, `declared=` vs `fetched=` child counts). Do not write a fix before reading it.
-
-Candidates, re-ordered by likelihood after review:
-
-- **`importantForAccessibility` filtering — the leading candidate.**
-  `flagIncludeNotImportantViews` is **not** set in `accessibility_service_config.xml`, but
-  `uiautomator` sets it on its own service info. So "a `uiautomator` dump shows the row" is *not*
-  evidence the row is reachable by this service — it is weak evidence of the opposite, and the
-  central comparison this item was built on does not hold. A `declared > fetched` gap in the
-  diagnostic confirms it. Cheapest possible fix (one XML attribute), but it widens what the
-  service ingests on every app, so probe it on the emulator before deciding how to ship it.
-- **`getChild()` returning null.** `collectIdentity` skips null children silently, so a node
-  reporting `childCount > 0` whose children never materialise reads as an empty subtree. This is
-  a distinct fetch failure from the above and needs its own handling.
-- **Wrong window** — first package match in `windows` rather than the active one. Ranked last,
-  not first: see item 2 for why this cannot produce chrome-with-no-rows. `windows=1` in the
-  diagnostic rules it out entirely.
-- `AccessibilityNodeInfo.refresh()` on the root — probably a red herring. It re-fetches *that
-  node's* properties; it does not make a filtered-out subtree appear.
-
-The `texts=` count now in the `settings screen` debug log is the signal to work from: an empty
-harvest on a visibly populated screen is this bug, and is otherwise indistinguishable from a
-screen that simply did not match.
-
-Note this weakens the catch-all generally, not just for the device-admin list — `mentionsSelf`
-cannot fire on a tree with no text in it, on any screen where the harvest comes back empty.
+Do **not** fix this by exempting `SELF_IN_SETTINGS` whenever the admin is inactive. That is
+precisely the pre-onboarding state, and the accessibility list — the primary removal route, which
+has nothing to do with device admin — would be unguarded throughout it.
 
 ### 2. Split-screen harvests the wrong window
 
-**The description below originally said `guardSettingsScreen` harvests from `rootInActiveWindow`.
-That has not been true since 1(a) landed** — it goes through `currentScreenIdentity` → `rootFor`,
-which already enumerates `windows` filtered by package. The stale wording survived here long
-enough to mislead a later planning pass into treating this item and 1(b) as the same bug. They
-are not; see below.
+`guardSettingsScreen` goes through `currentScreenIdentity` → `rootFor`, which already enumerates
+`windows` filtered by package. The remaining gap is narrower: `rootFor` takes the *first* window
+whose root matches the package, which is not necessarily the event's own window. In split screen
+two Settings-adjacent windows can coexist, so the guard can evaluate the wrong one, `mentionsSelf`
+fails, and the app-label catch-all §7 calls load-bearing silently does nothing.
 
-The real remaining gap is narrower: `rootFor` takes the *first* window whose root matches the
-package, which is not necessarily the event's own window. In split screen two Settings-adjacent
-windows can coexist, so the guard can evaluate the wrong one, `mentionsSelf` fails, and the
-app-label catch-all §7 calls load-bearing silently does nothing.
-
-**Not a suspect for 1(b).** A wrong-window pick cannot produce the observed harvest: `rootFor`
-already filters by package, and the ids that came back (`content_parent`, `collapsing_toolbar`,
-`recycler_view`) are Settings' own chrome for that screen. Chrome present with zero rows is a
-fetch failure inside the right window, not the wrong window. A stale background Settings window
-would carry the *previous* screen's rows, not none. Verify with the `windows=` count in the
-`empty harvest` log before spending any effort here.
+**This was never the empty-harvest bug**, and an earlier planning pass treating the two as one
+cost real time. The diagnostic settled it on device: `windows=1` on the device-admin list, and the
+cause was `accessibilityDataSensitive` filtering, which is per node and has nothing to do with
+which window is picked. This item stands on its own and is still unverified — split screen has not
+been exercised on the emulator.
 
 Fix: resolve the root for the event's own window via `getWindows()` / `event.windowId`, falling
 back to `rootInActiveWindow`. **Note this mechanism is unavailable on the re-look path** —
@@ -171,12 +149,15 @@ against low-memory kills and gives an always-visible status signal. Verify the r
 claim on real Samsung hardware before writing any mitigation for it — the claim in §7 comes from
 AppBlock's docs, and AppBlock ships to OEMs with aggressive task-killers that AOSP does not have.
 
-### 7. Dead `reset()` methods
+### 7. Dead `ScanGate.reset()`
 
-`ScanGate.reset()` and `SettingsGuard.reset()` are never called — `onServiceConnected` builds
-fresh instances. Harmless now, but `SettingsGuard.reset()` clears the release window, so wiring
-it to a reconnect later would silently cancel an active release mid-window. Either call them on
-reconnect instead of reallocating, or delete them.
+Never called — `onServiceConnected` builds a fresh instance. Either call it on reconnect instead
+of reallocating, or delete it.
+
+`SettingsGuard.reset()` is **gone**, which was the half of this that carried a real hazard: it
+cleared the suspension, so wiring it to a reconnect would have silently cancelled a live release.
+That failure cannot recur — the mode now lives in `ProtectionStore` rather than in the guard, so
+a reconnected guard reads the user's actual state instead of losing it.
 
 ## Cannot be closed at Device Admin level
 
@@ -209,3 +190,44 @@ Recorded so they are not re-investigated.
   toggle the enable-state. Assigning it happens on the guarded per-service page.
 - **A boot receiver is not needed for the guard to survive reboot** — the system rebinds enabled
   accessibility services automatically. It is still worth adding for tamper-log gap detection.
+
+## Closed: 1, the empty harvest
+
+Kept in full because four of the five hypotheses were wrong, and two of them were wrong in ways
+that would have shipped a change with no effect. Everything below was measured on an `android-36
+google_apis arm64-v8a` emulator with the `empty harvest` diagnostic in `ScreenGuardService`.
+
+**The cause.** Android 14 added `View#setAccessibilityDataSensitive`, and the framework withholds
+nodes marked with it from any service whose `AccessibilityServiceInfo.isAccessibilityTool()` is
+false. AOSP Settings marks the device-admin list rows sensitive — reasonably, since granting
+device admin is exactly what a malicious accessibility service would want to drive. Our service
+was handed the screen's chrome and an empty `recycler_view`, so the `SELF_IN_SETTINGS` catch-all
+had no text to match and the screen that gates uninstall sat unguarded.
+
+**The fix** is `android:isAccessibilityTool="true"` in `accessibility_service_config.xml`, and
+nothing else. With it, `findAccessibilityNodeInfosByText` returns the row and the row reports
+`isAccessibilityDataSensitive=true` — the mechanism confirming itself.
+
+What the diagnostic ruled out, in the order the item ranked them:
+
+| Hypothesis | Verdict |
+|---|---|
+| `flagIncludeNotImportantViews` unset — "the leading candidate" | **Wrong, and instructive.** Setting it does change the tree: the non-important containers (`content_frame`, `main_content`, `list_container`) reappear. The rows do not. It is not set today, because it widens what the service ingests in every app and buys nothing. |
+| `getChild()` returning null | **Ruled out.** `declared == fetched` at every node of the walk. |
+| Wrong window | **Ruled out.** `windows=1`. |
+| `refresh()` on the root | **Ruled out**, as the item guessed — `refresh=true` with `childCount` still 0. |
+| Stale node cache | Added during the investigation and also **ruled out**: `clearCache()` (API 33+) before each harvest changed nothing. |
+
+Two further things were established while chasing it, and both matter more than the ranking did:
+
+- **It was not slow rendering.** The rows were absent at 400 ms, 1 s, 2 s and again at 25 s, so no
+  re-look schedule could ever have caught it.
+- **"`uiautomator` sees the row" proves nothing about what this service sees.** `UiAutomation`
+  sets its own service info, and `isAccessibilityTool` is part of what differs. The comparison
+  that made this item look like a tree-lag bug was invalid from the start.
+
+A separate real defect surfaced on the way and is fixed: an event from an **unwatched package was
+treated as the user leaving**, so a `com.android.systemui` status-bar event landing ~200 ms after
+the device-admin list opened cancelled that screen's entire re-look budget and reset the back-out
+bound. `SettingsGuard.classifyUnwatchedEvent` now separates "chrome over a guarded screen" from a
+real departure, with an explicit third answer for a foreground that cannot be resolved.

@@ -15,7 +15,7 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import com.holyblocker.mobile.admin.HolyBlockerAdminReceiver
 import com.holyblocker.mobile.policy.AccessibilityServiceStatus
-import com.holyblocker.mobile.policy.ReleasePhase
+import com.holyblocker.mobile.policy.ProtectionPhase
 import com.holyblocker.mobile.policy.SettingsProfiles
 
 /**
@@ -29,15 +29,17 @@ class MainActivity : Activity() {
     private lateinit var status: TextView
     private lateinit var coverage: TextView
     private lateinit var open: Button
-    private lateinit var release: Button
+    private lateinit var protectionAction: Button
+    private lateinit var cancel: Button
+    private lateinit var removalHint: TextView
     private lateinit var adminStatus: TextView
     private lateinit var admin: Button
-    private lateinit var suspension: GuardSuspension
+    private lateinit var protection: ProtectionStore
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        suspension = GuardSuspension(this)
+        protection = ProtectionStore(this)
         status = TextView(this).apply { textSize = 18f }
 
         coverage = TextView(this).apply {
@@ -45,11 +47,25 @@ class MainActivity : Activity() {
             setTextColor(Color.GRAY)
         }
 
-        release = Button(this).apply {
+        // One button whose meaning follows the phase — arm, request, confirm —
+        // so there is never a live "turn it off now" control sitting beside an
+        // armed guard. Its listener is rebound in refresh().
+        protectionAction = Button(this)
+
+        // Separate from the action button on purpose: abandoning a request must
+        // not be one mis-tap away from confirming a disarm.
+        cancel = Button(this).apply {
+            text = getString(R.string.action_cancel_disarm)
             setOnClickListener {
-                suspension.requestRelease()
+                protection.cancelDisarm()
                 refresh()
             }
+        }
+
+        removalHint = TextView(this).apply {
+            text = getString(R.string.hint_disarm_to_remove)
+            textSize = 14f
+            setTextColor(Color.GRAY)
         }
 
         adminStatus = TextView(this).apply { textSize = 18f }
@@ -94,9 +110,11 @@ class MainActivity : Activity() {
                 addView(status)
                 addView(coverage)
                 addView(open)
-                addView(release)
+                addView(protectionAction)
+                addView(cancel)
                 addView(adminStatus)
                 addView(admin)
+                addView(removalHint)
                 addView(hint)
             },
             ViewGroup.LayoutParams(
@@ -114,33 +132,65 @@ class MainActivity : Activity() {
     }
 
     private fun refresh() {
-        val state = suspension.state()
+        val state = protection.state()
         val serviceOn = isServiceEnabled()
+        // Rounded up: "0 min left" on something that has not happened yet reads
+        // as a stuck timer.
         val minutes = (state.remainingMillis + 59_999) / 60_000
-        val seconds = (state.remainingMillis + 999) / 1000
 
-        status.text = when (state.phase) {
-            ReleasePhase.PENDING -> getString(R.string.status_release_pending, minutes)
-            ReleasePhase.OPEN -> getString(R.string.status_release_open, seconds)
-            ReleasePhase.IDLE ->
-                getString(if (serviceOn) R.string.status_service_on else R.string.status_service_off)
+        // The service answers first, and not as a formality: the mode can read
+        // ARMED while the service has been turned off underneath it — by adb,
+        // by safe mode, or by the user before arming — and saying "the screens
+        // that remove this app are blocked" when nothing is running would be the
+        // one failure worse than not guarding at all. Same rule as the
+        // unsupported-device notice below.
+        status.text = if (!serviceOn) {
+            getString(R.string.status_service_off)
+        } else when (state.phase) {
+            ProtectionPhase.OFF -> getString(R.string.status_protection_off)
+            ProtectionPhase.ARMED -> getString(R.string.status_protection_armed)
+            ProtectionPhase.DISARM_PENDING -> getString(R.string.status_disarm_pending, minutes)
+            ProtectionPhase.DISARM_READY -> getString(R.string.status_disarm_ready, minutes)
+            ProtectionPhase.DISARMED ->
+                resources.getQuantityString(R.plurals.status_disarmed, minutes.toInt(), minutes)
         }
 
-        release.text = getString(
+        protectionAction.text = getString(
             when (state.phase) {
-                ReleasePhase.IDLE -> R.string.action_request_release
-                else -> R.string.action_cancel_release
+                ProtectionPhase.OFF, ProtectionPhase.DISARMED -> R.string.action_arm
+                ProtectionPhase.ARMED -> R.string.action_request_disarm
+                ProtectionPhase.DISARM_PENDING -> R.string.action_request_disarm
+                ProtectionPhase.DISARM_READY -> R.string.action_confirm_disarm
             },
         )
-        release.setOnClickListener {
-            if (state.phase == ReleasePhase.IDLE) suspension.requestRelease() else suspension.clear()
+        protectionAction.setOnClickListener {
+            when (state.phase) {
+                ProtectionPhase.OFF, ProtectionPhase.DISARMED -> protection.arm()
+                ProtectionPhase.ARMED -> protection.requestDisarm()
+                ProtectionPhase.DISARM_READY -> protection.confirmDisarm()
+                // The wait is the mechanism; there is nothing to tap through.
+                ProtectionPhase.DISARM_PENDING -> Unit
+            }
             refresh()
         }
-        // No point offering a release when nothing is being guarded yet.
-        release.visibility = if (serviceOn) View.VISIBLE else View.GONE
+        // Deliberately inert rather than hidden during the cooldown: the user
+        // can see exactly what they asked for and what it is waiting on.
+        protectionAction.isEnabled = state.phase != ProtectionPhase.DISARM_PENDING
+        // Arming is pointless until the service that does the guarding is on.
+        protectionAction.visibility = if (serviceOn) View.VISIBLE else View.GONE
 
-        open.visibility =
-            if (!serviceOn || state.phase == ReleasePhase.OPEN) View.VISIBLE else View.GONE
+        cancel.visibility = when (state.phase) {
+            ProtectionPhase.DISARM_PENDING, ProtectionPhase.DISARM_READY -> View.VISIBLE
+            else -> View.GONE
+        }
+
+        removalHint.visibility = if (state.guardActive) View.VISIBLE else View.GONE
+
+        // The route to the toggle that turns the whole thing off. Offered only
+        // when there is nothing to protect or protection is already off — beside
+        // an armed guard it would be a one-tap bypass, which is exactly what an
+        // earlier version of this screen shipped.
+        open.visibility = if (!serviceOn || !state.guardActive) View.VISIBLE else View.GONE
 
         // Say plainly when the settings screens are not guarded here. The guard
         // silently does nothing on an unrecognised build, and a user who assumes
