@@ -20,16 +20,25 @@ enum class TamperEvent(
      * did, and the pair is the record.
      */
     val coalescing: Boolean = false,
+    /**
+     * Whether this event bounds an accessibility-service session.
+     *
+     * [TamperLog.classifyConnect] reads the last such entry and ignores
+     * everything written between them. Without that the status service, which
+     * outlives the guard by design, would leave a line after every clean unbind
+     * and turn each supported off-and-on into an apparent kill.
+     */
+    val sessionBoundary: Boolean = false,
 ) {
     /** The accessibility service was bound and is running. */
-    SERVICE_CONNECTED("service_on"),
+    SERVICE_CONNECTED("service_on", sessionBoundary = true),
 
     /**
      * The service was unbound cleanly — the supported way to stop the guard.
      *
      * Its *absence* is the interesting case; see [SessionStart.UNCLEAN_STOP].
      */
-    SERVICE_DISCONNECTED("service_off"),
+    SERVICE_DISCONNECTED("service_off", sessionBoundary = true),
 
     PROTECTION_ARMED("armed"),
     DISARM_REQUESTED("disarm_requested"),
@@ -55,6 +64,17 @@ enum class TamperEvent(
      * service. See [SessionStart].
      */
     GUARD_STOPPED_UNCLEANLY("unclean_stop"),
+
+    /**
+     * Observed from outside the guard: protection is armed and the accessibility
+     * service is not running.
+     *
+     * Written by the foreground status service, which is the only part of this
+     * app still alive to see it — an `adb` disable and a guest session leave no
+     * other trace, and on an OEM build whose settings screens the guard does not
+     * recognise, neither does the toggle itself. See `GuardStatus`.
+     */
+    GUARD_UNPROTECTED("guard_unprotected"),
 
     /** The log reached its cap and the oldest entries were dropped. */
     LOG_TRIMMED("log_trimmed"),
@@ -240,13 +260,34 @@ object TamperLog {
     }
 
     /**
+     * How many trailing entries [classifyConnect] needs.
+     *
+     * It has to reach back past whatever the status service and the mode wrote
+     * between sessions, and far enough to still contain the previous session's
+     * own entries. A tail that held only the current boot would make the reboot
+     * check blind exactly when the log is busiest.
+     */
+    const val CLASSIFY_TAIL = 64
+
+    /**
      * What the gap before this connect means. See [SessionStart].
      *
-     * @param last the final entry of the previous session, if there was one.
+     * @param recent the last [CLASSIFY_TAIL] entries, oldest first.
      * @param nowElapsed `SystemClock.elapsedRealtime()` at connect.
      */
-    fun classifyConnect(last: TamperEntry?, nowElapsed: Long): SessionStart = when {
-        last == null -> SessionStart.FIRST_RUN
+    fun classifyConnect(recent: List<TamperEntry>, nowElapsed: Long): SessionStart {
+        // The last session boundary is the anchor for everything below: this
+        // classifies the gap between the previous session and now, so entries
+        // written outside a session are context rather than evidence. Skipping
+        // them is what lets the status service — which outlives the guard by
+        // design, that being its whole job — write freely without turning every
+        // clean off-and-on into an apparent kill.
+        val boundary = recent.indexOfLast { it.event.sessionBoundary }
+
+        // Either an empty log, or one whose entries all come from writers other
+        // than the service: the mode and the admin receiver both run before the
+        // guard has ever been enabled.
+        if (boundary < 0) return SessionStart.FIRST_RUN
 
         // **The monotonic clock is the only evidence of a reboot, and this is
         // deliberate.** An earlier version also treated a `BOOT` entry written
@@ -257,10 +298,27 @@ object TamperLog {
         // this classification exists to catch — therefore wrote a boot marker
         // and then read itself back as an ordinary restart. Anything the system
         // can deliver outside a boot cannot be what identifies one.
-        nowElapsed < last.elapsedMillis -> SessionStart.AFTER_REBOOT
+        //
+        // The window it is read over runs from that boundary to now, and both
+        // ends earn their place. Comparing only against the newest line is
+        // defeated by anything written after the reset — the boot receiver starts
+        // the status service, which can write before the guard is bound, leaving
+        // a small elapsed value on the last line with the discontinuity hidden
+        // behind it. Scanning the whole tail instead over-reports: a log with any
+        // history contains older boots, and one of those is not a reason to
+        // excuse the session that has just ended.
+        val clock = recent.subList(boundary, recent.size).map { it.elapsedMillis } + nowElapsed
+        if (clock.zipWithNext().any { (earlier, later) -> later < earlier }) {
+            return SessionStart.AFTER_REBOOT
+        }
 
-        last.event == TamperEvent.SERVICE_DISCONNECTED -> SessionStart.CLEAN_RESTART
-        else -> SessionStart.UNCLEAN_STOP
+        return if (recent[boundary].event == TamperEvent.SERVICE_DISCONNECTED) {
+            SessionStart.CLEAN_RESTART
+        } else {
+            // A session that started and never ended: force-stop, a process kill,
+            // or a recents swipe on an OEM that kills the service.
+            SessionStart.UNCLEAN_STOP
+        }
     }
 
     private fun sanitize(detail: String): String = detail
