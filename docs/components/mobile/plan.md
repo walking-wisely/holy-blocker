@@ -40,7 +40,9 @@ The MVP builds that Layer 2 text path, and nothing else.
 - `policy/SettingsGuard.kt` — blocks the screens that would remove the guard — **Done** for the
   AOSP profile, verified on an android-36 arm64 emulator, device-admin identifiers included —
   the activation prompt, and the list, which needed `isAccessibilityTool` before it could be seen
-  at all. Xiaomi and Samsung have no profile at all.
+  at all. Xiaomi and Samsung have no profile at all. Evaluates every watched window, not one
+  screen, so split screen is covered; the back action is gated on input focus, since
+  `GLOBAL_ACTION_BACK` takes no window argument.
 - `policy/RescanSchedule.kt` — when to take a second look at a screen that did not match —
   **Done.**
 - `policy/ProtectionSchedule.kt` — the protection mode: armed, disarm cooldown, confirm, window;
@@ -259,6 +261,14 @@ Removing the app from the recents list can stop the accessibility service on sev
 AppBlock documents this directly and tells users to pin the app in recents as a workaround.
 Any design that guards only the settings screens has an unguarded path straight through recents.
 Treat recents and split-screen entry as guarded surfaces in their own right, not as polish.
+
+**Split screen is handled** (step 8): every watched window is evaluated rather than one screen,
+and the back action is gated on the matched window holding input focus, because
+`GLOBAL_ACTION_BACK` takes no window argument and would otherwise be delivered to whatever app the
+user is actually in. Read [backlog.md](backlog.md#closed-2-split-screen) before extending it — an
+unfocused pane emits no accessibility events at all, so what carries the protection is that the
+toggle needs focus and taking focus emits events, not the cover. **Recents is still open**, and
+the OEM claim above needs verifying on real hardware before anything is written against it.
 
 #### What this does and does not achieve
 
@@ -530,10 +540,25 @@ scaffolding and will fail at load time if they fall out of sync with the `.so`.
    as the user leaving, cancelling the re-look budget, and the now-visible list needed the same
    admin-inactive exemption as the prompt. See [backlog.md](backlog.md#closed-1-the-empty-harvest)
    for the full evidence and what was ruled out.
-8. Split-screen window resolution, then recents (§7 and [backlog.md](backlog.md) item 2) — the
-   bypasses that go around step 5 rather than defeating it. Ranked after step 7 because it needs
-   deliberate user intent, while the empty harvest needs none. Note `GLOBAL_ACTION_BACK` is
-   global, so multi-window evaluation needs the action fixed before the matching is widened.
+8. ~~Split-screen window resolution~~ **Done**, then recents (§7 and
+   [backlog.md](backlog.md#closed-2-split-screen)) — the bypasses that go around step 5 rather
+   than defeating it. Ranked after step 7
+   because it needs deliberate user intent, while the empty harvest needs none.
+
+   The guard now evaluates every watched window rather than the first one matching the event's
+   package, and `GLOBAL_ACTION_BACK` — which takes no window argument — is gated on the matched
+   window holding input focus, covering instead when it does not. Verified in real split screen
+   on an android-36 emulator, with Settings sitting on the Accessibility page beside a clock app:
+   unfocused reads `focused=false` and covers, and the moment the pane is tapped it reads
+   `focused=true` and is backed out. Two things found while verifying are worth carrying into the
+   recents work: an unfocused pane emits **no accessibility events at all**, so the guard only
+   ever sees it when something else makes it re-lay out; and an event from the focused pane was
+   being read as the user leaving while a guarded pane sat visible beside it, which cancelled the
+   re-look. See [backlog.md](backlog.md#closed-2-split-screen) for both.
+
+   **Recents is still open.** It is a separate mechanism — the claim is that swiping the app away
+   stops the service on some OEMs — and §7 flags it as needing verification on real hardware
+   before any mitigation is written, since the claim comes from AppBlock's docs.
 9. **Tamper log** — append-only local record of guard-state transitions and removal attempts.
    The backstop for what steps 5–8 cannot prevent (guest user, safe mode, adb); entries must
    survive the app being disabled.

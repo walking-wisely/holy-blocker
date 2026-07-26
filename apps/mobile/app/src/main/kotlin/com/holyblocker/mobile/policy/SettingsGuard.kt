@@ -14,6 +14,32 @@ data class ScreenIdentity(
     val texts: List<String> = emptyList(),
 )
 
+/**
+ * One window on screen, paired with whether the back action would reach it.
+ *
+ * Split screen is why this is not just a [ScreenIdentity]. Two windows can be
+ * visible at once, and `performGlobalAction(GLOBAL_ACTION_BACK)` takes no window
+ * argument — it lands on whichever window has input focus. So a guarded settings
+ * pane sitting *beside* the app the user is actually in cannot be backed out of:
+ * the BACK would be delivered to the innocent app, and the pane that matched
+ * would still be there on the next event, so the guard would press BACK in a
+ * loop through somebody's unrelated app until the bound tripped.
+ *
+ * [isFocused] is therefore the difference between the two enforcement actions
+ * rather than a hint: focused means leave the screen, unfocused means cover it.
+ */
+data class WindowScreen(
+    val identity: ScreenIdentity,
+    /**
+     * Whether this window has input focus.
+     *
+     * From `AccessibilityWindowInfo.isFocused`. True on the single-window
+     * fallback path, where there is no window list to ask and the active window
+     * is the only candidate.
+     */
+    val isFocused: Boolean,
+)
+
 /** A screen whose purpose is removing the guard. */
 enum class GuardedSurface {
     /** Settings → Accessibility: the disable toggle. */
@@ -342,10 +368,28 @@ class SettingsGuard(
      * it is often chrome layered over the screen the user is actually on. See
      * [UnwatchedEvent] for what each answer costs if it is wrong.
      */
-    fun classifyUnwatchedEvent(foregroundPackage: String?): UnwatchedEvent = when {
+    fun classifyUnwatchedEvent(
+        foregroundPackage: String?,
+        /**
+         * Packages of every visible window, for split screen.
+         *
+         * The foreground alone is the wrong question there. Measured on an
+         * android-36 emulator with Settings and a clock app side by side: the
+         * clock owns focus, so every event it fires reads as the user having
+         * left, while `com.android.settings` sits in the other pane the whole
+         * time. Taken as a departure that cancels the re-look — which is what
+         * it did — the guarded pane goes unexamined for as long as the user
+         * keeps tapping the app beside it.
+         */
+        visiblePackages: List<String> = emptyList(),
+    ): UnwatchedEvent = when {
         // No profile means nothing is guarded, so there is no re-look worth
         // keeping armed and no bound worth preserving.
         profile == null -> UnwatchedEvent.LEFT
+        // Checked before the foreground, because in split screen a watched
+        // window can be visible while the foreground is something else
+        // entirely — which is the whole case this argument exists for.
+        visiblePackages.any(::watchesPackage) -> UnwatchedEvent.STILL_WATCHED
         foregroundPackage == null -> UnwatchedEvent.UNKNOWN
         watchesPackage(foregroundPackage) -> UnwatchedEvent.STILL_WATCHED
         else -> UnwatchedEvent.LEFT
@@ -366,16 +410,48 @@ class SettingsGuard(
         resetBound()
     }
 
-    fun evaluate(screen: ScreenIdentity, nowMillis: Long): GuardDecision {
+    /**
+     * Single-window convenience.
+     *
+     * A lone window is by definition where BACK lands, so it is evaluated as
+     * focused. Used by the service's fallback path, where the window list is
+     * unavailable and `rootInActiveWindow` is all there is.
+     */
+    fun evaluate(screen: ScreenIdentity, nowMillis: Long): GuardDecision =
+        evaluate(listOf(WindowScreen(screen, isFocused = true)), nowMillis)
+
+    /**
+     * Decides what to do about everything currently on screen.
+     *
+     * Takes the whole window list rather than one screen because in split
+     * screen the event's window is not necessarily the one worth acting on —
+     * see [WindowScreen]. Exactly **one** decision comes out however many
+     * windows go in, which is not a detail: the back-out bound below is
+     * per-attempt state, and folding N windows through it would burn N
+     * increments per event and exhaust the budget within about two of them.
+     * So the windows are matched, the strongest is chosen, and only then is the
+     * counter touched.
+     */
+    fun evaluate(windows: List<WindowScreen>, nowMillis: Long): GuardDecision {
         if (profile == null || !guardActive) {
             return GuardDecision.Ignore
         }
 
-        val surface = match(screen)
-        if (surface == null) {
+        val chosen = strongest(windows)
+        if (chosen == null) {
             // The user left, so any loop we were in has ended.
             resetBound()
             return GuardDecision.Ignore
+        }
+
+        val surface = chosen.surface
+
+        if (!chosen.isFocused) {
+            // Nothing is fired at an unfocused window, so this must not touch
+            // the bound: no BACK was sent, and spending the budget here would
+            // leave nothing for the window once the user focuses it — which is
+            // the moment the toggle actually becomes reachable.
+            return GuardDecision.CoverOnly(surface)
         }
 
         val sinceLast = nowMillis - lastBackOutAtMillis
@@ -407,6 +483,38 @@ class SettingsGuard(
         consecutiveBackOuts = 0
         lastBackOutAtMillis = 0
     }
+
+    /** A window that matched, and whether the back action can reach it. */
+    private data class Matched(val surface: GuardedSurface, val isFocused: Boolean)
+
+    /**
+     * The one matching window to act on, or null when none matched.
+     *
+     * Focus comes first, and it is the only part of this ordering that changes
+     * what the guard *does*: a focused match can be backed out of, an unfocused
+     * one can only be covered, and covering is the weaker of the two. Ranking a
+     * covered window above a backed-out one would let a pane the user is not
+     * even in decide the response for the screen they are looking at.
+     *
+     * Note this is a ranking of *matches*, not of decisions. `CoverOnly` is the
+     * give-up state — weaker enforcement than `BackOut` despite being what the
+     * escalation produces — so nothing here may treat it as the stronger answer.
+     *
+     * [SURFACE_PRECEDENCE] then breaks ties. Between two identified surfaces it
+     * only affects which one is named in the log and held in `lastSurface`, but
+     * the last entry matters: the catch-all must lose to anything identified, so
+     * a window that is genuinely the device-admin prompt is not recorded as a
+     * generic settings page — the exemptions in [narrow] are keyed on the real
+     * surface.
+     */
+    private fun strongest(windows: List<WindowScreen>): Matched? = windows
+        .mapNotNull { window -> match(window.identity)?.let { Matched(it, window.isFocused) } }
+        .minWithOrNull(
+            compareBy(
+                { if (it.isFocused) 0 else 1 },
+                { SURFACE_PRECEDENCE.indexOf(it.surface) },
+            ),
+        )
 
     private fun match(screen: ScreenIdentity): GuardedSurface? {
         if (profile == null) return null
@@ -509,5 +617,22 @@ class SettingsGuard(
          * matches by class at all.
          */
         private val SELF_MENTION_REQUIRED = setOf(GuardedSurface.DEVICE_ADMIN_SETTINGS)
+
+        /**
+         * Tie-break order when two windows both match — see [strongest].
+         *
+         * Written out rather than taken from the enum's declaration order so
+         * that reordering [GuardedSurface] for readability cannot silently
+         * change guard behaviour. The order among the identified surfaces is a
+         * judgement about which screen is closest to the control that removes
+         * the guard; `SELF_IN_SETTINGS` last is the part that is load-bearing.
+         */
+        private val SURFACE_PRECEDENCE = listOf(
+            GuardedSurface.UNINSTALL_SELF,
+            GuardedSurface.DEVICE_ADMIN_SETTINGS,
+            GuardedSurface.ACCESSIBILITY_SETTINGS,
+            GuardedSurface.APP_INFO_SELF,
+            GuardedSurface.SELF_IN_SETTINGS,
+        )
     }
 }
