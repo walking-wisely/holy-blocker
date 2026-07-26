@@ -1,7 +1,11 @@
+pub mod dns;
+pub mod dns_shield;
 pub mod radix;
 pub mod sni;
 pub mod tun;
+pub mod udp;
 
+pub use dns_shield::{DnsShield, DnsVerdict};
 pub use radix::{DomainFilter, FilterAction, IpFilter};
 pub use sni::extract_sni;
 pub use tun::{PacketSink, RawPacket};

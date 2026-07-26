@@ -76,6 +76,29 @@ enum class TamperEvent(
      */
     GUARD_UNPROTECTED("guard_unprotected"),
 
+    /**
+     * The network guard's VPN was established.
+     *
+     * Not a session boundary: [TamperLog.classifyConnect] anchors on the
+     * accessibility service's own sessions, and a second service writing
+     * boundaries would make every VPN restart look like a guard restart.
+     */
+    NETWORK_GUARD_STARTED("net_on"),
+
+    /** The network guard stopped the way it is meant to — disarmed, or torn down. */
+    NETWORK_GUARD_STOPPED("net_off"),
+
+    /**
+     * The system revoked the VPN grant.
+     *
+     * Removal-shaped, and worth its own code: `onRevoke` fires when the user
+     * turns the VPN off in Settings **or** when another VPN app takes over, and
+     * both end with the network guard gone while protection is still armed. Like
+     * everything else in this log it is a record, not a prevention — plain
+     * Device Admin has no `DISALLOW_CONFIG_VPN` to reach for.
+     */
+    NETWORK_GUARD_REVOKED("net_revoked"),
+
     /** The log reached its cap and the oldest entries were dropped. */
     LOG_TRIMMED("log_trimmed"),
     ;

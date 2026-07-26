@@ -6,6 +6,7 @@ import android.app.admin.DevicePolicyManager
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color
+import android.net.VpnService
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
@@ -17,7 +18,9 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import com.holyblocker.mobile.admin.HolyBlockerAdminReceiver
 import com.holyblocker.mobile.policy.AccessibilityServiceStatus
+import com.holyblocker.mobile.policy.NetworkGuard
 import com.holyblocker.mobile.policy.ProtectionPhase
+import com.holyblocker.mobile.policy.ProtectionState
 import com.holyblocker.mobile.policy.SettingsProfiles
 
 /**
@@ -36,6 +39,9 @@ class MainActivity : Activity() {
     private lateinit var removalHint: TextView
     private lateinit var adminStatus: TextView
     private lateinit var admin: Button
+    private lateinit var networkStatus: TextView
+    private lateinit var network: Button
+    private lateinit var networkHint: TextView
     private lateinit var protection: ProtectionStore
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -71,6 +77,32 @@ class MainActivity : Activity() {
         }
 
         adminStatus = TextView(this).apply { textSize = 18f }
+
+        networkStatus = TextView(this).apply { textSize = 18f }
+
+        networkHint = TextView(this).apply {
+            text = getString(R.string.network_guard_explanation)
+            textSize = 14f
+            setTextColor(Color.GRAY)
+        }
+
+        // Only ever offers to turn it on, for the same reason as the admin
+        // button: the way back out is the system VPN screen, which the timed
+        // release exists to reach. A "turn off filtering" button here would be
+        // a one-tap bypass of the release flow.
+        network = Button(this).apply {
+            text = getString(R.string.action_enable_network_guard)
+            // startActivityForResult, deprecated in AndroidX but the only API
+            // available to a plain Activity — this module has no AndroidX
+            // dependency. The result is not read: onResume re-reads the grant
+            // from VpnService.prepare(), which is the authority either way, and
+            // is also what catches a revoke that happened elsewhere.
+            setOnClickListener {
+                VpnService.prepare(this@MainActivity)?.let {
+                    startActivityForResult(it, REQUEST_VPN_CONSENT)
+                }
+            }
+        }
 
         // Only ever offers activation. Deactivation is deliberately not mirrored
         // here: it belongs to the system screen, which is guarded like every
@@ -116,6 +148,9 @@ class MainActivity : Activity() {
                 addView(cancel)
                 addView(adminStatus)
                 addView(admin)
+                addView(networkStatus)
+                addView(network)
+                addView(networkHint)
                 addView(removalHint)
                 addView(hint)
             },
@@ -241,6 +276,33 @@ class MainActivity : Activity() {
             getString(if (adminOn) R.string.admin_status_on else R.string.admin_status_off)
         // Nothing to offer once it is on — the way back out is the system screen.
         admin.visibility = if (adminOn) View.GONE else View.VISIBLE
+
+        refreshNetworkGuard(state)
+    }
+
+    /**
+     * Brings the network guard in line with the mode and the VPN grant.
+     *
+     * Driven from here rather than from the store, because the grant is not ours
+     * to remember: `VpnService.prepare` is the only authority on it, it can be
+     * revoked from Settings or taken by another VPN app without this app being
+     * told, and an activity resuming is the moment that is cheapest to re-read.
+     * Everything about *whether* it should be up is [NetworkGuard.shouldRun].
+     */
+    private fun refreshNetworkGuard(state: ProtectionState) {
+        val consented = NetworkGuardService.hasConsent(this)
+        val shouldRun = NetworkGuard.shouldRun(state, consentGranted = consented)
+
+        networkStatus.text = getString(
+            if (shouldRun) R.string.network_status_on else R.string.network_status_off,
+        )
+        // Offered only when it is not already granted, and only once there is a
+        // mode to enforce — the consent dialog is a heavy prompt to raise before
+        // the user has armed anything.
+        network.visibility = if (consented) View.GONE else View.VISIBLE
+        networkHint.visibility = network.visibility
+
+        if (shouldRun) NetworkGuardService.start(this) else NetworkGuardService.stop(this)
     }
 
     /**
@@ -265,6 +327,7 @@ class MainActivity : Activity() {
 
     private companion object {
         const val REQUEST_NOTIFICATIONS = 1
+        const val REQUEST_VPN_CONSENT = 2
     }
 
     private fun isServiceEnabled(): Boolean = AccessibilityServiceStatus.isEnabled(
