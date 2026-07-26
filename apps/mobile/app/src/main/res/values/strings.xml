@@ -66,6 +66,22 @@
     <string name="status_device_unsupported">Screen protection is unverified on this device — settings are not guarded.</string>
 
     <!--
+      The ongoing status notification. It states what is or is not running and
+      stops there — see docs/decisions/formation-model.md. Most states reuse the
+      onboarding copy above so the two surfaces cannot drift apart; only the two
+      below have no equivalent there.
+
+      "The screen guard is not running" is the one line here that has to be
+      unambiguous: it is the only report the user gets of a disable that happened
+      outside this app — adb, a guest session, or a settings screen the guard does
+      not recognise on this build.
+    -->
+    <string name="channel_status_name">Protection status</string>
+    <string name="channel_status_description">Shows whether the screen guard is running. Silent and always on screen while protection is set up.</string>
+    <string name="notification_guard_not_running">Protection is on, but the screen guard is not running. Nothing is being blocked.</string>
+    <string name="notification_protection_off">Protection is off.</string>
+
+    <!--
       Device admin. The explanation is shown on the system activation screen and
       the warning on the deactivation screen; both state the consequence and stop
       there, per docs/decisions/formation-model.md.

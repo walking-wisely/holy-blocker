@@ -1,8 +1,10 @@
 package com.holyblocker.mobile
 
+import android.Manifest
 import android.app.Activity
 import android.app.admin.DevicePolicyManager
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.graphics.Color
 import android.os.Build
 import android.os.Bundle
@@ -122,6 +124,8 @@ class MainActivity : Activity() {
                 ViewGroup.LayoutParams.MATCH_PARENT,
             ),
         )
+
+        requestNotificationPermission()
     }
 
     override fun onResume() {
@@ -129,6 +133,30 @@ class MainActivity : Activity() {
         // Re-read on resume: the user returns here straight from the settings
         // toggle, so this is the moment the state changes.
         refresh()
+    }
+
+    /**
+     * Asks for notification permission, once, on Android 13+.
+     *
+     * The status service runs either way, but with the permission denied its
+     * notification is not posted — and for a service whose entire output is that
+     * notification, that is indistinguishable from it not running. Not gated on
+     * anything: it is asked at the same point the user is being walked through
+     * two far larger grants, which is the moment it costs least.
+     *
+     * The result is deliberately not handled. There is nothing to do about a
+     * refusal except keep recording to the tamper log, which is where the
+     * durable record lives anyway.
+     * https://developer.android.com/develop/ui/views/notifications/notification-permission
+     */
+    private fun requestNotificationPermission() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+        if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) ==
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            return
+        }
+        requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQUEST_NOTIFICATIONS)
     }
 
     private fun refresh() {
@@ -198,6 +226,16 @@ class MainActivity : Activity() {
         val supported = SettingsProfiles.forManufacturer(Build.MANUFACTURER) != null
         coverage.text = if (supported) "" else getString(R.string.status_device_unsupported)
 
+        // Every path that changes the mode comes back through here, so this is
+        // also where the status notification is brought up to date. It matters:
+        // the mode lives in SharedPreferences with nothing to announce a change,
+        // so without this the notification would keep claiming protection was off
+        // for up to a poll interval after the user armed it — on the one surface
+        // whose job is to say what is true right now. Starting from a resumed
+        // activity is also the one call site the foreground-start rules never
+        // refuse, and it is a no-op while there is nothing to report.
+        GuardStatusService.start(this)
+
         val adminOn = HolyBlockerAdminReceiver.isActive(this)
         adminStatus.text =
             getString(if (adminOn) R.string.admin_status_on else R.string.admin_status_off)
@@ -224,6 +262,10 @@ class MainActivity : Activity() {
                 getString(R.string.admin_add_explanation),
             )
         }
+
+    private companion object {
+        const val REQUEST_NOTIFICATIONS = 1
+    }
 
     private fun isServiceEnabled(): Boolean = AccessibilityServiceStatus.isEnabled(
         enabledServicesSetting = Settings.Secure.getString(

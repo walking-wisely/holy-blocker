@@ -52,6 +52,13 @@ The MVP builds that Layer 2 text path, and nothing else.
   session classification — **Done.**
 - `TamperLogStore.kt` — the `filesDir` edge for it — **Done**, verified on an android-36 arm64
   emulator.
+- `policy/GuardStatus.kt` — health, the notification message, and when the status service is worth
+  running — **Done.**
+- `GuardStatusService.kt` — the foreground service: status notification, and the still-alive
+  process that records a disable the guard cannot report — **Done**, verified on an android-36
+  arm64 emulator.
+- `BootReceiver.kt` — restores the status service after a restart or an update, and writes nothing
+  — **Done.**
 - `VpnService` DNS/SNI filter — not yet created.
 - `MediaProjection` capture + image path — not yet created.
 - `admin/HolyBlockerAdminReceiver.kt` — device admin, so uninstall is refused until it is
@@ -501,6 +508,77 @@ the record, not the cover.
 
 #### Reference documents
 
+### 8. `GuardStatusService` — the foreground status surface — **Done**
+
+**It is not what keeps the guard alive, and no copy about it should imply otherwise.** An
+`AccessibilityService` is bound by the system and is rebound after a reboot for as long as it
+stays enabled, so a foreground service makes the guard neither harder to kill nor able to survive
+anything it could not survive already. What it adds is a process that is still running *after* the
+guard stops:
+
+- **It closes the "still-alive process" half of the detection surface** in
+  [backlog.md](backlog.md), "Cannot be closed at Device Admin level". An `adb` disable, a guest
+  session, or a disable screen an OEM build hides from the guard all end with the accessibility
+  service gone and nothing written by it — by the time the fact is true, the component that would
+  record it has been unbound. The status service polls the same secure setting
+  `AccessibilityServiceStatus` parses, and a `ContentObserver` on it makes the observation
+  immediate rather than up to a poll interval late. Measured: an `adb` disable was recorded inside
+  the same second.
+- **It is the FGS host steps 10 and 11 need.** `VpnService` and `MediaProjection` both require
+  one, and the `MediaProjection` start order (§6) is strict.
+- **It is the status surface.** One ongoing, silent notification saying which of *armed*,
+  *running* and *recognised device* is actually true — the three disagree routinely, and that
+  disagreement is the only thing worth a permanent notification.
+
+`GuardStatus` holds all of it: health, the message priority, and whether the service still has
+anything to report. `GuardHealth.UNPROTECTED` — armed with nothing enforcing it — is the only state
+that reaches the tamper log, written on the **edge** rather than on each poll, since this is a
+timer and an evening with the service off would otherwise push the history that matters past the
+cap. A release window is `IDLE`, not a fault: turning the service off during one is the front door.
+
+**The service stops itself once protection is off and the guard is not running**, and declines to
+start in that state at all, so an install that never gets past onboarding does not acquire a
+permanent notification.
+
+Four things were measured while building it, none of them in the docs:
+
+- **A denied `POST_NOTIFICATIONS` is invisible, not loud.** The service runs, `startForeground`
+  succeeds, and the notification is simply never posted — which for a service whose entire output
+  is that notification reads exactly like the service failing to start. `dumpsys notification`
+  shows `importance=NONE` for the package, and that line is the only evidence. `MainActivity` asks
+  on Android 13+; a refusal is not handled, because the durable record is the tamper log either
+  way.
+- **The mode has nothing to announce a change.** It lives in `SharedPreferences`, so arming left
+  the notification claiming protection was off for up to a poll interval — on the one surface whose
+  job is to say what is true right now. `MainActivity.refresh()` re-starts the service, which
+  delivers `onStartCommand` and re-checks immediately; a resumed activity is also the one call site
+  the foreground-start restrictions never refuse.
+- **`settings put secure enabled_accessibility_services ""` is rejected on API 36** with "Bad
+  arguments". Use `settings delete secure enabled_accessibility_services` to reproduce the `adb`
+  disable.
+- **`ACTION_MY_PACKAGE_REPLACED` fires on an ordinary `adb install -r`**, and the update kills the
+  process without an unbind — so every reinstall during testing writes an unclean stop. That is
+  correct, and it means the log from a development session is not a clean sample.
+
+**`specialUse` is the foreground-service type**, which answers the open question this plan carried.
+None of the Android 14+ typed categories describes "watches whether this app's own guard is still
+running": it is not media, location, or data sync. `PROPERTY_SPECIAL_USE_FGS_SUBTYPE` in the
+manifest is the required justification, and Play review is not a factor here — distribution is by
+sideloading and Play is an explicit non-goal.
+
+**The boot receiver writes nothing**, and that is the whole design of it. See step 10 below.
+
+#### Reference documents
+
+- [Foreground services](https://developer.android.com/develop/background-work/services/fgs) — including the five-second `startForeground` deadline
+- [Foreground service types](https://developer.android.com/develop/background-work/services/fgs/service-types) and [`specialUse`](https://developer.android.com/develop/background-work/services/fgs/service-types#special-use)
+- [Background start restrictions](https://developer.android.com/develop/background-work/services/foreground-services#background-start-restrictions) — the exemption list that lets `BOOT_COMPLETED` start one
+- [`POST_NOTIFICATIONS`](https://developer.android.com/develop/ui/views/notifications/notification-permission)
+- [`ContentObserver`](https://developer.android.com/reference/android/database/ContentObserver) and [`Settings.Secure#getUriFor`](https://developer.android.com/reference/android/provider/Settings.Secure#getUriFor(java.lang.String))
+- [`NotificationChannel`](https://developer.android.com/reference/android/app/NotificationChannel) — importance, and why `IMPORTANCE_LOW` is right for an ongoing status
+
+#### Reference documents — step 7
+
 - [`DeviceAdminReceiver`](https://developer.android.com/reference/android/app/admin/DeviceAdminReceiver) — and [`onDisableRequested`](https://developer.android.com/reference/android/app/admin/DeviceAdminReceiver#onDisableRequested(android.content.Context,%20android.content.Intent))
 - [Device administration overview](https://developer.android.com/work/device-admin) — the admin/owner capability split
 - [Device admin deprecation](https://developers.google.com/android/work/device-admin-deprecation) — what is dead and what still works
@@ -597,20 +675,33 @@ scaffolding and will fail at load time if they fall out of sync with the `.so`.
    an app update, but **not** clear-data — reachable from App Info, which this product can guard
    but not prevent. Exporting somewhere that survives uninstall means writing user-readable
    history to shared storage and is a product decision, not a storage one.
-10. Foreground service + restart-on-boot. **A boot receiver must not write a boot marker the
-   rest of the system can trigger** — measured while building step 9 and recorded here because it
-   is not discoverable from the docs: `ACTION_BOOT_COMPLETED` is delivered to this app every time
-   it leaves the force-stopped state, reproducibly, on an emulator minutes into its uptime. A
-   `BOOT` entry was therefore written by the force-stop itself, and `classifyConnect` — which
-   trusted it — read the removal-shaped event back as an ordinary restart. The reboot test is
-   the monotonic clock going backwards and nothing else; a boot receiver may add context to the
-   log but must never be what identifies a boot.
+10. ~~Foreground service + restart-on-boot.~~ **Done** — `policy/GuardStatus.kt` (pure),
+   `GuardStatusService.kt`, and `BootReceiver.kt`; see §8 above for what the service is and is not
+   for. **A boot receiver must not write a boot marker the rest of the system can trigger** —
+   measured while building step 9 and recorded here because it is not discoverable from the docs:
+   `ACTION_BOOT_COMPLETED` is delivered to this app every time it leaves the force-stopped state,
+   reproducibly, on an emulator minutes into its uptime. A `BOOT` entry was therefore written by
+   the force-stop itself, and `classifyConnect` — which trusted it — read the removal-shaped event
+   back as an ordinary restart. The reboot test is the monotonic clock going backwards and nothing
+   else. `BootReceiver` accordingly starts the status service and writes nothing at all.
 
-   **Note the real reason for the service:** an `AccessibilityService`
-   is system-bound and already restarts on boot while it stays enabled, so this neither makes
-   the guard harder to kill nor is required for it to survive a reboot. What it provides is an
-   always-visible status surface, a health check for removal routes we cannot observe, and the
-   FGS host that the last two steps require. It may also reduce the recents-swipe kill in step 6.
+   **`classifyConnect` had to stop reading a single line, and that is the load-bearing change
+   here.** The status service outlives the accessibility service by design — noticing that the
+   guard stopped is its entire job — so it writes *between* sessions. Reading only the last entry
+   would have classified every clean off-and-on as a kill, destroying the one signal step 9 exists
+   to produce, and a small `elapsed` written after a reboot but before the guard binds would have
+   hidden the clock discontinuity behind it. It now takes the trailing `CLASSIFY_TAIL` entries,
+   anchors on the last `sessionBoundary` event, and reads the clock over the window from that
+   boundary to now — which also stops an *older* boot inside the tail from excusing the session
+   that just ended.
+
+   Verified on an android-36 arm64 emulator: an `adb` disable while armed is recorded within the
+   same second (`service_off` then `guard_unprotected`) and the notification says the guard is not
+   running; re-enabling reads `CLEAN_RESTART` **past** that intervening entry; a reboot reads
+   `AFTER_REBOOT` and `BOOT_COMPLETED` restores the service; a force-stop takes the service with it
+   (nothing restarts it, which is what the tamper log is for) and reads `UNCLEAN_STOP` on the next
+   connect; and with nothing armed and the guard disabled the service stops itself and posts
+   nothing.
 11. `VpnService` DNS/SNI filter. Note that without `setAlwaysOnVpnPackage` (owner-only) the VPN
     can be turned off in Settings like anything else — guard that screen the same way.
 12. `MediaProjection` capture once `image-sandbox` lands.
@@ -663,6 +754,15 @@ Each of these cost real time and none is discoverable by reading the API docs.
   `BootReceiver` logging "boot completed" seconds after an `am force-stop`. Anything inferring a
   restart from it will read a force-stop as a reboot, which is backwards: a force-stop is the
   event worth recording and a reboot is the benign one.
+- **A denied `POST_NOTIFICATIONS` fails silently.** The foreground service still runs and
+  `startForeground` still succeeds; the notification is just never posted, which is
+  indistinguishable from the service not starting. `dumpsys notification | grep <package>` showing
+  `importance=NONE` is the only tell.
+- **`settings put secure enabled_accessibility_services ""` is rejected on API 36** ("Bad
+  arguments"). `settings delete secure enabled_accessibility_services` is how to reproduce the
+  `adb` disable.
+- **`adb install -r` is not a neutral update.** It delivers `ACTION_MY_PACKAGE_REPLACED` and kills
+  the process with no unbind, so every reinstall writes an unclean stop into the tamper log.
 - **Force-stopping the app disables its own accessibility service.** `adb shell am force-stop`
   on our package is not a neutral way to restart the UI: the service is dropped from
   `enabled_accessibility_services` and every subsequent guard check silently passes. It reads
@@ -777,5 +877,6 @@ verification process before it is useful, and that is out of scope until the fir
 - **OEM variation in the enable-Accessibility flow** — the Restricted Settings path differs
   across vendors; needs device testing. See [OEM coverage](#oem-coverage--deferred).
 - **Durability of Device Owner provisioning** — strongest hold, but requires a fresh device.
-- **Foreground-service category** — which `foregroundServiceType` Android 14+ will accept for
-  a guard that is neither media nor location.
+- ~~**Foreground-service category**~~ — answered in step 10: `specialUse`, with
+  `PROPERTY_SPECIAL_USE_FGS_SUBTYPE` as the justification. None of the typed categories fits, and
+  Play review is not a factor for a sideloaded app.

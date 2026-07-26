@@ -69,12 +69,18 @@ class TamperLogStore private constructor(context: Context) {
         return append(entry)
     }
 
-    /** The most recent readable entry, or null on an empty or missing log. */
+    /**
+     * The trailing [count] readable entries, oldest first.
+     *
+     * A tail rather than the single last entry because that is what
+     * [TamperLog.classifyConnect] needs: entries are written between
+     * accessibility-service sessions — by the mode, by the admin receiver, and
+     * by the status service that outlives the guard — so the last line is
+     * routinely not the one that ended the previous session.
+     */
     @Synchronized
-    fun lastEntry(): TamperEntry? {
-        load()
-        return lastEntry
-    }
+    fun recentEntries(count: Int = TamperLog.CLASSIFY_TAIL): List<TamperEntry> =
+        TamperLog.readAll(readLines().takeLast(count))
 
     /** Everything readable, oldest first. For the in-app history view. */
     @Synchronized

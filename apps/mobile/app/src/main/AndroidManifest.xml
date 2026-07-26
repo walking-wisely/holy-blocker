@@ -8,6 +8,32 @@
     -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
 
+    <!--
+      The status service. specialUse because none of the typed categories
+      describes it: it is neither media, location, nor data sync, and the
+      Android 14+ type list has no entry for "watches whether this app's own
+      guard is still running". The subtype property below is the required
+      justification. Play review is not a factor — distribution is by sideloading
+      and Play is an explicit non-goal.
+      https://developer.android.com/develop/background-work/services/fgs/service-types
+    -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+
+    <!--
+      Android 13+ runtime permission. Without it the foreground service still
+      runs but its notification is not shown, which for a service whose entire
+      output is that notification is indistinguishable from it not running.
+      MainActivity asks.
+    -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!--
+      Only to restore the status service; the accessibility service is rebound by
+      the system without it. See BootReceiver for why nothing is recorded here.
+    -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
     <application
         android:allowBackup="false"
         android:label="@string/app_name"
@@ -38,6 +64,40 @@
                 android:name="android.accessibilityservice"
                 android:resource="@xml/accessibility_service_config" />
         </service>
+
+        <!--
+          The always-visible status surface, and the process that outlives the
+          guard so a disable it cannot report gets recorded anyway. Not exported:
+          nothing outside the app has any business starting it.
+
+          It is also the FGS host the VpnService and MediaProjection steps need
+          (plan.md §6) — MediaProjection in particular requires a running
+          foreground service before getMediaProjection(), and adding a second
+          type here later is a manifest change rather than a new service.
+        -->
+        <service
+            android:name=".GuardStatusService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Continuously reports whether the on-device screen guard is running, and records locally when it stops while the user has protection armed." />
+        </service>
+
+        <!--
+          Restores the status service after a restart or an app update. Both
+          actions are background-start exemptions, which is what makes the
+          foreground start from here legal on Android 12+. Exported because the
+          system is what delivers these.
+        -->
+        <receiver
+            android:name=".BootReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
 
         <!--
           Device admin. Active admin status is what makes the package manager

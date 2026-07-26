@@ -85,6 +85,13 @@ class ScreenGuardService : AccessibilityService() {
             Log.w(TAG, "no settings profile for ${Build.MANUFACTURER}; screen guard inactive")
         }
 
+        // The status surface, and the process that will still be alive to notice
+        // if this one is switched off. Started from here as well as from the
+        // activity and the boot receiver because this is the one entry point that
+        // fires on every path that turns the guard on, including the reboot the
+        // system rebinds us on.
+        GuardStatusService.start(this)
+
         Log.i(TAG, "screen guard connected (settings profile=${profile?.name ?: "none"})")
     }
 
@@ -98,7 +105,7 @@ class ScreenGuardService : AccessibilityService() {
      * able to reproduce, let alone prevent.
      */
     private fun recordConnect(log: TamperLogStore) {
-        val start = TamperLog.classifyConnect(log.lastEntry(), SystemClock.elapsedRealtime())
+        val start = TamperLog.classifyConnect(log.recentEntries(), SystemClock.elapsedRealtime())
         start.notableEvent?.let {
             Log.w(TAG, "previous session ended without unbinding")
             log.record(it)

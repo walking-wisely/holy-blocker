@@ -137,12 +137,18 @@ The realistic detection surface for all three is a still-alive process noticing 
 (`AccessibilityServiceStatus` already parses the setting) plus `onDisableRequested`, writing to a
 tamper log whose entries survive the app being disabled.
 
-**The log half of that is built** (plan.md step 9). `onDisableRequested` is recorded, and a
-session that ended without an unbind is classified as an unclean stop at the next connect —
-verified against a force-stop, which is the shape of both the process kill and the OEM recents
-swipe. The *still-alive process* half is not: it needs the foreground service from step 10, and
-without it an `adb` disable is only visible after the guard is enabled again. Safe mode remains
-invisible in both halves — nothing of ours runs there to notice or to record.
+**Both halves are now built.** The log (plan.md step 9) records `onDisableRequested`, and a session
+that ended without an unbind is classified as an unclean stop at the next connect — verified
+against a force-stop, which is the shape of both the process kill and the OEM recents swipe. The
+*still-alive process* half is `GuardStatusService` (step 10): it polls the same secure setting,
+watches it through a `ContentObserver`, and writes `guard_unprotected` the moment protection is
+armed with nothing enforcing it. An `adb` disable was recorded inside the same second on an
+android-36 emulator, rather than at whatever later point the guard happened to be re-enabled.
+
+Two limits worth stating plainly. A **guest session** is still only visible as an absence — the
+service runs per user, so nothing of ours is alive in the other one to observe anything. **Safe
+mode** remains invisible in both halves for the same reason: nothing of ours runs there to notice
+or to record.
 
 ## Checked and found not to be holes
 

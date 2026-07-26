@@ -192,27 +192,61 @@ class TamperLogTest {
 
     @Test
     fun `a first run is recognised`() {
-        assertEquals(SessionStart.FIRST_RUN, TamperLog.classifyConnect(last = null, nowElapsed = 5_000))
+        assertEquals(SessionStart.FIRST_RUN, TamperLog.classifyConnect(emptyList(), nowElapsed = 5_000))
+    }
+
+    @Test
+    fun `a log with no session of its own is a first run`() {
+        // The status service and the mode both write before the accessibility
+        // service has ever been enabled. Entries exist, but no session does.
+        val recent = listOf(
+            entry(elapsed = 1_000, event = TamperEvent.PROTECTION_ARMED),
+            entry(elapsed = 2_000, event = TamperEvent.ADMIN_ENABLED),
+        )
+
+        assertEquals(SessionStart.FIRST_RUN, TamperLog.classifyConnect(recent, nowElapsed = 5_000))
     }
 
     @Test
     fun `a clean stop and restart is unremarkable`() {
         // Turning the service off in Settings unbinds it, which is the supported
         // way to stop the guard and must not be recorded as tampering.
-        val last = entry(elapsed = 60_000, event = TamperEvent.SERVICE_DISCONNECTED)
+        val recent = listOf(
+            entry(elapsed = 10_000, event = TamperEvent.SERVICE_CONNECTED),
+            entry(elapsed = 60_000, event = TamperEvent.SERVICE_DISCONNECTED),
+        )
 
-        assertEquals(SessionStart.CLEAN_RESTART, TamperLog.classifyConnect(last, nowElapsed = 70_000))
+        assertEquals(SessionStart.CLEAN_RESTART, TamperLog.classifyConnect(recent, nowElapsed = 70_000))
     }
 
     @Test
     fun `a stop with no unbind is an unclean stop`() {
         // The signal this whole classification exists for: force-stop, a process
         // kill, or a recents swipe on an OEM that kills the service. No unbind
-        // arrives, so the previous session's last entry is whatever it happened
-        // to be doing.
-        val last = entry(elapsed = 60_000, event = TamperEvent.REMOVAL_SCREEN_BLOCKED, detail = "APP_INFO")
+        // arrives, so the session's last entry is whatever it happened to be
+        // doing.
+        val recent = listOf(
+            entry(elapsed = 10_000, event = TamperEvent.SERVICE_CONNECTED),
+            entry(elapsed = 60_000, event = TamperEvent.REMOVAL_SCREEN_BLOCKED, detail = "APP_INFO"),
+        )
 
-        assertEquals(SessionStart.UNCLEAN_STOP, TamperLog.classifyConnect(last, nowElapsed = 70_000))
+        assertEquals(SessionStart.UNCLEAN_STOP, TamperLog.classifyConnect(recent, nowElapsed = 70_000))
+    }
+
+    @Test
+    fun `entries written after a clean unbind do not make it look unclean`() {
+        // The regression that made this take a list. The status service outlives
+        // the accessibility service by design — noticing that the guard stopped
+        // is its job — so it keeps writing after the unbind. Reading only the
+        // last line would classify every clean off-and-on as a kill, and the one
+        // observation that catches a real kill would be worth nothing.
+        val recent = listOf(
+            entry(elapsed = 10_000, event = TamperEvent.SERVICE_CONNECTED),
+            entry(elapsed = 60_000, event = TamperEvent.SERVICE_DISCONNECTED),
+            entry(elapsed = 61_000, event = TamperEvent.GUARD_UNPROTECTED),
+        )
+
+        assertEquals(SessionStart.CLEAN_RESTART, TamperLog.classifyConnect(recent, nowElapsed = 70_000))
     }
 
     @Test
@@ -220,9 +254,40 @@ class TamperLogTest {
         // The clock reset is the evidence. Shutting the phone down never delivers
         // an unbind either, so without this every reboot would be logged as a
         // removal attempt and the signal would be worthless.
-        val last = entry(elapsed = 900_000, event = TamperEvent.REMOVAL_SCREEN_BLOCKED)
+        val recent = listOf(
+            entry(elapsed = 500_000, event = TamperEvent.SERVICE_CONNECTED),
+            entry(elapsed = 900_000, event = TamperEvent.REMOVAL_SCREEN_BLOCKED),
+        )
 
-        assertEquals(SessionStart.AFTER_REBOOT, TamperLog.classifyConnect(last, nowElapsed = 8_000))
+        assertEquals(SessionStart.AFTER_REBOOT, TamperLog.classifyConnect(recent, nowElapsed = 8_000))
+    }
+
+    @Test
+    fun `a reboot is still seen through entries written before the service connects`() {
+        // The boot receiver starts the status service, which checks and can write
+        // before the accessibility service is bound. Those entries carry a small
+        // elapsed value, so the newest line no longer post-dates the connect —
+        // and comparing against it alone would hide every reboot behind them.
+        val recent = listOf(
+            entry(elapsed = 900_000, event = TamperEvent.SERVICE_CONNECTED),
+            entry(elapsed = 4_000, event = TamperEvent.GUARD_UNPROTECTED),
+        )
+
+        assertEquals(SessionStart.AFTER_REBOOT, TamperLog.classifyConnect(recent, nowElapsed = 8_000))
+    }
+
+    @Test
+    fun `an earlier boot in the tail is not read as a fresh reboot`() {
+        // The tail spans more than one boot once the log has any history. Only a
+        // clock reset *after* the last session ended is a reboot; an older one is
+        // already accounted for.
+        val recent = listOf(
+            entry(elapsed = 900_000, event = TamperEvent.SERVICE_CONNECTED),
+            entry(elapsed = 5_000, event = TamperEvent.SERVICE_CONNECTED),
+            entry(elapsed = 60_000, event = TamperEvent.SERVICE_DISCONNECTED),
+        )
+
+        assertEquals(SessionStart.CLEAN_RESTART, TamperLog.classifyConnect(recent, nowElapsed = 70_000))
     }
 
     @Test
@@ -234,12 +299,19 @@ class TamperLogTest {
         // A force-stop wrote a boot marker and then read itself back as benign,
         // which is the failure this whole classification exists to prevent. No
         // entry the app writes may stand in for the clock going backwards.
-        val forceStopped = entry(elapsed = 60_000, event = TamperEvent.SERVICE_CONNECTED)
+        val forceStopped = listOf(entry(elapsed = 60_000, event = TamperEvent.SERVICE_CONNECTED))
 
         assertEquals(
             SessionStart.UNCLEAN_STOP,
             TamperLog.classifyConnect(forceStopped, nowElapsed = 70_000),
         )
+    }
+
+    @Test
+    fun `the classification tail covers more than a single session`() {
+        // A tail that could hold only one session would make the reboot check
+        // blind exactly when the log is busiest.
+        assertTrue(TamperLog.CLASSIFY_TAIL >= 16)
     }
 
     @Test
