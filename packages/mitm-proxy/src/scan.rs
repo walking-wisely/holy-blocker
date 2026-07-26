@@ -1,3 +1,6 @@
+use image_sandbox::{
+    DEFAULT_EXPLICIT_THRESHOLD, ImageClassifier, ImageSandbox, ImageVerdict, SandboxConfig,
+};
 use text_policy::{
     evaluator::Thresholds,
     lexicon::{Category, Dictionary, DictionaryTerm, LexiconBuilder, MatchMode, Severity},
@@ -74,9 +77,45 @@ pub fn scan_body(engine: &PolicyEngine, html: &str) -> ScanResult {
     verdict_to_result(verdict.action, verdict.score)
 }
 
-/// Stub — returns `Allow` for every image until `packages/image-sandbox` is ready.
-pub fn scan_image(_bytes: &[u8]) -> ScanResult {
-    ScanResult::Allow
+/// Classify an intercepted image body.
+///
+/// The score is `softmax(logits)[explicit]` from the MobileNetV3 classifier;
+/// `image-sandbox` owns the threshold comparison. Scores are floats in [0, 1]
+/// while `ScanResult::Block` carries an integer, so it is scaled to 0..100 —
+/// the field is a diagnostic for logs, not an input to any decision.
+///
+/// A sandbox with no model loaded allows everything, which is what runs when
+/// `--image-model` is not passed.
+pub fn scan_image(sandbox: &ImageSandbox, bytes: &[u8]) -> ScanResult {
+    match sandbox.check(bytes) {
+        ImageVerdict::Block { score } => ScanResult::Block { score: (score * 100.0) as u32 },
+        ImageVerdict::Allow => ScanResult::Allow,
+    }
+}
+
+/// Load the image classifier, or fall back to a sandbox that allows everything.
+///
+/// A missing or unreadable model is reported and then tolerated rather than
+/// being fatal: the proxy's other phases still work, and refusing to start
+/// would take out URL and body filtering too.
+pub fn build_image_sandbox(model_path: Option<&std::path::Path>, threshold: f32) -> ImageSandbox {
+    let Some(path) = model_path else {
+        return ImageSandbox::disabled();
+    };
+    match ImageClassifier::load(path, image_sandbox::preprocess::INPUT_SIZE) {
+        Ok(classifier) => {
+            tracing::info!(
+                "image classifier loaded from {} (threshold {threshold})",
+                path.display()
+            );
+            let config = SandboxConfig { explicit_threshold: threshold, ..SandboxConfig::default() };
+            ImageSandbox::new(classifier, config)
+        }
+        Err(e) => {
+            tracing::warn!("image classifier unavailable ({e}); images will not be scanned");
+            ImageSandbox::disabled()
+        }
+    }
 }
 
 #[cfg(test)]
@@ -113,12 +152,31 @@ mod tests {
     }
 
     #[test]
-    fn scan_image_allows_jpeg_bytes() {
-        assert!(matches!(scan_image(&[0xFF, 0xD8, 0xFF]), ScanResult::Allow));
+    fn scan_image_allows_truncated_jpeg_bytes() {
+        let sandbox = build_image_sandbox(None, DEFAULT_EXPLICIT_THRESHOLD);
+        assert!(matches!(scan_image(&sandbox, &[0xFF, 0xD8, 0xFF]), ScanResult::Allow));
     }
 
     #[test]
     fn scan_image_allows_empty_input() {
-        assert!(matches!(scan_image(&[]), ScanResult::Allow));
+        let sandbox = build_image_sandbox(None, DEFAULT_EXPLICIT_THRESHOLD);
+        assert!(matches!(scan_image(&sandbox, &[]), ScanResult::Allow));
+    }
+
+    #[test]
+    fn without_a_model_path_images_are_not_scanned() {
+        // The no-`--image-model` case must behave exactly as the proxy did
+        // before this phase existed, so an operator who does not configure a
+        // model sees no change at all.
+        let sandbox = build_image_sandbox(None, DEFAULT_EXPLICIT_THRESHOLD);
+        assert!(matches!(scan_image(&sandbox, b"anything at all"), ScanResult::Allow));
+    }
+
+    #[test]
+    fn a_missing_model_file_degrades_to_allow_rather_than_panicking() {
+        // A wrong path is an operator mistake. Taking down URL and body
+        // filtering as well would turn it into an outage.
+        let sandbox = build_image_sandbox(Some(std::path::Path::new("/nonexistent/model.onnx")), DEFAULT_EXPLICIT_THRESHOLD);
+        assert!(matches!(scan_image(&sandbox, &[0xFF, 0xD8, 0xFF]), ScanResult::Allow));
     }
 }
