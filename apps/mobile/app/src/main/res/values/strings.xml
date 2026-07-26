@@ -30,14 +30,33 @@
     <string name="restricted_settings_hint">If the toggle is greyed out, open App info, tap the three-dot menu, and choose “Allow restricted settings”. Android requires this for apps installed outside the Play Store.</string>
 
     <!--
-      The exit path. Deliberately plain and always reachable: a tool that cannot
-      be switched off is not an accountability tool, and this is also the only
-      in-app recovery if screen matching misfires on an untested device.
+      The protection mode and its exit path. Deliberately plain and always
+      reachable: a tool that cannot be switched off is not an accountability
+      tool, and this is also the only in-app recovery if screen matching
+      misfires on an untested device.
+
+      The copy states what the tool is doing and what happens next. It never
+      congratulates the user for arming it or questions them for disarming it —
+      see docs/decisions/formation-model.md.
     -->
-    <string name="action_request_release">Request access to settings</string>
-    <string name="action_cancel_release">Cancel request</string>
-    <string name="status_release_pending">Settings unlock in %1$d min. You can cancel any time.</string>
-    <string name="status_release_open">Settings are open for %1$d more seconds.</string>
+    <string name="action_arm">Turn on protection</string>
+    <string name="action_request_disarm">Turn off protection</string>
+    <string name="action_cancel_disarm">Cancel</string>
+    <string name="action_confirm_disarm">Turn off protection now</string>
+    <string name="status_protection_off">Protection is off. Settings and uninstall are not blocked.</string>
+    <string name="status_protection_armed">Protection is on. The screens that remove this app are blocked.</string>
+    <string name="status_disarm_pending">Protection turns off in %1$d min. It stays on until then.</string>
+    <string name="status_disarm_ready">You can turn protection off now. This offer expires in %1$d min.</string>
+    <!--
+      A quantity string because the last minute of the window says "1 more
+      minute", and "1 more minutes" on the one screen whose job is to be
+      trusted reads as carelessness.
+    -->
+    <plurals name="status_disarmed">
+        <item quantity="one">Protection is off for %1$d more minute, then turns itself back on.</item>
+        <item quantity="other">Protection is off for %1$d more minutes, then turns itself back on.</item>
+    </plurals>
+    <string name="hint_disarm_to_remove">To uninstall Holy Blocker: turn off protection here, then turn off uninstall protection in Settings, then uninstall.</string>
 
     <!--
       Shown when the device has no verified settings-screen identifiers. Failing

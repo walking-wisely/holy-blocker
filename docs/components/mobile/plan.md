@@ -38,10 +38,14 @@ The MVP builds that Layer 2 text path, and nothing else.
 - `scripts/build-ffi.sh` — Kotlin bindings + per-ABI `.so` — **Done.**
 - `scripts/smoke-test.sh` — end-to-end device check — **Done** (passes on android-36 arm64).
 - `policy/SettingsGuard.kt` — blocks the screens that would remove the guard — **Done** for the
-  AOSP profile, verified on an android-36 arm64 emulator, device-admin identifiers included.
-  Xiaomi and Samsung have no profile at all.
-- `policy/ReleaseSchedule.kt` — request → cooldown → window timing, monotonic — **Done.**
-- `GuardSuspension.kt` — storage edge for the exit path — **Done.**
+  AOSP profile, verified on an android-36 arm64 emulator, device-admin identifiers included —
+  the activation prompt, and the list, which needed `isAccessibilityTool` before it could be seen
+  at all. Xiaomi and Samsung have no profile at all.
+- `policy/RescanSchedule.kt` — when to take a second look at a screen that did not match —
+  **Done.**
+- `policy/ProtectionSchedule.kt` — the protection mode: armed, disarm cooldown, confirm, window;
+  monotonic throughout — **Done.**
+- `ProtectionStore.kt` — storage edge for the mode — **Done.**
 - `VpnService` DNS/SNI filter — not yet created.
 - `MediaProjection` capture + image path — not yet created.
 - `admin/HolyBlockerAdminReceiver.kt` — device admin, so uninstall is refused until it is
@@ -286,42 +290,109 @@ off-ramp. Keep it that way deliberately:
 
 A tool that cannot be removed is not an accountability tool.
 
-#### The exit path — request, then release
+#### Protection is a mode the user turns on
 
-An in-app exit is required rather than optional, and it ships *with* `SettingsGuard` rather than
-after it. Until the per-OEM identifiers are verified on real hardware, a matcher that is wrong on
-an untested build would otherwise leave the user locked out of their own settings with `adb` or
-safe mode as the only recovery. It is the safety net for our own bugs before it is anything else.
+**The guard blocks because the user armed it, not because the service is running.** This is the
+governing rule of the whole module, and it is what separates the product from the stalkerware
+pattern the techniques resemble: nothing about a user's own phone is obstructed until they ask for
+it, and asking to stop is a supported operation rather than an attack to be defeated. The intended
+way to uninstall this app is through the front door — disarm, then remove it.
 
-**It must be a delayed release, not a switch.** The first version released the guard the instant
-the button was tapped, which made the exit path the single fastest way *through* the guard: open
-the app, tap release, tap the "Open accessibility settings" button sitting directly beneath it,
-toggle off. Four taps, no research — quicker than every bypass the guard was built to close, and
-shipped inside the product. Its own comment claimed "an impulse does not survive a wait" while
-implementing no wait at all.
+`ProtectionSchedule` (pure, unit tested) holds the whole state machine; `ProtectionStore` is the
+`SharedPreferences` edge; `SettingsGuard.setGuardActive` is the one input the guard takes from it.
+The phases:
 
-So the shape is:
+| Phase | Guard | How it is left |
+|---|---|---|
+| `OFF` | idle | the user arms it — one tap |
+| `ARMED` | blocking | the user requests a disarm |
+| `DISARM_PENDING` | **still blocking** | 15-minute cooldown elapses, or the user cancels |
+| `DISARM_READY` | **still blocking** | the user confirms, or the offer expires after 5 minutes |
+| `DISARMED` | idle | the 10-minute window runs out and it re-arms itself |
 
-- **Request → cooldown → short window.** `ReleaseSchedule` (pure, unit tested) holds the timing:
-  15 minutes before a request opens, then 60 seconds of access. An unused request expires rather
-  than staying armed, or one cooldown would buy unlimited later access.
-- **The cooldown is the mechanism**, not a detail. A release arriving sooner than the urge fades
-  is decoration. There is a test asserting the constant stays above ten minutes.
+Each of those is load-bearing:
+
+- **Arming is one tap; disarming costs the cooldown.** Protecting yourself must never be the slow
+  direction.
+- **The cooldown is the mechanism**, not a detail. An urge does not survive fifteen minutes; a
+  decision does. A test asserts the constant stays above ten minutes.
+- **Reaching the end of the cooldown does not disarm anything.** The user has to come back and
+  confirm, otherwise a request made and forgotten spends its window in a pocket and the cooldown
+  bought nothing. An unconfirmed request expires, or one cooldown paid once would buy a disarm at
+  any point in the future.
+- **A disarm is a window, not a switch.** Ten minutes: long enough to deactivate device admin,
+  open App info and uninstall without racing a clock, short enough that a user who gets distracted
+  ends up protected again. The re-arm needs no action, which is the point.
 - **Timing is monotonic.** `SystemClock.elapsedRealtime()` only — never `currentTimeMillis()`.
   The wall clock is user-settable and Settings' date screen is not a guarded surface, so any
-  wall-clock dependence would reduce the cooldown to "set the date forward an hour". A stored
-  value greater than now means the device rebooted, and the request is voided rather than
-  guessed at, which keeps the wall clock out of the decision entirely.
-- **What is stored is a request, not a grant.** Clearing app data therefore removes a pending
-  request and makes the guard stricter, never weaker — worth preserving deliberately, since
-  clear-data lives on a screen we can only guard, not prevent.
-- **The route to the toggle is hidden while the guard runs.** "Open accessibility settings" is
-  shown only before the service is enabled or during an open window. Offering it beside the
-  release button is what turned a considered exit into a four-tap bypass.
+  wall-clock dependence would reduce the cooldown to "set the date forward an hour". Both stored
+  values are *start* timestamps rather than deadlines, so a stored value in the future means the
+  device rebooted; both such cases resolve to `ARMED`. That direction matters for the disarm
+  window in particular — a stored deadline read against a clock that just reset to zero would look
+  like a disarm with hours left on it, making a reboot a way to stay unguarded indefinitely.
+- **What is stored is a request, not a grant.** Clearing app data removes a pending request and
+  leaves the mode armed, so it makes the guard stricter, never weaker — worth preserving
+  deliberately, since clear-data lives on a screen we can only guard, not prevent.
+- **The route to the toggle is hidden while the guard is active.** "Open accessibility settings"
+  appears only when the service is off or protection is not blocking. An earlier version of this
+  screen released the guard on the tap *and* offered that button directly beneath it: open the
+  app, tap release, tap through, toggle off. Four taps, no research — quicker than every bypass
+  the guard was built to close, and shipped inside the product. Its own comment claimed "an
+  impulse does not survive a wait" while implementing no wait at all.
+- **One button, whose meaning follows the phase**, so there is never a live "turn it off now"
+  control sitting beside an armed guard. Cancel is a separate button for the same reason.
 
-A partner-held handoff — where releasing requires someone else — is the stronger variant and the
+The mode gates `SettingsGuard` only. Content scanning and the cover keep running while the service
+is enabled — that is the product's actual job, and turning *it* off is what disabling the
+accessibility service does.
+
+**The stored timestamps outlive their windows, and that bit the first version.** A confirmed
+disarm was checked ahead of a pending request unconditionally, so once its window had expired the
+spent timestamp swallowed every later request: the phase fell straight back to `ARMED`, the
+countdown never appeared, and the app could be disarmed exactly once per install. That is the
+worst failure available to this module — the mode is the only supported way to remove the app, so
+a second attempt would have met a tool that genuinely could not be uninstalled. A live disarm
+outranks a request; a spent one falls through. Found by running the cycle twice on an emulator,
+not by reading the code, which is the argument for exercising the whole cycle rather than each
+phase in isolation.
+
+**Verifying it on a device: shorten the constants, do not wait out the clock.** A run against the
+real values takes 15 minutes to reach the confirm step and another 10 to see the re-arm, which is
+slow enough that it does not get repeated — and this is a bug that only appears on the *second*
+cycle. Patch `COOLDOWN_MILLIS`/`READY_WINDOW_MILLIS`/`DISARM_WINDOW_MILLIS` down to seconds, run
+the full cycle twice, then restore them; the floor assertions in `ProtectionScheduleTest` fail
+while they are patched, which is what stops a shortened constant reaching a commit. Editing
+`SharedPreferences` directly is *not* an alternative — the service holds them in memory, and
+force-stopping the app to reload them disables its own accessibility service.
+
+A partner-held handoff — where disarming requires someone else — is the stronger variant and the
 natural successor. **Out of scope for now**; it needs the accountability channel that does not
-yet exist, and the delayed release is what makes the guard shippable without it.
+yet exist, and the delayed disarm is what makes the guard shippable without it.
+
+#### Some nodes are withheld from the service entirely
+
+The screens this guard exists to watch are the same ones Android hardens against accessibility
+abuse, and one of those defences applies to us. `View#setAccessibilityDataSensitive` (Android 14)
+marks a node as sensitive, and the framework then withholds it from every service whose
+`AccessibilityServiceInfo.isAccessibilityTool()` is false. AOSP Settings marks the **device-admin
+list rows** this way.
+
+The failure mode is silent and looks like nothing at all: the tree arrives with the screen's
+chrome and an empty `recycler_view`, the harvest yields no text, `mentionsSelf` cannot fire, and
+the screen gating uninstall is simply not guarded. Nothing errors, and nothing in the node tree
+says a node was removed — a filtered child does not appear in `childCount`, so the subtree reads
+as genuinely absent.
+
+`android:isAccessibilityTool="true"` in `accessibility_service_config.xml` is what restores it,
+and it is therefore load-bearing rather than a label. Two consequences worth keeping in view:
+
+- **It changes how Android presents the service**, and it is a claim about what the service is.
+  This product is an accessibility-service-based tool that the user installs on their own device
+  for themselves; the declaration is not a workaround for a permission that was withheld from us.
+  Distribution is by sideloading, so no store review turns on it either way.
+- **Any screen can be marked sensitive**, on any build. A thin harvest on an OEM build is now a
+  known shape rather than a mystery, and `ScreenGuardService.logEmptyHarvest` is kept for exactly
+  that. See [backlog.md](backlog.md#closed-1-the-empty-harvest) for the measurements.
 
 #### Identifying the settings screen
 
@@ -437,25 +508,28 @@ scaffolding and will fail at load time if they fall out of sync with the `.so`.
    `scripts/build-ffi.sh` builds all three ABIs; `scripts/smoke-test.sh` passes on an
    android-36 arm64 emulator.
 5. ~~`SettingsGuard` — back out of the Accessibility settings and our own App Info screens (§7),
-   with unrecognised-device reporting, bounded back-action, and the timed in-app disable.~~
+   with unrecognised-device reporting, bounded back-action, and the in-app disable.~~
    **Done** — AOSP profile verified on an android-36 arm64 emulator: the accessibility list and
-   our App Info are blocked consistently, ten unrelated settings screens are not, and the timed
-   disable both releases the guard and resumes when it expires. Device admin identifiers were
-   confirmed in step 6, once a receiver existed to open the screen with. Xiaomi profile still to
-   be added.
+   our App Info are blocked consistently, ten unrelated settings screens are not. Device admin
+   identifiers were confirmed in step 6, once a receiver existed to open the screen with. Xiaomi
+   profile still to be added. The disable path was later reshaped into the protection mode (§7):
+   the guard blocks only while the user has armed it, and disarming is the timed operation.
 6. ~~Device Admin — `DeviceAdminReceiver` for uninstall friction, plus an `onDisableRequested`
    warning. Plain admin only; no owner-only calls. Also the only way to verify the
    `DeviceAdminAdd` identifier, which cannot be reached until a receiver exists.~~ **Done** —
    uninstall refused (`DELETE_FAILED_DEVICE_POLICY_MANAGER`) on an android-36 emulator. The
    `DeviceAdminAdd` identifier is confirmed, and the screen turned out to need resource-id
    matching rather than the class; see §7.
-7. **The empty harvest** ([backlog.md](backlog.md) item 1b) — the catch-all cannot fire on a tree
-   with no text in it, which currently leaves the device admin list unguarded and silently
-   weakens `mentionsSelf` on *any* screen that harvests empty. Evidence first: the
-   `empty harvest` diagnostic in `ScreenGuardService` discriminates the causes, and the leading
-   one is `flagIncludeNotImportantViews` being unset rather than anything to do with windows.
-   Scoped deliberately to exclude split screen — an earlier pass treated the two as one bug on
-   the strength of a stale backlog line, and they are not related.
+7. ~~**The empty harvest** — the catch-all cannot fire on a tree with no text in it, which left
+   the device admin list unguarded and silently weakened `mentionsSelf` on *any* screen that
+   harvests empty.~~ **Done** — the rows are marked `accessibilityDataSensitive` and were being
+   withheld from a service that does not declare `isAccessibilityTool`; declaring it is the whole
+   fix, and the device-admin list is now backed out on an android-36 emulator. The leading
+   candidate in the backlog (`flagIncludeNotImportantViews`) was wrong and is deliberately still
+   unset. Two defects found alongside it are also fixed: an unwatched-package event was treated
+   as the user leaving, cancelling the re-look budget, and the now-visible list needed the same
+   admin-inactive exemption as the prompt. See [backlog.md](backlog.md#closed-1-the-empty-harvest)
+   for the full evidence and what was ruled out.
 8. Split-screen window resolution, then recents (§7 and [backlog.md](backlog.md) item 2) — the
    bypasses that go around step 5 rather than defeating it. Ranked after step 7 because it needs
    deliberate user intent, while the empty harvest needs none. Note `GLOBAL_ACTION_BACK` is
@@ -475,7 +549,8 @@ scaffolding and will fail at load time if they fall out of sync with the `.so`.
 #### Reference documents — steps 7 and 8
 
 - [`AccessibilityServiceInfo`](https://developer.android.com/reference/android/accessibilityservice/AccessibilityServiceInfo) — the `accessibilityFlags` values, `FLAG_INCLUDE_NOT_IMPORTANT_VIEWS` and `FLAG_RETRIEVE_INTERACTIVE_WINDOWS` among them
-- [`FLAG_INCLUDE_NOT_IMPORTANT_VIEWS`](https://developer.android.com/reference/android/accessibilityservice/AccessibilityServiceInfo#FLAG_INCLUDE_NOT_IMPORTANT_VIEWS) — the step 7 candidate; read alongside [`importantForAccessibility`](https://developer.android.com/reference/android/view/View#attr_android:importantForAccessibility), which is what it overrides
+- [`AccessibilityServiceInfo#isAccessibilityTool()`](https://developer.android.com/reference/android/accessibilityservice/AccessibilityServiceInfo#isAccessibilityTool()) and the [`android:isAccessibilityTool`](https://developer.android.com/reference/android/R.attr#isAccessibilityTool) attribute — what step 7 turned on, and read alongside [`View#setAccessibilityDataSensitive`](https://developer.android.com/reference/android/view/View#setAccessibilityDataSensitive(int)) and [`AccessibilityNodeInfo#isAccessibilityDataSensitive()`](https://developer.android.com/reference/android/view/accessibility/AccessibilityNodeInfo#isAccessibilityDataSensitive()), which are the filtering it exempts the service from
+- [`FLAG_INCLUDE_NOT_IMPORTANT_VIEWS`](https://developer.android.com/reference/android/accessibilityservice/AccessibilityServiceInfo#FLAG_INCLUDE_NOT_IMPORTANT_VIEWS) — the step 7 candidate that turned out **not** to be the cause; read alongside [`importantForAccessibility`](https://developer.android.com/reference/android/view/View#attr_android:importantForAccessibility), which is what it overrides
 - [`AccessibilityService.getWindows()`](https://developer.android.com/reference/android/accessibilityservice/AccessibilityService#getWindows()) and [`AccessibilityWindowInfo`](https://developer.android.com/reference/android/view/accessibility/AccessibilityWindowInfo) — window enumeration for step 8, including `isActive`/`isFocused`
 - [`GLOBAL_ACTION_BACK`](https://developer.android.com/reference/android/accessibilityservice/AccessibilityService#GLOBAL_ACTION_BACK) — note it takes no window argument, which is the hazard recorded in step 8
 - [`AccessibilityNodeInfo`](https://developer.android.com/reference/android/view/accessibility/AccessibilityNodeInfo) — `getChild`, `refresh`, and what each does and does not re-fetch
@@ -494,11 +569,30 @@ Each of these cost real time and none is discoverable by reading the API docs.
   `android.widget.FrameLayout`. Class-only matching leaves the screen unguarded some of the time,
   which is why the app-label catch-all exists and is load-bearing.
 - **Resource ids are useless on AOSP Settings.** Every sub-page exposes the same chrome.
+- **A node can be withheld from the service and leave no trace.** `accessibilityDataSensitive`
+  nodes are not reported to a service without `isAccessibilityTool`, and they do not appear in
+  `childCount` either, so the subtree looks genuinely absent rather than filtered. This cost the
+  most time of anything here: it presents as a rendering-lag bug, and no amount of waiting,
+  `refresh()`, or `clearCache()` moves it.
+- **A `uiautomator` dump is not evidence of what the service can see.** `UiAutomation` sets its
+  own service info, `isAccessibilityTool` among the differences. "The dump shows the row" is
+  compatible with the row being permanently invisible to us, and an investigation built on that
+  comparison was chasing the wrong thing for a long time.
+- **An event from another package is not the user leaving.** SystemUI fires content-changed events
+  for the status bar over whatever is in front; treating one as a departure cancelled a guarded
+  screen's whole re-look budget ~200 ms after it opened.
+- **`adb shell am start` needs `\$` escaped inside a quoted argument.** The *device* shell expands
+  it, so `Settings$DeviceAdminSettingsActivity` silently becomes `.Settings` and launches the
+  Settings homepage — which reads exactly like a guard that failed to fire on the right screen.
 - **A screen fires several window-state events while rendering** — three in ~800 ms. One
   `GLOBAL_ACTION_BACK` per event pops several stack levels and burns the whole loop budget.
 - **Re-fire suppression must know when the user left**, or it becomes the bypass: back out, tap
   straight back in inside the window, and the guard idles. Worse, `evaluate` only runs on events,
   so a static screen that has finished rendering never wakes it again.
+- **Force-stopping the app disables its own accessibility service.** `adb shell am force-stop`
+  on our package is not a neutral way to restart the UI: the service is dropped from
+  `enabled_accessibility_services` and every subsequent guard check silently passes. It reads
+  exactly like the emulator clobbering the setting, which is a real and separate problem.
 - **The exit path is the most dangerous code here.** An instant release beside an "open
   accessibility settings" button was a four-tap bypass shipped inside the product — faster than
   anything it was built to stop.
@@ -509,6 +603,12 @@ Each of these cost real time and none is discoverable by reading the API docs.
   a guard failure. Remove tasks via `am stack list` + `am task remove` between cases.
   `--activity-new-task` is not a valid `am` option. And adb round-trips are slower than a
   sub-second suppression window, so some timing bugs cannot be reproduced through adb at all.
+  Two more, both hit while verifying the protection mode: `am start` on an activity that is
+  already top-most delivers the intent without resuming it, so `onResume` never runs and a
+  scripted check reads stale UI (press HOME first); and tapping a control by its visible text can
+  hit the *status line* instead, because the copy above the button contains the button's own
+  wording — a confirm that silently taps a `TextView` looks exactly like a confirm that does not
+  work. Match on `class="android.widget.Button"`, not on text alone.
 - **The NDK may not be under `$ANDROID_HOME`** — see the multi-root trap below.
 
 ## Verification

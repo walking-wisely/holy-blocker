@@ -23,12 +23,16 @@ class SettingsGuardTest {
         // Active by default so the existing cases read as "steady state": the
         // admin is on and the screen that would remove it is guarded.
         deviceAdminActive: Boolean = true,
+        // Likewise armed by default. The guard itself starts unarmed — see
+        // `starts unarmed` — but every matching case below is about what it does
+        // once the user has turned protection on.
+        armed: Boolean = true,
     ) = SettingsGuard(
         profile = profile,
         selfPackage = self,
         selfLabel = label,
         isDeviceAdminActive = { deviceAdminActive },
-    )
+    ).apply { setGuardActive(armed) }
 
     // Every identifier below was dumped from a running android-36 emulator, not
     // inferred. An earlier draft of this file used plausible-looking names and
@@ -95,6 +99,24 @@ class SettingsGuardTest {
         texts = listOf("Find Hub", "Allow Find Hub to lock or erase a lost device"),
     )
 
+    /**
+     * The device-admin *list*, which is a different screen from the prompt.
+     *
+     * Its own alias class, as reported by the window-state event on an
+     * android-36 emulator — not the `.Settings` target that alias resolves to.
+     * The rows are `accessibilityDataSensitive`, so this screen only became
+     * matchable at all once `isAccessibilityTool` was declared.
+     */
+    private fun deviceAdminListScreen() = ScreenIdentity(
+        packageName = "com.android.settings",
+        className = "com.android.settings.Settings\$DeviceAdminSettingsActivity",
+        resourceIds = setOf(
+            "com.android.settings:id/content_parent",
+            "com.android.settings:id/recycler_view",
+        ),
+        texts = listOf("Find Hub", label),
+    )
+
     private fun unrelatedScreen() = ScreenIdentity(
         packageName = "com.other.app",
         className = "com.other.app.MainActivity",
@@ -116,6 +138,48 @@ class SettingsGuardTest {
         val decision = guard().evaluate(appInfoScreen(), nowMillis = 0)
 
         assertEquals(GuardDecision.BackOut(GuardedSurface.APP_INFO_SELF), decision)
+    }
+
+    @Test
+    fun `backs out of the device admin list once the admin is active`() {
+        // The list is where deactivation starts, and deactivation is what gates
+        // uninstall. It names this app, so before isAccessibilityTool was
+        // declared it should already have been caught by the self-mention
+        // catch-all — it was not, because the rows carrying the name were
+        // withheld from the service entirely.
+        val decision = guard(deviceAdminActive = true)
+            .evaluate(deviceAdminListScreen(), nowMillis = 0)
+
+        assertEquals(GuardDecision.BackOut(GuardedSurface.DEVICE_ADMIN_SETTINGS), decision)
+    }
+
+    @Test
+    fun `leaves the device admin list alone while the admin is inactive`() {
+        // Same trap as the prompt, one screen earlier: the list is the route to
+        // the activation prompt, so guarding it while the admin is off blocks
+        // the only settings path that can turn the feature on. There is also
+        // nothing to protect — with no admin active, nothing on this screen can
+        // remove anything.
+        //
+        // Observed on an android-36 emulator once the rows became visible: the
+        // list was ejected as SELF_IN_SETTINGS with the admin inactive.
+        assertEquals(
+            GuardDecision.Ignore,
+            guard(deviceAdminActive = false).evaluate(deviceAdminListScreen(), nowMillis = 0),
+        )
+    }
+
+    @Test
+    fun `guards the device admin list for another app's admin only when it names us`() {
+        // The list shows every admin on the device. It is guarded because *our*
+        // row is on it, so a list that does not mention us is somebody else's
+        // business.
+        val theirs = deviceAdminListScreen().copy(texts = listOf("Find Hub"))
+
+        assertEquals(
+            GuardDecision.Ignore,
+            guard(deviceAdminActive = true).evaluate(theirs, nowMillis = 0),
+        )
     }
 
     @Test
@@ -184,7 +248,7 @@ class SettingsGuardTest {
             selfPackage = self,
             selfLabel = label,
             isDeviceAdminActive = { active },
-        )
+        ).apply { setGuardActive(true) }
 
         assertEquals(GuardDecision.Ignore, g.evaluate(deviceAdminScreen(), nowMillis = 0))
 
@@ -446,6 +510,50 @@ class SettingsGuardTest {
         assertTrue(!guard(profile = null).watchesPackage("com.android.settings"))
     }
 
+    // --- unwatched events ---------------------------------------------------
+
+    @Test
+    fun `an overlay package event is not a departure while settings stays in front`() {
+        // Measured on an android-36 emulator: opening the device-admin list is
+        // followed ~200 ms later by a content-changed event from
+        // com.android.systemui, for the status bar drawn *over* the settings
+        // screen. Treating that as "the user left" cancelled the deferred
+        // re-look and left the list unguarded for as long as it stayed open.
+        assertEquals(
+            UnwatchedEvent.STILL_WATCHED,
+            guard().classifyUnwatchedEvent(foregroundPackage = "com.android.settings"),
+        )
+    }
+
+    @Test
+    fun `an event from the app in front is a departure`() {
+        assertEquals(
+            UnwatchedEvent.LEFT,
+            guard().classifyUnwatchedEvent(foregroundPackage = "com.android.chrome"),
+        )
+    }
+
+    @Test
+    fun `an unresolvable foreground is not treated as a departure`() {
+        // rootInActiveWindow is null on a settings task restored from the
+        // background — the exact case the deferred re-look exists for — so an
+        // unknown foreground must not be what cancels it.
+        assertEquals(
+            UnwatchedEvent.UNKNOWN,
+            guard().classifyUnwatchedEvent(foregroundPackage = null),
+        )
+    }
+
+    @Test
+    fun `an unsupported device reports every foreground as a departure`() {
+        // No profile means no guarded screen can exist, so nothing is being
+        // protected and there is nothing to keep armed.
+        assertEquals(
+            UnwatchedEvent.LEFT,
+            guard(profile = null).classifyUnwatchedEvent(foregroundPackage = "com.android.settings"),
+        )
+    }
+
     // --- re-fire suppression ----------------------------------------------
 
     /** One deliberate visit, spaced past the suppression window each time. */
@@ -598,37 +706,71 @@ class SettingsGuardTest {
         )
     }
 
-    // --- timed disable ----------------------------------------------------
+    // --- the protection mode ------------------------------------------------
 
     @Test
-    fun `ignores guarded screens while suspended`() {
-        // The exit path: without it, a wrong matcher on an untested device locks
-        // the user out of their own settings with no in-app recovery.
-        val guard = guard()
-        guard.suspendUntil(60_000)
+    fun `blocks nothing until protection is armed`() {
+        // The mode is the whole authority for blocking. Before the user arms it
+        // — during onboarding, where the accessibility service is enabled and
+        // device admin activated — every one of these screens must be reachable.
+        val guard = guard(armed = false)
 
-        assertEquals(GuardDecision.Ignore, guard.evaluate(accessibilityScreen(), nowMillis = 30_000))
+        assertEquals(GuardDecision.Ignore, guard.evaluate(accessibilityScreen(), nowMillis = 0))
+        assertEquals(GuardDecision.Ignore, guard.evaluate(appInfoScreen(), nowMillis = 0))
+        assertEquals(GuardDecision.Ignore, guard.evaluate(deviceAdminListScreen(), nowMillis = 0))
+        assertEquals(GuardDecision.Ignore, guard.evaluate(deviceAdminScreen(), nowMillis = 0))
+        val uninstallDialog = ScreenIdentity(
+            packageName = "com.google.android.packageinstaller",
+            className = "com.android.packageinstaller.UninstallerActivity",
+            texts = listOf("Do you want to uninstall this app?", label),
+        )
+        assertEquals(GuardDecision.Ignore, guard.evaluate(uninstallDialog, nowMillis = 0))
     }
 
     @Test
-    fun `resumes guarding when the suspension expires`() {
-        val guard = guard()
-        guard.suspendUntil(60_000)
-
+    fun `starts unarmed`() {
+        // A guard that blocks before anyone asked it to is the failure this
+        // whole mode exists to remove, so the default is off rather than on.
         assertEquals(
-            GuardDecision.BackOut(GuardedSurface.ACCESSIBILITY_SETTINGS),
-            guard.evaluate(accessibilityScreen(), nowMillis = 60_001),
+            GuardDecision.Ignore,
+            SettingsGuard(
+                profile = SettingsProfiles.AOSP,
+                selfPackage = self,
+                selfLabel = label,
+                isDeviceAdminActive = { true },
+            ).evaluate(accessibilityScreen(), nowMillis = 0),
         )
     }
 
     @Test
-    fun `reports whether a suspension is in force`() {
-        val guard = guard()
-        assertTrue(!guard.isSuspended(0))
+    fun `blocks again as soon as protection is re-armed`() {
+        val guard = guard(armed = false)
+        guard.evaluate(accessibilityScreen(), nowMillis = 0)
 
-        guard.suspendUntil(60_000)
-        assertTrue(guard.isSuspended(59_999))
-        assertTrue(!guard.isSuspended(60_000))
+        guard.setGuardActive(true)
+
+        assertEquals(
+            GuardDecision.BackOut(GuardedSurface.ACCESSIBILITY_SETTINGS),
+            guard.evaluate(accessibilityScreen(), nowMillis = 100),
+        )
+    }
+
+    @Test
+    fun `disarming does not leave a spent budget behind`() {
+        // The bound counts consecutive back-outs on one screen. A disarm ends
+        // that episode, so re-arming must start from a full budget — otherwise a
+        // user who disarms mid-loop comes back to a guard that has already given
+        // up and only covers.
+        val guard = guard()
+        attempts(guard, accessibilityScreen(), SettingsGuard.MAX_CONSECUTIVE_BACK_OUTS)
+
+        guard.setGuardActive(false)
+        guard.setGuardActive(true)
+
+        assertEquals(
+            GuardDecision.BackOut(GuardedSurface.ACCESSIBILITY_SETTINGS),
+            guard.evaluate(accessibilityScreen(), nowMillis = 999_999),
+        )
     }
 
     // --- unsupported devices ----------------------------------------------

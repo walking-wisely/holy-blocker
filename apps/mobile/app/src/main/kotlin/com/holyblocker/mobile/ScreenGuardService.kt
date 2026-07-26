@@ -17,6 +17,7 @@ import com.holyblocker.mobile.policy.ScanGate
 import com.holyblocker.mobile.policy.ScreenIdentity
 import com.holyblocker.mobile.policy.SettingsGuard
 import com.holyblocker.mobile.policy.SettingsProfiles
+import com.holyblocker.mobile.policy.UnwatchedEvent
 
 /**
  * Layer 2's workhorse on Android: reads on-screen text from other apps, runs it
@@ -32,8 +33,8 @@ class ScreenGuardService : AccessibilityService() {
     private var gate: ScanGate? = null
     private var overlay: OverlayController? = null
     private var settingsGuard: SettingsGuard? = null
-    private var suspension: GuardSuspension? = null
-    private var appliedSuspensionUntil = 0L
+    private var protection: ProtectionStore? = null
+    private var appliedGuardActive = false
 
     private val rescan = RescanSchedule()
     private val handler = Handler(Looper.getMainLooper())
@@ -57,7 +58,7 @@ class ScreenGuardService : AccessibilityService() {
         policy = engine
         gate = ScanGate(policy = engine, selfPackage = packageName)
         overlay = OverlayController(this)
-        suspension = GuardSuspension(this)
+        protection = ProtectionStore(this)
 
         val profile = SettingsProfiles.forManufacturer(Build.MANUFACTURER)
         settingsGuard = SettingsGuard(
@@ -128,16 +129,38 @@ class ScreenGuardService : AccessibilityService() {
     ): Boolean {
         val guard = settingsGuard ?: return false
         if (!guard.watchesPackage(packageName)) {
-            // Tell the guard we left before skipping the harvest: the re-fire
-            // suppression is only safe if it knows a back action actually landed
-            // somewhere else, otherwise tapping straight back into the settings
-            // screen falls inside the window and is ignored.
-            guard.onUnguardedScreen()
-            cancelRescan()
+            // An event from an unwatched package is not by itself the user
+            // leaving: SystemUI fires content-changed events for the status bar
+            // drawn *over* whatever is in front. Measured on an android-36
+            // emulator, one landed ~200 ms after the device-admin list opened
+            // and, taken as a departure, cancelled that screen's entire re-look
+            // budget — which is why the list then sat unguarded for as long as
+            // it was open.
+            when (guard.classifyUnwatchedEvent(foregroundPackage())) {
+                // Chrome over a screen we are still guarding. Nothing to do,
+                // and nothing to cancel.
+                UnwatchedEvent.STILL_WATCHED -> return false
+
+                // Tell the guard we left before skipping the harvest: the
+                // re-fire suppression is only safe if it knows a back action
+                // actually landed somewhere else, otherwise tapping straight
+                // back into the settings screen falls inside the window and is
+                // ignored.
+                UnwatchedEvent.LEFT -> {
+                    guard.onUnguardedScreen()
+                    cancelRescan()
+                }
+
+                // Treat the bound as reset — the safe direction, since it only
+                // ever makes the guard fire sooner — but leave the re-look
+                // armed, because it is bounded and self-cancelling while an
+                // unguarded screen is not.
+                UnwatchedEvent.UNKNOWN -> guard.onUnguardedScreen()
+            }
             return false
         }
 
-        syncSuspension(guard)
+        syncProtection(guard)
 
         val identity = currentScreenIdentity(packageName, event.className?.toString())
         val acted = identity != null && applyDecision(guard, identity, overlay)
@@ -179,7 +202,7 @@ class ScreenGuardService : AccessibilityService() {
             return false
         }
 
-        syncSuspension(guard)
+        syncProtection(guard)
 
         // className is null on purpose: there is no event to carry it, and the
         // root node reports a view class rather than the activity. That costs
@@ -239,10 +262,13 @@ class ScreenGuardService : AccessibilityService() {
             "settings screen class=$className texts=${texts.size} ids=${resourceIds.take(12)}",
         )
 
-        // An empty harvest on a screen the user can plainly read is the open bug
-        // (backlog.md item 1b). Three hypotheses produce it and they need
-        // different fixes, so dump what tells them apart — but only on the
-        // failing case, since this walks the tree a second time.
+        // Kept after the empty harvest was diagnosed (see backlog.md, "Closed:
+        // 1, the empty harvest"): the
+        // cause was per-node accessibilityDataSensitive filtering, which is
+        // invisible from this side — the nodes are simply not there — so the
+        // shape of the tree is still the only evidence available when a screen
+        // on an untested build comes back thin. Only on the failing case, since
+        // it walks the tree a second time.
         if (texts.isEmpty()) logEmptyHarvest(packageName, root)
 
         return ScreenIdentity(
@@ -254,21 +280,26 @@ class ScreenGuardService : AccessibilityService() {
     }
 
     /**
-     * Diagnostic for an empty harvest on a populated screen — backlog item 1(b).
+     * Diagnostic for an empty harvest on a populated screen.
      *
-     * Discriminates the three candidate causes in one dump:
+     * This is what found the empty-harvest bug, and each number rules
+     * something out:
      *
      *  - **Wrong window.** More than one window for [packageName] means [rootFor]
      *    picking the first match is a real suspect. Exactly one means it is not,
-     *    and window-resolution work would be wasted.
-     *  - **Filtered subtree.** `declared` counts children the tree says exist;
-     *    `fetched` counts the ones `getChild` actually returned. A gap is the
-     *    signature of nodes filtered out of this service's view — the case
-     *    `flagIncludeNotImportantViews` would address, and the reason a
-     *    `uiautomator` dump seeing the row proves nothing about what we can see.
-     *  - **Genuinely absent.** `declared == fetched` with no text means the rows
-     *    are not in the tree we were handed at all, and neither of the above
-     *    helps.
+     *    and window-resolution work would be wasted. It read `windows=1` on the
+     *    device-admin list, which is why that item and split screen turned out to
+     *    be unrelated bugs.
+     *  - **Fetch failure.** `declared` counts children the tree says exist;
+     *    `fetched` counts the ones `getChild` actually returned. A gap means
+     *    children are failing to materialise. There was none: the two matched at
+     *    every node.
+     *  - **Genuinely absent.** `declared == fetched` with no text — what was in
+     *    fact measured. The rows were withheld by `accessibilityDataSensitive`
+     *    rather than lost anywhere in this walk, and the fix was
+     *    `isAccessibilityTool` in `accessibility_service_config.xml`. Nodes
+     *    filtered that way never appear in `childCount`, so a future instance of
+     *    this reads as a subtree that is simply not there.
      *
      * No text and no window titles are logged, only shape — the screen's contents
      * stay on the screen, same rule as the harvest log above.
@@ -339,18 +370,21 @@ class ScreenGuardService : AccessibilityService() {
         rescan.reset()
     }
 
-    /** Picks up a release requested from the onboarding screen. */
-    private fun syncSuspension(guard: SettingsGuard) {
-        // Zero unless a request has cleared its cooldown, so a freshly tapped
-        // request does not release anything.
-        val until = suspension?.releasedUntilWallMillis() ?: return
-        // Only on change: suspendUntil() also clears the back-out bound, so
-        // calling it every event would reset the loop counter continuously.
-        if (until != appliedSuspensionUntil) {
-            appliedSuspensionUntil = until
-            guard.suspendUntil(until)
-            Log.i(TAG, "screen guard suspended until $until")
+    /**
+     * Applies the protection mode the user set in the app.
+     *
+     * Read on every watched event rather than cached: the mode changes from
+     * `MainActivity`, and a disarm window also expires on its own with nothing
+     * to announce it. `setGuardActive` is idempotent, so re-applying the same
+     * answer costs nothing.
+     */
+    private fun syncProtection(guard: SettingsGuard) {
+        val state = protection?.state() ?: return
+        if (state.guardActive != appliedGuardActive) {
+            appliedGuardActive = state.guardActive
+            Log.i(TAG, "protection ${state.phase}; screen guard active=${state.guardActive}")
         }
+        guard.setGuardActive(state.guardActive)
     }
 
     /**
@@ -447,8 +481,8 @@ class ScreenGuardService : AccessibilityService() {
         policy = null
         gate = null
         settingsGuard = null
-        suspension = null
-        appliedSuspensionUntil = 0
+        protection = null
+        appliedGuardActive = false
     }
 
     companion object {
