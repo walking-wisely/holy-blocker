@@ -101,5 +101,24 @@
     <string name="network_status_on">Blocked sites are filtered before they are looked up.</string>
     <string name="network_status_off">Site filtering is off.</string>
     <string name="action_enable_network_guard">Turn on site filtering</string>
+    <!--
+      Screen scanning. The copy has to carry two facts a user is entitled to
+      before granting the broadest permission this app asks for: that it is the
+      whole screen, and that the images stay here. It also has to say plainly
+      that the grant lasts one session — Android gives no way to keep it, and a
+      user who thinks it is permanent will believe they are covered when they are
+      not, which is the failure the unsupported-device notice above avoids.
+
+      Nothing here claims the images are analysed yet: they are not, until
+      packages/image-sandbox exists. See plan.md §6.
+    -->
+    <string name="capture_status_on">Screen scanning is on.</string>
+    <string name="capture_status_off">Screen scanning is off.</string>
+    <string name="action_enable_capture">Turn on screen scanning</string>
+    <string name="capture_explanation">Android asks you to confirm this each time, and turns it off whenever the phone restarts or you stop it from the status bar. Everything captured is checked on this device and immediately discarded — no images are saved and nothing is sent anywhere.</string>
+    <string name="channel_capture_name">Screen scanning</string>
+    <string name="channel_capture_description">Shows when Holy Blocker is reading the screen. Silent and always on screen while scanning runs.</string>
+    <string name="notification_screen_scan">Screen scanning is on. Images are checked on this device and discarded.</string>
+
     <string name="network_guard_explanation">Holy Blocker uses Android’s VPN slot to filter name lookups on this device. Nothing is sent anywhere: lookups are answered or passed straight through on the phone. Android allows one VPN at a time, so turning this on replaces any other VPN you use.</string>
 </resources>

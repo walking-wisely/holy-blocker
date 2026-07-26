@@ -21,6 +21,7 @@ import com.holyblocker.mobile.policy.AccessibilityServiceStatus
 import com.holyblocker.mobile.policy.NetworkGuard
 import com.holyblocker.mobile.policy.ProtectionPhase
 import com.holyblocker.mobile.policy.ProtectionState
+import com.holyblocker.mobile.policy.ScreenCapture
 import com.holyblocker.mobile.policy.SettingsProfiles
 
 /**
@@ -42,6 +43,9 @@ class MainActivity : Activity() {
     private lateinit var networkStatus: TextView
     private lateinit var network: Button
     private lateinit var networkHint: TextView
+    private lateinit var captureStatus: TextView
+    private lateinit var capture: Button
+    private lateinit var captureHint: TextView
     private lateinit var protection: ProtectionStore
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -104,6 +108,29 @@ class MainActivity : Activity() {
             }
         }
 
+        captureStatus = TextView(this).apply { textSize = 18f }
+
+        captureHint = TextView(this).apply {
+            text = getString(R.string.capture_explanation)
+            textSize = 14f
+            setTextColor(Color.GRAY)
+        }
+
+        // Unlike the VPN button this one comes back: a MediaProjection grant is
+        // per session and cannot be stored, so every restart — and every tap of
+        // the system's stop-sharing chip — puts this back on screen. That is
+        // Android's design and it is stated in the copy rather than hidden, since
+        // a user who believes scanning survived a reboot is worse off than one
+        // who knows it did not.
+        capture = Button(this).apply {
+            text = getString(R.string.action_enable_capture)
+            setOnClickListener {
+                ScreenCaptureService.captureIntent(this@MainActivity)?.let {
+                    startActivityForResult(it, REQUEST_CAPTURE_CONSENT)
+                }
+            }
+        }
+
         // Only ever offers activation. Deactivation is deliberately not mirrored
         // here: it belongs to the system screen, which is guarded like every
         // other removal path and reachable through the timed release. A
@@ -151,6 +178,9 @@ class MainActivity : Activity() {
                 addView(networkStatus)
                 addView(network)
                 addView(networkHint)
+                addView(captureStatus)
+                addView(capture)
+                addView(captureHint)
                 addView(removalHint)
                 addView(hint)
             },
@@ -278,6 +308,52 @@ class MainActivity : Activity() {
         admin.visibility = if (adminOn) View.GONE else View.VISIBLE
 
         refreshNetworkGuard(state)
+        refreshScreenCapture(state)
+    }
+
+    /**
+     * The consent result for screen capture, which — unlike the VPN's — has to
+     * be read.
+     *
+     * `VpnService.prepare` can be asked again afterwards and is the authority on
+     * its own grant, so that flow ignores its result. A `MediaProjection` grant
+     * has no such query: the result `Intent` **is** the grant, it is single-use
+     * from Android 14, and dropping it here means the user consented to nothing.
+     * https://developer.android.com/reference/android/media/projection/MediaProjectionManager#getMediaProjection(int,%20android.content.Intent)
+     */
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode != REQUEST_CAPTURE_CONSENT) return
+        // A refusal is a legitimate answer and gets no second prompt: the button
+        // stays on screen and the user can decide again when they mean to.
+        if (resultCode != RESULT_OK || data == null) return
+        ScreenCaptureService.start(this, resultCode, data)
+    }
+
+    /**
+     * Brings screen capture in line with the mode.
+     *
+     * Asymmetric with the network guard on purpose, and the asymmetry is
+     * Android's rather than ours: this can *stop* capture but can never start it
+     * on its own, because the grant it would need does not outlive the session it
+     * was given for. So there is nothing to restore after a reboot, and the
+     * button reappears whenever [ScreenCaptureService.isRunning] says the session
+     * is over — including after a stop from the system's cast chip.
+     */
+    private fun refreshScreenCapture(state: ProtectionState) {
+        val running = ScreenCaptureService.isRunning
+        // Not shouldRun(): with capture already running, this is the condition
+        // under which it must be torn down, and the consent half of shouldRun is
+        // implied by it running at all.
+        if (running && !ScreenCapture.shouldRun(state, consentGranted = true)) {
+            ScreenCaptureService.stop(this)
+        }
+
+        captureStatus.text = getString(
+            if (running) R.string.capture_status_on else R.string.capture_status_off,
+        )
+        capture.visibility = if (running) View.GONE else View.VISIBLE
+        captureHint.visibility = capture.visibility
     }
 
     /**
@@ -328,6 +404,7 @@ class MainActivity : Activity() {
     private companion object {
         const val REQUEST_NOTIFICATIONS = 1
         const val REQUEST_VPN_CONSENT = 2
+        const val REQUEST_CAPTURE_CONSENT = 3
     }
 
     private fun isServiceEnabled(): Boolean = AccessibilityServiceStatus.isEnabled(
