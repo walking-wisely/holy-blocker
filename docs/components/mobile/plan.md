@@ -48,11 +48,15 @@ The MVP builds that Layer 2 text path, and nothing else.
 - `policy/ProtectionSchedule.kt` — the protection mode: armed, disarm cooldown, confirm, window;
   monotonic throughout — **Done.**
 - `ProtectionStore.kt` — storage edge for the mode — **Done.**
+- `policy/TamperLog.kt` — the append-only record: entry format, tolerant parse, coalescing, trim,
+  session classification — **Done.**
+- `TamperLogStore.kt` — the `filesDir` edge for it — **Done**, verified on an android-36 arm64
+  emulator.
 - `VpnService` DNS/SNI filter — not yet created.
 - `MediaProjection` capture + image path — not yet created.
 - `admin/HolyBlockerAdminReceiver.kt` — device admin, so uninstall is refused until it is
   deactivated — **Done**, verified on an android-36 arm64 emulator.
-- Tamper log — not yet created. See [backlog.md](backlog.md).
+- Tamper log — **Done**, see step 9 below.
 
 Known bypasses that remain open are tracked in **[backlog.md](backlog.md)**, ranked by how
 little effort they take. Read it before extending the guard — several plausible-looking
@@ -267,8 +271,26 @@ and the back action is gated on the matched window holding input focus, because
 `GLOBAL_ACTION_BACK` takes no window argument and would otherwise be delivered to whatever app the
 user is actually in. Read [backlog.md](backlog.md#closed-2-split-screen) before extending it — an
 unfocused pane emits no accessibility events at all, so what carries the protection is that the
-toggle needs focus and taking focus emits events, not the cover. **Recents is still open**, and
-the OEM claim above needs verifying on real hardware before anything is written against it.
+toggle needs focus and taking focus emits events, not the cover. **Recents is deferred** — see
+[Recents is blocked on hardware](#recents-is-blocked-on-hardware).
+
+#### Recents is blocked on hardware
+
+**Deferred, and it is a blocker rather than a choice.** The claim the mitigation would be built on
+— that swiping the app out of recents stops the accessibility service — comes from AppBlock's own
+documentation, and AppBlock ships to OEMs with aggressive task-killers that AOSP does not have.
+On the one platform available here, an `android-36` emulator, a bound accessibility service is
+**not** killed by a recents swipe, so the emulator cannot reproduce the bypass and cannot verify a
+fix for it either. Writing a guard against an unreproduced behaviour would produce code that looks
+like coverage and is never exercised.
+
+What it needs is real One UI or HyperOS hardware — the same dependency as the rest of
+[OEM coverage](#oem-coverage--deferred), and Samsung Remote Test Lab is the route. Until then:
+
+- The tamper log (step 9) is the honest response. A service that stops without a clean unbind is
+  observable after the fact even where it cannot be prevented, and the boot receiver in step 10
+  turns "the guard did not run" into a recorded gap rather than silence.
+- Do not write onboarding copy implying recents is covered.
 
 #### What this does and does not achieve
 
@@ -556,13 +578,35 @@ scaffolding and will fail at load time if they fall out of sync with the `.so`.
    being read as the user leaving while a guarded pane sat visible beside it, which cancelled the
    re-look. See [backlog.md](backlog.md#closed-2-split-screen) for both.
 
-   **Recents is still open.** It is a separate mechanism — the claim is that swiping the app away
-   stops the service on some OEMs — and §7 flags it as needing verification on real hardware
-   before any mitigation is written, since the claim comes from AppBlock's docs.
-9. **Tamper log** — append-only local record of guard-state transitions and removal attempts.
-   The backstop for what steps 5–8 cannot prevent (guest user, safe mode, adb); entries must
-   survive the app being disabled.
-10. Foreground service + restart-on-boot. **Note the real reason:** an `AccessibilityService`
+   **Recents is deferred**, not skipped — see below.
+9. ~~**Tamper log** — append-only local record of guard-state transitions and removal attempts.~~
+   **Done** — `policy/TamperLog.kt` (pure: format, tolerant parse, coalescing, trim, session
+   classification) and `TamperLogStore.kt` (the `filesDir` edge). Written by the accessibility
+   service on connect/disconnect and on every block, by `ProtectionStore` on every mode
+   transition, and by the admin receiver including `onDisableRequested`.
+
+   Verified on an android-36 arm64 emulator, all three session paths: a clean off/on through the
+   secure setting writes `service_off` then `CLEAN_RESTART`; a force-stop — which delivers no
+   unbind, the shape of a process kill or an OEM recents swipe — writes `unclean_stop` then
+   `UNCLEAN_STOP`; a fresh install writes `FIRST_RUN`. The log survived an `adb uninstall` that
+   the active device admin refused, which is the intended interaction between the two.
+
+   **It records the guard, never the screen.** No scanned text, no verdicts, no scores; details
+   are guarded-surface names and nothing else, and a test asserts the event vocabulary stays
+   content-free. It survives the service being disabled, force-stop, a process kill, reboot and
+   an app update, but **not** clear-data — reachable from App Info, which this product can guard
+   but not prevent. Exporting somewhere that survives uninstall means writing user-readable
+   history to shared storage and is a product decision, not a storage one.
+10. Foreground service + restart-on-boot. **A boot receiver must not write a boot marker the
+   rest of the system can trigger** — measured while building step 9 and recorded here because it
+   is not discoverable from the docs: `ACTION_BOOT_COMPLETED` is delivered to this app every time
+   it leaves the force-stopped state, reproducibly, on an emulator minutes into its uptime. A
+   `BOOT` entry was therefore written by the force-stop itself, and `classifyConnect` — which
+   trusted it — read the removal-shaped event back as an ordinary restart. The reboot test is
+   the monotonic clock going backwards and nothing else; a boot receiver may add context to the
+   log but must never be what identifies a boot.
+
+   **Note the real reason for the service:** an `AccessibilityService`
    is system-bound and already restarts on boot while it stays enabled, so this neither makes
    the guard harder to kill nor is required for it to survive a reboot. What it provides is an
    always-visible status surface, a health check for removal routes we cannot observe, and the
@@ -614,6 +658,11 @@ Each of these cost real time and none is discoverable by reading the API docs.
 - **Re-fire suppression must know when the user left**, or it becomes the bypass: back out, tap
   straight back in inside the window, and the guard idles. Worse, `evaluate` only runs on events,
   so a static screen that has finished rendering never wakes it again.
+- **`ACTION_BOOT_COMPLETED` is not evidence of a boot.** It is delivered when the app leaves the
+  force-stopped state — reproduced twice on an android-36 emulator with three minutes of uptime,
+  `BootReceiver` logging "boot completed" seconds after an `am force-stop`. Anything inferring a
+  restart from it will read a force-stop as a reboot, which is backwards: a force-stop is the
+  event worth recording and a reboot is the benign one.
 - **Force-stopping the app disables its own accessibility service.** `adb shell am force-stop`
   on our package is not a neutral way to restart the UI: the service is dropped from
   `enabled_accessibility_services` and every subsequent guard check silently passes. It reads

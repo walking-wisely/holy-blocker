@@ -112,10 +112,33 @@ sealed interface GuardDecision {
     data class BackOut(val surface: GuardedSurface) : GuardDecision
 
     /**
-     * Backing out is not working. Navigation is released and only the cover
-     * remains, so a wrong matcher cannot make the device unusable.
+     * The cover, with no back action. See [CoverReason] — the two causes look
+     * identical here and are not remotely the same event.
      */
-    data class CoverOnly(val surface: GuardedSurface) : GuardDecision
+    data class CoverOnly(val surface: GuardedSurface, val reason: CoverReason) : GuardDecision
+}
+
+/**
+ * Why a guarded screen was covered instead of backed out of.
+ *
+ * Carried because the caller cannot tell them apart and they mean opposite
+ * things: one is the guard working as designed, the other is the guard giving
+ * up. Conflating them in the tamper log would bury the failures under routine
+ * split-screen traffic.
+ */
+enum class CoverReason {
+    /**
+     * The match is a split-screen pane that does not hold input focus, so
+     * `GLOBAL_ACTION_BACK` — which takes no window argument — would land on the
+     * app the user is actually in. Ordinary operation.
+     */
+    UNFOCUSED_WINDOW,
+
+    /**
+     * Backing out is not working, so navigation is released and only the cover
+     * remains. This is the round the guard lost, and it is worth recording.
+     */
+    BACK_OUT_BOUND,
 }
 
 /**
@@ -451,7 +474,7 @@ class SettingsGuard(
             // the bound: no BACK was sent, and spending the budget here would
             // leave nothing for the window once the user focuses it — which is
             // the moment the toggle actually becomes reachable.
-            return GuardDecision.CoverOnly(surface)
+            return GuardDecision.CoverOnly(surface, CoverReason.UNFOCUSED_WINDOW)
         }
 
         val sinceLast = nowMillis - lastBackOutAtMillis
@@ -472,7 +495,7 @@ class SettingsGuard(
         lastBackOutAtMillis = nowMillis
 
         return if (consecutiveBackOuts > MAX_CONSECUTIVE_BACK_OUTS) {
-            GuardDecision.CoverOnly(surface)
+            GuardDecision.CoverOnly(surface, CoverReason.BACK_OUT_BOUND)
         } else {
             GuardDecision.BackOut(surface)
         }

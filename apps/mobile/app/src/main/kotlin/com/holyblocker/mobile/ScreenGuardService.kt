@@ -4,11 +4,13 @@ import android.accessibilityservice.AccessibilityService
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import android.view.accessibility.AccessibilityWindowInfo
 import com.holyblocker.mobile.admin.HolyBlockerAdminReceiver
+import com.holyblocker.mobile.policy.CoverReason
 import com.holyblocker.mobile.policy.CoverState
 import com.holyblocker.mobile.policy.GateOutcome
 import com.holyblocker.mobile.policy.GuardDecision
@@ -18,6 +20,8 @@ import com.holyblocker.mobile.policy.ScanGate
 import com.holyblocker.mobile.policy.ScreenIdentity
 import com.holyblocker.mobile.policy.SettingsGuard
 import com.holyblocker.mobile.policy.SettingsProfiles
+import com.holyblocker.mobile.policy.TamperEvent
+import com.holyblocker.mobile.policy.TamperLog
 import com.holyblocker.mobile.policy.UnwatchedEvent
 import com.holyblocker.mobile.policy.WindowScreen
 
@@ -36,6 +40,7 @@ class ScreenGuardService : AccessibilityService() {
     private var overlay: OverlayController? = null
     private var settingsGuard: SettingsGuard? = null
     private var protection: ProtectionStore? = null
+    private var tamperLog: TamperLogStore? = null
     private var appliedGuardActive = false
 
     private val rescan = RescanSchedule()
@@ -61,6 +66,7 @@ class ScreenGuardService : AccessibilityService() {
         gate = ScanGate(policy = engine, selfPackage = packageName)
         overlay = OverlayController(this)
         protection = ProtectionStore(this)
+        tamperLog = TamperLogStore.of(this).also(::recordConnect)
 
         val profile = SettingsProfiles.forManufacturer(Build.MANUFACTURER)
         settingsGuard = SettingsGuard(
@@ -80,6 +86,24 @@ class ScreenGuardService : AccessibilityService() {
         }
 
         Log.i(TAG, "screen guard connected (settings profile=${profile?.name ?: "none"})")
+    }
+
+    /**
+     * Records that the guard is running, and what the gap before it means.
+     *
+     * The classification is made *before* the connect entry is written, since it
+     * reads the last entry of the previous session — see [TamperLog.classifyConnect].
+     * An unclean stop is the only observation available for a kill this service
+     * cannot see coming, which includes the OEM recents swipe the guard is not
+     * able to reproduce, let alone prevent.
+     */
+    private fun recordConnect(log: TamperLogStore) {
+        val start = TamperLog.classifyConnect(log.lastEntry(), SystemClock.elapsedRealtime())
+        start.notableEvent?.let {
+            Log.w(TAG, "previous session ended without unbinding")
+            log.record(it)
+        }
+        log.record(TamperEvent.SERVICE_CONNECTED, start.name)
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
@@ -428,6 +452,8 @@ class ScreenGuardService : AccessibilityService() {
     ): Boolean = when (val decision = guard.evaluate(screens, System.currentTimeMillis())) {
         is GuardDecision.BackOut -> {
             Log.i(TAG, "backing out of ${decision.surface}")
+            // The surface name only — never the screen's text. See TamperLog.
+            tamperLog?.record(TamperEvent.REMOVAL_SCREEN_BLOCKED, decision.surface.name)
             // Clear first: leaving is the action, and a cover left behind
             // would sit over whatever screen we land on.
             overlay.apply(CoverState.CLEAR)
@@ -444,7 +470,12 @@ class ScreenGuardService : AccessibilityService() {
             // wrong matcher can make the device unusable; or the guarded screen
             // is an unfocused split-screen pane, where BACK would land on the
             // app the user is actually in.
-            Log.w(TAG, "covering only on ${decision.surface}")
+            Log.w(TAG, "covering only on ${decision.surface} (${decision.reason})")
+            // Only the bound is worth recording. An unfocused pane is ordinary
+            // split-screen traffic and would bury the failures under it.
+            if (decision.reason == CoverReason.BACK_OUT_BOUND) {
+                tamperLog?.record(TamperEvent.GUARD_DEGRADED, decision.surface.name)
+            }
             overlay.apply(CoverState.COVER)
             true
         }
@@ -564,6 +595,13 @@ class ScreenGuardService : AccessibilityService() {
     }
 
     private fun teardown() {
+        // Recorded first, while the store is still held. This entry is what
+        // makes the *next* connect classifiable: its absence is how a kill is
+        // told apart from the user turning the service off in Settings, which is
+        // supported and must not read as tampering.
+        tamperLog?.record(TamperEvent.SERVICE_DISCONNECTED)
+        tamperLog = null
+
         // Before the overlay and policy go: a queued re-look would otherwise run
         // against a torn-down service and a closed policy engine.
         cancelRescan()

@@ -103,13 +103,14 @@ about, and Xiaomi and Samsung both customise SystemUI heavily.
 Fix: watch it on a **self-mention-only** path, and **cover rather than back out**. Backing out of
 the notification shade or volume panel is indistinguishable from a broken phone.
 
-### 4. Foreground service
+### 4. Recents — **deferred, blocked on hardware**
 
-Does not keep the guard alive (plan.md, implementation order) and does not close recents-swipe on
-Pixel, where a bound accessibility service is not killed by swiping. It does raise priority
-against low-memory kills and gives an always-visible status signal. Verify the recents-swipe
-claim on real Samsung hardware before writing any mitigation for it — the claim in §7 comes from
-AppBlock's docs, and AppBlock ships to OEMs with aggressive task-killers that AOSP does not have.
+The recents-swipe kill cannot be reproduced on the only platform available here (an `android-36`
+emulator does not kill a bound accessibility service on a swipe), so a mitigation could be neither
+verified nor exercised. It needs real One UI or HyperOS hardware; Samsung Remote Test Lab is the
+route. See [plan.md](plan.md#recents-is-blocked-on-hardware) for the full argument, and treat this
+as sitting alongside the three bypasses below rather than above them — the tamper log is the
+available response.
 
 ### 5. Dead `ScanGate.reset()`
 
@@ -135,6 +136,13 @@ Do not invent mitigations; do not write copy implying they are covered.
 The realistic detection surface for all three is a still-alive process noticing the change
 (`AccessibilityServiceStatus` already parses the setting) plus `onDisableRequested`, writing to a
 tamper log whose entries survive the app being disabled.
+
+**The log half of that is built** (plan.md step 9). `onDisableRequested` is recorded, and a
+session that ended without an unbind is classified as an unclean stop at the next connect —
+verified against a force-stop, which is the shape of both the process kill and the OEM recents
+swipe. The *still-alive process* half is not: it needs the foreground service from step 10, and
+without it an `adb` disable is only visible after the guard is enabled again. Safe mode remains
+invisible in both halves — nothing of ours runs there to notice or to record.
 
 ## Checked and found not to be holes
 

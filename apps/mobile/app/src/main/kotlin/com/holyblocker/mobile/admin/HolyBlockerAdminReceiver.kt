@@ -7,6 +7,8 @@ import android.content.Context
 import android.content.Intent
 import android.util.Log
 import com.holyblocker.mobile.R
+import com.holyblocker.mobile.TamperLogStore
+import com.holyblocker.mobile.policy.TamperEvent
 
 /**
  * The device admin component.
@@ -33,6 +35,7 @@ class HolyBlockerAdminReceiver : DeviceAdminReceiver() {
 
     override fun onEnabled(context: Context, intent: Intent) {
         Log.i(TAG, "device admin enabled — uninstall now requires deactivation first")
+        TamperLogStore.of(context).record(TamperEvent.ADMIN_ENABLED)
     }
 
     /**
@@ -45,14 +48,21 @@ class HolyBlockerAdminReceiver : DeviceAdminReceiver() {
      * offers and would not be taken if it were — the exit path staying open is
      * what makes this an accountability tool rather than a trap.
      */
-    override fun onDisableRequested(context: Context, intent: Intent): CharSequence =
-        context.getString(R.string.admin_disable_warning)
+    override fun onDisableRequested(context: Context, intent: Intent): CharSequence {
+        // The last reliable moment to record it. Deactivation is what unblocks
+        // uninstall, so this entry is the closest thing the log has to "removal
+        // started" — and it is written before the deactivation it describes,
+        // because afterwards nothing of ours runs again.
+        TamperLogStore.of(context).record(TamperEvent.ADMIN_DISABLE_REQUESTED)
+        return context.getString(R.string.admin_disable_warning)
+    }
 
     override fun onDisabled(context: Context, intent: Intent) {
         // Terminal for this component: once disabled, uninstall is unblocked and
         // nothing here runs again. Worth a log line because it is the one moment
         // a still-running accessibility service can notice the change.
         Log.w(TAG, "device admin disabled — uninstall is no longer blocked")
+        TamperLogStore.of(context).record(TamperEvent.ADMIN_DISABLED)
     }
 
     companion object {

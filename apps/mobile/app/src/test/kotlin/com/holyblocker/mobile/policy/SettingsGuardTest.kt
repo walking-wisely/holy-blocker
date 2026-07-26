@@ -691,7 +691,7 @@ class SettingsGuardTest {
         val next = SettingsGuard.MAX_CONSECUTIVE_BACK_OUTS *
             (SettingsGuard.BACK_OUT_REFIRE_MILLIS + 50)
         assertEquals(
-            GuardDecision.CoverOnly(GuardedSurface.ACCESSIBILITY_SETTINGS),
+            GuardDecision.CoverOnly(GuardedSurface.ACCESSIBILITY_SETTINGS, CoverReason.BACK_OUT_BOUND),
             guard.evaluate(screen, nowMillis = next),
         )
     }
@@ -703,7 +703,7 @@ class SettingsGuardTest {
         val n = SettingsGuard.MAX_CONSECUTIVE_BACK_OUTS + 3
 
         assertEquals(
-            GuardDecision.CoverOnly(GuardedSurface.ACCESSIBILITY_SETTINGS),
+            GuardDecision.CoverOnly(GuardedSurface.ACCESSIBILITY_SETTINGS, CoverReason.BACK_OUT_BOUND),
             attempts(guard, screen, n).last(),
         )
     }
@@ -785,7 +785,7 @@ class SettingsGuardTest {
             nowMillis = 0,
         )
 
-        assertEquals(GuardDecision.CoverOnly(GuardedSurface.ACCESSIBILITY_SETTINGS), decision)
+        assertEquals(GuardDecision.CoverOnly(GuardedSurface.ACCESSIBILITY_SETTINGS, CoverReason.UNFOCUSED_WINDOW), decision)
     }
 
     @Test
@@ -799,7 +799,7 @@ class SettingsGuardTest {
         repeat(SettingsGuard.MAX_CONSECUTIVE_BACK_OUTS * 3) { i ->
             assertEquals(
                 "covering pass $i",
-                GuardDecision.CoverOnly(GuardedSurface.ACCESSIBILITY_SETTINGS),
+                GuardDecision.CoverOnly(GuardedSurface.ACCESSIBILITY_SETTINGS, CoverReason.UNFOCUSED_WINDOW),
                 guard.evaluate(
                     listOf(focused(unrelatedScreen()), beside(accessibilityScreen())),
                     nowMillis = i * step,
@@ -846,7 +846,7 @@ class SettingsGuardTest {
         val windows = listOf(focused(accessibilityScreen()), beside(appInfoScreen()))
 
         assertEquals(
-            GuardDecision.CoverOnly(GuardedSurface.ACCESSIBILITY_SETTINGS),
+            GuardDecision.CoverOnly(GuardedSurface.ACCESSIBILITY_SETTINGS, CoverReason.BACK_OUT_BOUND),
             attempts(guard, windows, SettingsGuard.MAX_CONSECUTIVE_BACK_OUTS + 1).last(),
         )
     }
@@ -882,7 +882,7 @@ class SettingsGuardTest {
             nowMillis = 0,
         )
 
-        assertEquals(GuardDecision.CoverOnly(GuardedSurface.DEVICE_ADMIN_SETTINGS), decision)
+        assertEquals(GuardDecision.CoverOnly(GuardedSurface.DEVICE_ADMIN_SETTINGS, CoverReason.UNFOCUSED_WINDOW), decision)
     }
 
     @Test
