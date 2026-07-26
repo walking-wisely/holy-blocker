@@ -31,6 +31,12 @@ any of those three numbers to the wrong pairing silently changes the operating
 point, in the direction of either missing content or over-blocking, with no
 error anywhere.
 
+How little this transfers is measurable: the full-unfreeze run was
+[replicated](../components/machine-learning/experiments/full-unfreeze.md#replicated)
+from scratch under an identical recipe and seed, and the two checkpoints agree on
+ranking to within 0.0005 AUC while their 5%-miss thresholds differ by 27% (0.2717
+against 0.1980). Two equally good models can need very different cuts.
+
 Superseded values, kept so an old number found in code can be identified rather
 than guessed at:
 
