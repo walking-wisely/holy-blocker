@@ -16,7 +16,7 @@ usage: mitm-proxy [options]
   --listen <addr>        address to bind (default 127.0.0.1:8080)
   --ca-dir <path>        certificate authority directory (default data/ca)
   --image-model <path>   ONNX image classifier; images are not scanned without it
-  --image-threshold <f>  block at or above this explicit score (default 0.20)
+  --image-threshold <f>  block at or above this explicit score (default 0.4650)
   -h, --help             print this message";
 
 #[derive(Debug, Clone, PartialEq)]

@@ -1,6 +1,4 @@
-use image_sandbox::{
-    DEFAULT_EXPLICIT_THRESHOLD, ImageClassifier, ImageSandbox, ImageVerdict, SandboxConfig,
-};
+use image_sandbox::{ImageClassifier, ImageSandbox, ImageVerdict, SandboxConfig};
 use text_policy::{
     evaluator::Thresholds,
     lexicon::{Category, Dictionary, DictionaryTerm, LexiconBuilder, MatchMode, Severity},
