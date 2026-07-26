@@ -49,6 +49,13 @@ responsible for.
 
 82 tests pass via `scripts/test.sh`.
 
+**Layer 2 is now fully specified** (modules 0 and 7–14 below), superseding the sketch that stood
+there. No Layer 2 code is written yet. Specifying it surfaced three things worth knowing before
+implementation starts: the sketch was missing both a scan scheduler and an IPC module, the signed
+bundle is a step-zero prerequisite rather than a later concern, and `PermissionGate` has to come
+first rather than last. One product decision — what to do when the protected user is a local admin —
+is called out in module 7 and needs sign-off before onboarding is written.
+
 **Layer 1 is verified end to end, including a real browser.** With the supervisor running, a
 `URLSession` fetch of `http://example.com` reached the proxy — `mitm_proxy::forward: forwarding
 method=GET host=example.com port=80` — and returned 200. With the root CA installed and trusted via
@@ -130,12 +137,22 @@ pure, testable types — the same rule the Windows daemon follows for Win32 glue
 
 ## Build environment constraint
 
-The current machine has **Swift 6.3 with Command Line Tools only — no full Xcode**. This is
-sufficient for all of Layer 1 (a plain SwiftPM executable, no app bundle, no entitlements). Layer 2
-will eventually need a signed `.app` bundle for stable TCC permission grants, since TCC identifies
+Layer 1 was built on **Swift 6.3 with Command Line Tools only — no full Xcode**, which was
+sufficient for all of it (a plain SwiftPM executable, no app bundle, no entitlements).
+
+**That constraint has since lifted.** As of macOS 26.5.2, `xcode-select -p` on the development
+machine reports `/Applications/Xcode.app` (Swift 6.3.3), and `ScreenCaptureKit`,
+`ApplicationServices`, `IOKit.hid` and `AppKit` were all confirmed to import, link and run against
+this toolchain. The `scripts/test.sh` workaround below is now a no-op here, but keep it — it tests
+the active toolchain, not the presence of Xcode, and Layer 1 must stay buildable under Command Line
+Tools.
+
+Layer 2 still needs a signed `.app` bundle for stable TCC permission grants, since TCC identifies
 clients by code signature and unsigned command-line binaries get inconsistent, easily-invalidated
-grants. Treat "install Xcode and produce a signed bundle" as a prerequisite of Layer 2 step 5, not
-of anything before it.
+grants. **That bundle is the *first* Layer 2 step, not a later one** — see Layer 2 module 0. An
+earlier draft of this paragraph deferred it to "step 5", which was wrong: every permission grant
+made before the bundle exists is invalidated by the next rebuild, so building capture first means
+granting Screen Recording to an identity that is about to change.
 
 ### Running the tests — use `scripts/test.sh`, not `swift test`
 
@@ -621,58 +638,526 @@ environment for the iOS build. See the iOS section of
 # Layer 2 — render path
 
 Conceptually identical to the Windows daemon — capture → text + image models → mode-driven response
-— but every mechanism is an Apple API behind a TCC permission. **Do not start Layer 2 until Layer 1
-is working end to end**; Layer 1 is nearly free given the existing proxy, and Layer 2 is where the
-real cost is.
+— but every mechanism is an Apple API behind a TCC permission, and that changes the shape of the
+work: on Windows the hard part is the capture, here the hard part is *holding* a permission the OS
+deliberately keeps under user control.
 
-Sketched here for ordering purposes; each module gets a full specification when Layer 1 lands.
+**Layer 1 has landed**, so the sketch that stood here is now replaced by a full specification.
 
-### 7. `ScreenCapture` — `ScreenCaptureKit`
+## What changed between the sketch and this specification
 
-`SCStream` against `SCShareableContent`. Requires the **Screen Recording** permission.
-`CGWindowListCreateImage` is obsoleted in macOS 15 and must not be used. Produces the same frame
-type the Windows `capture` module produces so the downstream scan interface is shared.
+Four things, recorded because they alter the plan rather than merely detail it:
 
-### 8. `Overlay` — borderless `NSWindow`
+1. **Full Xcode is now installed** — `xcode-select -p` reports `/Applications/Xcode.app` on the
+   development machine (macOS 26.5.2, Swift 6.3.3). The build-environment section above was written
+   under Command Line Tools only. `ScreenCaptureKit`, `ApplicationServices`, `IOKit.hid` and
+   `AppKit` all import and link, verified by compiling and running a probe against this toolchain.
+   The bundle-signing prerequisite Layer 2 needs is therefore no longer blocked on a toolchain
+   install.
+2. **The sketch was missing two modules.** It listed capture, overlay, hooks, AX text, fullscreen
+   and permissions — but nothing that *schedules* scans (the Windows daemon's `scan_loop`) and
+   nothing that carries verdicts to the Electron app (the Windows daemon's `ipc`). Both are load
+   bearing and both are specified below. Without the scheduler there is no debounce, no cadence
+   split between the image and text models, and nowhere for `ProtectionMode` to be applied; without
+   the IPC module the daemon can detect but cannot respond.
+3. **`PermissionGate` moves from last to first.** It was numbered 12 because it reads like
+   onboarding polish. It is not: no other Layer 2 module can be *run*, let alone verified, until
+   the process holds the permission it needs, and the permission is attached to a code signature
+   that must exist before the first grant. Building capture first means granting Screen Recording
+   to a binary whose identity is about to change.
+4. **Permission loss is a tamper event, not an error path.** This is the lesson the Android work
+   already paid for — see the `GuardStatus` foreground-service note in the root `AGENTS.md`: the
+   thing that matters is the still-alive process that can record a disable the guard itself cannot
+   report. Screen Recording is revocable by anyone who can authenticate as an admin, and Apple
+   reserves that right permanently (no MDM can remove it). So the daemon must treat "I no longer
+   have capture" as a reportable state transition, not as a reason to log and exit.
 
-Transparent, high `windowLevel`, `ignoresMouseEvents` for the pre-blur case. Covering a
-native-fullscreen Space needs `collectionBehavior` of `.canJoinAllSpaces` and `.fullScreenAuxiliary`
-— without both, the overlay silently fails to appear over fullscreen video, which is precisely the
-case that matters most.
+## Module 0 — the signed bundle, and the TCC identity trap
 
-### 9. `EventHooks` — `AXObserver` and `CGEventTap`
+**This is a prerequisite of every other Layer 2 module and must be built first.**
 
-`AXObserver` for window lifecycle and geometry, `CGEventTap` for scroll (feeding the scroll-delta
-debounce). Behind **Accessibility** and **Input Monitoring** permissions respectively.
+TCC identifies a client by its code-signing identity, not by its path. A SwiftPM executable target
+produces an unsigned Mach-O; grants made to it are keyed to an ad-hoc identity derived from the
+binary's `cdhash`, which changes on **every rebuild**. The practical consequence is that a grant
+obtained on Monday stops applying the first time `swift build` runs, and the failure is silent —
+`SCShareableContent` simply returns nothing rather than raising a permission error.
 
-### 10. `AccessibilityText` — AX text extraction
+**The trap that will actually cost a day, though, is the responsible-process rule.** When a
+command-line binary is launched from a terminal, TCC does not attribute the request to the binary —
+it attributes it to the *responsible process*, which is Terminal.app or iTerm. So the first run
+pops a prompt naming the terminal, the developer grants it, capture starts working, and the
+conclusion "permissions are handled" is wrong in three ways at once: the grant belongs to the
+terminal, it covers every other tool run from that terminal, and it evaporates the moment the
+daemon is launched by `launchd` instead. **Never validate a TCC-gated path by running it from a
+shell.** Launch it the way it will ship.
 
-Reads on-screen text without injection via the AX API. A **supplement** to OCR where it works, not a
-replacement — coverage varies wildly across apps, and any app drawing its own text (Electron, games,
-canvas-based UIs) returns nothing useful.
+What module 0 therefore has to produce:
 
-### 11. `FullscreenControl` — AX `AXFullScreen`
+- A real `.app` bundle (`HolyBlockerDaemon.app`) with an `Info.plist` carrying a stable
+  `CFBundleIdentifier` and the usage-description strings, since a bundle is the only artifact TCC
+  will hold a durable grant against.
+- A **stable signing identity**. A Developer ID certificate is the correct answer; a self-signed
+  certificate in the login keychain is an acceptable development stand-in *provided it is the same
+  certificate across rebuilds* — that is the property that matters, not the certificate's
+  provenance.
+- A `launchd` job (`LaunchDaemon` for the privileged Layer 1 half, `LaunchAgent` for the Layer 2
+  half — capture and AppKit need a GUI session and cannot run in the daemon context). This split is
+  new and worth stating plainly: **Layer 1 and Layer 2 cannot be the same process.** Layer 1 wants
+  root and no session; Layer 2 wants the user's GUI session and must not be root. Expect an
+  `XPC`/socket link between them, and expect the existing single `holy-blocker-macd` executable to
+  grow a second entry point rather than a second copy of the shared code.
 
-Force-exit fullscreen via the AX attribute. Usually unnecessary given a Space-covering overlay; keep
-it as the fallback path.
+SwiftPM cannot emit an `.app` bundle on its own, so this step adds either a small bundling script
+(`scripts/bundle.sh`: assemble the directory layout, write `Info.plist`, `codesign --sign`) or an
+Xcode project alongside the package. **Prefer the script** — it keeps the package the source of
+truth, keeps `scripts/test.sh` working unchanged, and avoids committing an `.xcodeproj` whose
+pbxproj format is hostile to review.
 
-### 12. `PermissionGate` — TCC state and the tamper model
+---
 
-Detect which permissions are granted, guide the admin through granting them once, and — critically —
-**detect when the protected user is themselves a local admin**, which silently defeats the entire
-tamper model. This is an open question in
-[content-interception.md](../../decisions/content-interception.md) and needs a product decision
-before onboarding is written.
+## Modules to add
+
+### 7. `PermissionGate` — TCC state, and the account model that locks it
+
+```
+Sources/MacDaemon/PermissionGate.swift
+```
+
+Detect and report which permissions are held, and detect the configuration that silently defeats
+the tamper model.
+
+```swift
+enum PermissionState { case granted, denied, undetermined }
+
+enum Capability { case screenRecording, accessibility, inputMonitoring }
+
+struct PermissionSnapshot {
+    var screenRecording: PermissionState
+    var accessibility:   PermissionState
+    var inputMonitoring: PermissionState
+    var protectedUserIsAdmin: Bool
+}
+```
+
+Responsibilities:
+
+- Read state through the **preflight APIs**, which do not prompt:
+  `CGPreflightScreenCaptureAccess()`, `AXIsProcessTrusted()`, and
+  `IOHIDCheckAccess(kIOHIDRequestTypeListenEvent)`. All three were verified to compile and run
+  against the current toolchain; on an ungranted machine they return `false`, `false`, and
+  `kIOHIDAccessTypeUnknown` (raw value 2) respectively.
+- **Do not read `TCC.db`.** It is SIP-protected, reading it requires Full Disk Access — a *stronger*
+  permission than the ones being inspected, which is an absurd dependency — and its schema is
+  private and has changed across releases. The preflight APIs are the supported surface.
+- Prompt exactly once per capability, deliberately, from the onboarding path — never as a side
+  effect of a scan. `CGRequestScreenCaptureAccess()` and
+  `AXIsProcessTrustedWithOptions([kAXTrustedCheckOptionPrompt: true])`. Note that Screen Recording's
+  prompt cannot be re-shown once denied; the only recovery is deep-linking the user to
+  System Settings (`x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture`).
+- **Poll for revocation** and emit a state transition when a held permission is lost. This is the
+  Android `GuardStatus` pattern, and it is the module's most important job — a revoked Screen
+  Recording grant is indistinguishable from "nothing bad is on screen" unless it is detected
+  explicitly.
+- Detect whether the protected user is a local administrator, which is the open product question
+  below.
+
+The pure part — mapping a `PermissionSnapshot` to a "what is actually protected right now"
+assessment and to state transitions worth reporting — is a plain function over the struct and gets
+tests first. The three preflight calls are the edge and go behind a protocol, mirroring
+`CommandRunner`.
+
+#### Admin detection, and the product decision it forces
+
+The tamper model in
+[content-interception.md](../../decisions/content-interception.md) requires the protected person to
+be a **standard user** with an accountability partner holding the admin password. If the protected
+user is themselves an admin, every Layer 2 permission is revocable by them in two clicks, and —
+as recorded in Layer 1's limits — `networksetup` proxy changes need no root for an admin either, so
+Layer 1 falls with it. The entire tamper model is then decorative.
+
+Detection is a group-membership read: `dscl . -read /Groups/admin GroupMembership`, or `id -Gn` for
+the current user. **On the development machine this check currently returns true** — `admin` appears
+in `id -Gn`, and `GroupMembership: root dutov _mbsetupuser` — so the machine Layer 2 is being built
+on is itself the unprotected configuration. That is worth knowing before any tamper-resistance claim
+is made from local testing.
+
+The product decision is what to *do* about it, and it is genuinely open. Three options:
+
+| Option | Consequence |
+|---|---|
+| Refuse to run | Honest, and useless for most Mac users — the majority are their own sole admin. Guarantees the product is uninstalled during onboarding. |
+| Warn, run anyway, and **report the weakened state** | Onboarding names the limitation plainly; the daemon records it and, in partnered mode, surfaces it to the partner. |
+| Proceed silently | Rejected outright. The product would be claiming protection it does not have. |
+
+**Recommendation: the middle option.** It matches the accountability model in
+[accountability.md](../../decisions/accountability.md), where solo mode is a complete configuration
+rather than a failure state — a self-admin user is in the same category, protected by friction and
+their own intent rather than by a lock, and the tool should say so rather than either pretending
+otherwise or refusing to help. The one thing that must not happen is the status UI showing the same
+"protected" state in both configurations. This needs sign-off before onboarding is written; it is
+listed as an open question in
+[content-interception.md](../../decisions/content-interception.md) and should be resolved there,
+not here.
 
 #### Reference documents
 
-- [Apple — ScreenCaptureKit](https://developer.apple.com/documentation/screencapturekit) — `SCStream`,
-  `SCShareableContent`, `SCContentFilter`, and the `SCStreamOutput` delegate contract.
+- [Apple — `CGPreflightScreenCaptureAccess`](https://developer.apple.com/documentation/coregraphics/cgpreflightscreencaptureaccess()) — the non-prompting check and its companion `CGRequestScreenCaptureAccess`.
+- [Apple — `AXIsProcessTrustedWithOptions`](https://developer.apple.com/documentation/applicationservices/1462089-axisprocesstrustedwithoptions) — the Accessibility check and the prompt option key.
+- [Apple — `IOHIDCheckAccess`](https://developer.apple.com/documentation/iokit/3181425-iohidcheckaccess) — Input Monitoring state, and the `IOHIDAccessType` values.
+- [Apple — Protecting user privacy (TCC)](https://support.apple.com/guide/security/controlling-app-access-to-files-sec51e0c5d5b/web) — which permissions are admin-modifiable and which are user-revocable.
+
+---
+
+### 8. `ScreenCapture` — `ScreenCaptureKit`
+
+```
+Sources/MacDaemon/ScreenCapture.swift
+```
+
+Produces the same logical frame the Windows `capture` module produces, so the downstream scan
+interface is shared:
+
+```swift
+struct CapturedFrame {
+    let pixels: [UInt8]   // BGRA, row-major, tightly packed (no row padding)
+    let width:  Int
+    let height: Int
+    let captured: Date
+}
+```
+
+Responsibilities:
+
+- Enumerate with `SCShareableContent`, build an `SCContentFilter`, run an `SCStream` with an
+  `SCStreamOutput` delegate on a dedicated dispatch queue.
+- Filter to the **frontmost window's application** rather than the whole display where possible, so
+  the daemon's own overlay is not captured and re-scanned — a feedback loop that would otherwise
+  re-trigger on the blurred backdrop it just drew. `SCContentFilter(display:excludingApplications:
+  exceptingWindows:)` is the mechanism; excluding our own bundle identifier is not optional.
+- Return an empty frame (zero width/height) when capture is unavailable, and let callers check —
+  the same contract as the Windows module. Fail open.
+
+Four traps, all of which produce plausible-looking wrong output rather than an error:
+
+1. **`CVPixelBuffer` rows are padded.** `bytesPerRow` is aligned (commonly to 64 bytes) and is
+   `≥ width * 4`. Copying `bytesPerRow * height` bytes and calling it a `width * height` image
+   yields a progressively sheared frame that still decodes as an image and still scores as
+   *something* on the classifier. Copy row by row using `CVPixelBufferGetBytesPerRow`, and lock with
+   `CVPixelBufferLockBaseAddress(_:.readOnly)` first.
+2. **The stream is change-driven, so a static image starves it.** `SCStreamFrameInfo.status` is one
+   of `.complete`, `.idle`, `.blank`, `.suspended`; only `.complete` carries new pixels, and a
+   motionless screen emits `.idle` frames with a nil surface. A still image is precisely the content
+   this project most needs to catch, so the module must **retain the last `.complete` frame** and
+   serve it to the scheduler on demand rather than requiring a fresh delivery per scan tick.
+3. **`SCStreamConfiguration` defaults to point dimensions, not pixels.** On a Retina display that is
+   half the real resolution, and the capture is a blurry downscale. Set `width`/`height` from the
+   display's pixel dimensions and set `scalesToFit` deliberately. This interacts with the image
+   model: `packages/image-sandbox` resizes the *shorter side* to 255 then centre-crops 224, so a
+   wrong aspect ratio here silently changes what the model sees — the same class of error the
+   `parity.rs` fixture caught on the Rust side.
+4. **DRM-protected content captures as black.** Netflix, Apple TV+ and any HDCP-protected surface
+   yield black frames by design. This is not a bug to fix; it is a coverage limit to record (below)
+   and, more usefully, a detectable one — an all-black frame from a window that is playing video is
+   a signal in itself.
+
+`CGWindowListCreateImage` is obsoleted in macOS 15 and must not be used, including as a fallback.
+
+#### Reference documents
+
+- [Apple — ScreenCaptureKit](https://developer.apple.com/documentation/screencapturekit) — `SCStream`, `SCShareableContent`, `SCContentFilter`, and the `SCStreamOutput` delegate contract.
+- [Apple — `SCStreamFrameInfo.status`](https://developer.apple.com/documentation/screencapturekit/scstreamframeinfo) — the `.complete`/`.idle`/`.blank`/`.suspended` attachment that governs trap 2.
+- [Apple — `CVPixelBuffer`](https://developer.apple.com/documentation/corevideo/cvpixelbuffer) — `CVPixelBufferGetBytesPerRow`, base-address locking, and the padding rule behind trap 1.
 - [Apple — `CGWindowListCreateImage` deprecation](https://developer.apple.com/documentation/coregraphics/1455730-cgwindowlistcreateimage) — confirms the obsoletion this plan routes around.
-- [Apple — Accessibility API / `AXUIElement`](https://developer.apple.com/documentation/applicationservices/axuielement_h) — `AXObserver` creation, notification registration, and attribute reads including `kAXFullScreenAttribute`.
-- [Apple — `CGEventTap`](https://developer.apple.com/documentation/coregraphics/quartz_event_services) — event tap creation, the Input Monitoring requirement, and tap re-enabling after timeout.
+
+---
+
+### 9. `Scanner` and `ScanLoop` — the interface and the scheduler
+
+```
+Sources/MacDaemon/Scanner.swift
+Sources/MacDaemon/ScanLoop.swift
+```
+
+Mirrors the Windows daemon's `scanner` + `scan_loop` split, and keeps the same vocabulary so the two
+daemons stay comparable:
+
+```swift
+enum ScanAction { case allow, warn, block }
+enum ScanSource { case ocr, image, text }
+enum ProtectionMode { case full, warn, off }
+
+struct ScanVerdict {
+    let action:    ScanAction   // effective action, after applying ProtectionMode
+    let rawAction: ScanAction   // as returned by the scanner, before the mode downgrade
+    let score:     Double       // 0.0–1.0
+    let source:    ScanSource
+}
+
+protocol Scanner { func scan(_ frame: CapturedFrame) -> ScanVerdict }
+
+struct NullScanner: Scanner { /* always .allow — the only implementation at first */ }
+```
+
+The loop is the scheduler bridging `EventHooks` callbacks and the scanner:
+
+- **Debounce** — discard events arriving within the debounce window of the previous one; only the
+  last event in a burst produces a capture.
+- **Cadence split**, per [edge-daemons.md](../../architecture/edge-daemons.md): the image classifier
+  every ~500 ms while the surface is eligible; OCR every 1000–2000 ms, plus immediately after a
+  foreground change or a meaningful frame difference. Text policy runs only when OCR returns
+  meaningfully changed text.
+- **Frame differencing** to avoid re-running OCR on an identical screen. Note this is *not* the
+  same as trap 2 above: `SCStream` going idle tells you the screen did not change, which is exactly
+  the cheap frame-difference signal the Windows daemon has to compute by hashing. Use it.
+- **Skip** when there is no eligible surface, the display is asleep, or the session is locked.
+- **Apply `ProtectionMode`** to produce `action` from `rawAction`, per
+  [protection-modes.md](../../decisions/protection-modes.md): in `warn` mode a block-range score is
+  downgraded to a warn; in `off` mode no scan runs at all.
+
+`ScanLoop` must be **pure with respect to time** — `tick(now:)` takes the clock as a parameter, as
+the Windows version does, so the debounce and cadence rules are unit-testable with an injected
+clock and no capture at all. This is the module with the most testable logic in Layer 2 and it needs
+tests first.
+
+#### Where the mode→action decision should live — open
+
+The mapping from *(score, thresholds, mode)* to an action is policy, and this would be its **third**
+independent implementation: `packages/text-policy` has it in Rust, the Windows daemon plans it in
+C++, and this would add Swift. Three implementations of a thresholding rule is three chances for the
+platforms to disagree about what "block" means.
+
+`packages/text-policy-ffi` already exposes `PolicyEngine`/`evaluate` over UniFFI, and **UniFFI
+generates Swift bindings natively** — Swift is a first-class target, unlike the Kotlin path that
+needed the `apps/mobile/scripts/build-ffi.sh` scaffolding. So the cheap correct answer is to consume
+the existing Rust policy from Swift rather than reimplement it, and this is the first platform where
+that costs almost nothing.
+
+Not decided here because it affects the Windows daemon too, and because it adds a Rust build step to
+a package that currently has none. Flagging it so the choice is made once, deliberately, rather than
+by default at implementation time.
+
+---
+
+### 10. `Overlay` — borderless `NSWindow`
+
+```
+Sources/MacDaemon/Overlay.swift
+```
+
+The response surface. Two distinct visual states, and the sketch conflated them:
+
+| State | Mouse events | Purpose |
+|---|---|---|
+| Warn interstitial | **Must be swallowed** | Blur + verse + a deliberate choice, per [warn-interstitial.md](../../product/flows/warn-interstitial.md) |
+| Block cover | **Must be swallowed** | Full interrupt, per [block.md](../../product/flows/block.md) |
+| Pre-blur / passive | `ignoresMouseEvents = true` | A hint that does not interrupt |
+
+`ignoresMouseEvents` belongs to the passive case only. An interstitial that lets clicks through to
+the content underneath is not an interstitial — the user can keep interacting with exactly what was
+just flagged.
+
+Requirements:
+
+- Transparent, borderless, `NSWindow.Level` above normal windows; `.screenSaver` level clears the
+  menu bar and Dock.
+- `collectionBehavior` must contain **both** `.canJoinAllSpaces` **and** `.fullScreenAuxiliary`.
+  With only one, the overlay silently fails to appear over native-fullscreen video — which is
+  precisely the case that matters most, and it fails by simply not showing rather than by erroring.
+- **One overlay per `NSScreen`.** A single window covers one display; on a two-monitor setup the
+  second screen is left showing the content. Observe
+  `NSApplication.didChangeScreenParametersNotification` and rebuild the set when displays are
+  connected, disconnected, or rearranged.
+- **The process needs an `NSApplication` run loop.** This package is currently a plain SwiftPM
+  executable with no `NSApplication`, and an `NSWindow` created without one will never appear.
+  Layer 2's GUI-session half must call `NSApplication.shared`, set
+  `setActivationPolicy(.accessory)` — so it draws overlays without a Dock icon or menu bar — and run
+  the main run loop. This is another reason Layer 1 and Layer 2 are separate processes.
+- The blurred backdrop uses the captured frame per
+  [warn-interstitial.md](../../product/flows/warn-interstitial.md). **That frame is never persisted,
+  never logged, and never leaves the device** — it is a texture, and the local-first rule in the
+  root `AGENTS.md` applies to it with full force.
+
+Keep the drawing thin: the pure part is *which* overlays should exist for a given verdict and screen
+configuration, and that is a testable function returning a set of frames. AppKit does the rest.
+
+#### Reference documents
+
 - [Apple — `NSWindow.CollectionBehavior`](https://developer.apple.com/documentation/appkit/nswindow/collectionbehavior) — `.canJoinAllSpaces` and `.fullScreenAuxiliary` semantics for overlays over fullscreen Spaces.
-- [Apple — Protecting user privacy (TCC)](https://support.apple.com/guide/security/controlling-app-access-to-files-sec51e0c5d5b/web) — which permissions are admin-modifiable and which are user-revocable. The asymmetry that Screen Recording **cannot** be force-granted by MDM is the load-bearing fact behind the account-based tamper model.
+- [Apple — `NSWindow.Level`](https://developer.apple.com/documentation/appkit/nswindow/level) — the ordering constants including `.screenSaver`.
+- [Apple — `NSApplication.ActivationPolicy`](https://developer.apple.com/documentation/appkit/nsapplication/activationpolicy) — `.accessory` for a UI-bearing process with no Dock presence.
+
+---
+
+### 11. `EventHooks` — window lifecycle and scroll
+
+```
+Sources/MacDaemon/EventHooks.swift
+```
+
+Supplies the fast wakeups the scan loop debounces, per
+[edge-daemons.md](../../architecture/edge-daemons.md). Two sources:
+
+- **`AXObserver`** for window lifecycle and geometry —
+  `kAXFocusedWindowChangedNotification`, `kAXWindowMovedNotification`,
+  `kAXWindowResizedNotification`, plus `NSWorkspace.didActivateApplicationNotification` for the
+  application-level change. Requires **Accessibility**. An `AXObserver` is inert until its run-loop
+  source is added via `CFRunLoopAddSource(_, AXObserverGetRunLoopSource(observer), .defaultMode)` —
+  omitting that yields an observer that registers successfully and never fires.
+- **Scroll**, feeding the scroll-delta debounce.
+
+**On scroll, prefer `NSEvent.addGlobalMonitorForEvents(matching: .scrollWheel)` over `CGEventTap`.**
+The daemon only needs to *observe* scroll, never to consume or modify it, and the global monitor is
+the read-only API for exactly that. It avoids the `CGEventTap` failure mode that is missed almost
+universally: **the system disables a tap that takes too long to respond**, delivering a
+`kCGEventTapDisabledByTimeout` event, and unless the callback watches for that event type and calls
+`CGEventTapEnable` again, scroll detection dies silently mid-session and never recovers. If a tap
+turns out to be necessary anyway, that re-enable path is mandatory, not defensive.
+
+The monitor route also likely avoids requesting **Input Monitoring** at all. Every additional TCC
+prompt is onboarding friction on a permission the user can revoke, so the fewer requested the
+better. Which permission a listen-only scroll monitor actually requires on macOS 26 should be
+**measured on the real system before it is written into onboarding** — the documentation is not
+crisp on the Accessibility/Input Monitoring boundary for non-keyboard events, and this plan should
+not assert what it has not run.
+
+#### Reference documents
+
+- [Apple — Accessibility API / `AXUIElement`](https://developer.apple.com/documentation/applicationservices/axuielement_h) — `AXObserver` creation, notification registration, and run-loop source attachment.
+- [Apple — `NSEvent` global monitors](https://developer.apple.com/documentation/appkit/nsevent/1535472-addglobalmonitorforevents) — the read-only observation path preferred here.
+- [Apple — Quartz Event Services (`CGEventTap`)](https://developer.apple.com/documentation/coregraphics/quartz_event_services) — tap creation, the timeout-disable behaviour, and `CGEventTapEnable`.
+
+---
+
+### 12. `AccessibilityText` — AX text extraction
+
+```
+Sources/MacDaemon/AccessibilityText.swift
+```
+
+Reads on-screen text without injection by walking the AX tree of the focused window
+(`kAXValueAttribute`, `kAXTitleAttribute`, `kAXDescriptionAttribute` over the descendant elements),
+and feeds it to `packages/text-policy`. Behind **Accessibility**.
+
+A **supplement to OCR, not a replacement.** Coverage varies wildly, and anything drawing its own
+text — canvas-based UIs, games, most Electron content — returns nothing useful. The scan loop must
+never treat an empty AX result as "no text on screen".
+
+Two traps:
+
+1. **AX calls are synchronous cross-process IPC and can block for seconds** against a hung or busy
+   application. Called on the scan loop's thread, one unresponsive app stalls the entire daemon.
+   Call `AXUIElementSetMessagingTimeout` with a short timeout (a few hundred ms) and do the walk off
+   the scheduler's thread. Also bound the tree walk by depth and node count — some apps expose
+   pathologically large trees.
+2. **Chromium-based apps expose nothing by default.** Chrome, Electron and anything else on
+   Chromium keep their accessibility tree switched off for performance and only build it when a
+   client sets `AXManualAccessibility` to true on the application element. Without that, the walk
+   returns a nearly empty tree and reads as "this app has no text" — which, given how much of the
+   relevant surface is a browser, would quietly gut the module's value.
+
+#### Reference documents
+
+- [Apple — `AXUIElement` attributes](https://developer.apple.com/documentation/applicationservices/axuielement_h) — attribute reads and `AXUIElementSetMessagingTimeout`.
+- [Chromium — accessibility on macOS](https://www.chromium.org/developers/design-documents/accessibility/) — the on-demand tree and the `AXManualAccessibility` opt-in behind trap 2.
+
+---
+
+### 13. `FullscreenControl` — AX `AXFullScreen`
+
+```
+Sources/MacDaemon/FullscreenControl.swift
+```
+
+Force-exit fullscreen by setting `kAXFullScreenAttribute` to `false` on the focused window element.
+Behind **Accessibility**.
+
+Keep it as the **fallback path only**. A correctly configured overlay (module 10, with both
+collection-behaviour flags) already covers a fullscreen Space, and yanking the user out of fullscreen
+is a far more violent interaction than covering the screen. Reach for this when the overlay is known
+not to work — the clearest case being applications that take an exclusive display capture, where no
+window can be composited above them and covering is impossible by construction.
+
+---
+
+### 14. `DaemonIPC` — carrying verdicts to the desktop app
+
+```
+Sources/MacDaemon/DaemonIPC.swift
+```
+
+The macOS counterpart to the Windows daemon's named-pipe server. Every flow in
+[block.md](../../product/flows/block.md) and
+[warn-interstitial.md](../../product/flows/warn-interstitial.md) ends with the daemon emitting a
+`scan_event` that the Electron app records, and
+[protection-mode-change.md](../../product/flows/protection-mode-change.md) sends a `config_update`
+back the other way — none of which is possible without this module.
+
+- Transport: a **Unix domain socket** in the user's container, not a TCP port. A localhost port is
+  reachable by every process on the machine including a browser page, which for a control channel
+  that can set `protection_mode` is a bypass.
+- Message shapes match the Windows daemon's so `daemon-ipc.ts` needs one transport adapter rather
+  than a second protocol: `scan_event { action, score, source, ts }` outbound,
+  `config_update { block_threshold, warn_threshold, protection_mode }` inbound.
+- The warn path additionally carries the captured frame for the blurred backdrop. Given the size of
+  a Retina frame, encode as JPEG rather than raw BGRA, and hold to the same rule as the overlay: it
+  is never written to disk and never logged.
+- Framing, parsing and message validation are pure and get tests first; the socket is the edge.
+
+---
+
+## What Layer 2 does *not* cover on macOS — honest limits
+
+As with Layer 1, these are inherent to the mechanism and are recorded here rather than discovered
+later:
+
+- **DRM-protected video captures as black.** HDCP-protected surfaces (Netflix, Apple TV+, and
+  others) are excluded from `ScreenCaptureKit` by design. Streaming services in that category are
+  invisible to the image model.
+- **Exclusive-display applications cannot be covered.** Where a game or app takes exclusive control
+  of the display, no window composites above it. Module 13 is the only lever, and it does not always
+  apply.
+- **Screen Recording is permanently revocable.** Apple reserves this from MDM specifically so it
+  always remains user-consentable, which also means it always remains user-*revocable* by anyone who
+  can authenticate as an admin. The mitigation is detection and reporting (module 7), never
+  prevention.
+- **Nothing is captured while the session is locked or the display is asleep** — correct behaviour,
+  but it means the daemon's coverage is not continuous and the event log will have gaps that are not
+  evidence of anything.
+- **The protected user being a local admin defeats the whole model**, Layer 1 and Layer 2 together.
+  See module 7; this is a setup requirement, not something code can fix.
+- **The capture path sees everything** — banking sessions, password managers, private messages. This
+  is the single largest privacy surface in the project. Frames stay in memory, are never persisted,
+  never logged, and never leave the device; the only frame that crosses a process boundary is the
+  warn-interstitial backdrop over the local socket. Any future change here needs an explicit
+  decision, not an implementation detail.
+
+## Layer 2 implementation order
+
+0. **Module 0 — the signed bundle and the `launchd` split.** Nothing below can be honestly verified
+   before this exists, because every grant made to an unsigned binary is invalidated by the next
+   build, and every grant made from a terminal belongs to the terminal.
+1. **`PermissionGate`** (module 7) — pure snapshot logic and transitions under test, then the three
+   preflight calls, then a real grant against the signed bundle. Verify revocation is *detected*,
+   not just that the grant works.
+2. **`ScreenCapture`** (module 8) — get one `.complete` frame out of `SCStream` and write it to a
+   PNG by hand before building anything on top of it. Confirm the row-padding copy against a known
+   test pattern rather than by eye; a sheared frame looks fine at a glance.
+3. **`Scanner` + `ScanLoop`** (module 9) with `NullScanner` — the debounce, cadence and mode logic
+   are the most testable code in Layer 2 and need no permissions at all. This step can proceed in
+   parallel with steps 1–2 by anyone blocked on grants.
+4. **`Overlay`** (module 10) — verify over native-fullscreen video and on a multi-display setup
+   specifically. Both failure modes are silent.
+5. **`DaemonIPC`** (module 14) — end to end into the Electron app, so verdicts become visible and
+   every later step is debuggable from the UI rather than from logs.
+6. **`EventHooks`** (module 11) — measure which permission the scroll monitor actually requires
+   before writing onboarding copy.
+7. **`AccessibilityText`** (module 12) — validate against a Chromium-based app early, since that is
+   where the `AXManualAccessibility` trap bites and where the coverage question is decided.
+8. **`FullscreenControl`** (module 13) — last, and only if module 10 proves insufficient in practice.
+
+Real classifiers replace `NullScanner` once the pipeline is proven end to end; `packages/image-sandbox`
+is the image side and already runs under `mitm-proxy`, so the work is binding it to a frame rather
+than building it.
 
 ---
 

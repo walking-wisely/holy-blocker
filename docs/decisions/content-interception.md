@@ -632,6 +632,14 @@ ceiling is fixed and recorded here so it is not rediscovered later.
   during onboarding (and how to detect/warn when the protected user is themselves a local
   admin, which defeats the lock). Whether to additionally ship an MDM PPPC profile to harden
   Accessibility, or leave that to enterprise deployments only.
+  **Detection is settled; the response is not.** `PermissionGate` (module 7 of
+  [../components/mac-daemon/plan.md](../components/mac-daemon/plan.md)) reads admin membership
+  from `dscl . -read /Groups/admin GroupMembership`. That plan recommends **warn, run anyway,
+  and report the weakened state** over refusing to run — refusing makes the product useless for
+  the majority of Mac users, who are their own sole admin, while running silently would claim
+  protection the setup does not have. This needs sign-off here before macOS onboarding is
+  written, and whichever way it goes, the status UI must not render both configurations
+  identically.
 - Android onboarding — the enable-Accessibility / "Allow restricted settings" flow varies by
   OEM (Samsung One UI, Xiaomi HyperOS, etc.); onboarding needs per-OEM guidance, and testing
   must use the real tap-to-install path (ADB-installed apps are exempt from Restricted
