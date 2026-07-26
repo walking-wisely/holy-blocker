@@ -270,8 +270,14 @@ a `mediaProjection`-typed foreground service that mirrors the display into a sma
 surface, reduces each frame to a 64-bit hash, and hands the few that survive the gate to a
 `FrameSink`.
 
-**The sink is empty on purpose.** OCR and the image classifier are `packages/image-sandbox`,
-which does not exist yet, so frames go to `CountingFrameSink` and are dropped. The capture half
+**The sink is empty on purpose.** The classifier is `packages/image-sandbox`, which landed on
+master while this was being built (decode → preprocess → ONNX → verdict, wired into
+`mitm-proxy`); nothing on the Android side reaches it yet, so frames go to `CountingFrameSink`
+and are dropped. Connecting the two is the next step and is an FFI job — a third UniFFI crate
+alongside `text-policy-ffi` and `net-shield-ffi` — with one thing to settle first: image-sandbox
+puts inference behind a non-default `onnx` feature, and shipping an ONNX runtime per ABI is a
+heavier build dependency than either existing FFI crate needed. Its `SandboxConfig` fails open on
+every path, which is the right default here too. The capture half
 was built first because it is the half that cannot be got right without a device — everything
 below was measured on an android-36 arm64 emulator, and three of the five items were wrong in
 the first version.

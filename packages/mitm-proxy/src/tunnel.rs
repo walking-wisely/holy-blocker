@@ -187,8 +187,25 @@ async fn forward(
 
             // Phase 4 — image scan
             if is_image {
-                if matches!((scan.image_scanner)(&bytes), ScanResult::Block { .. }) {
-                    return Ok(blocked());
+                // Decode plus a MobileNetV3 forward pass is milliseconds of
+                // pure CPU. Running it inline would hold a tokio worker for the
+                // duration, stalling every other connection that worker is
+                // driving, so it goes to the blocking pool. `Bytes` is
+                // reference-counted, so the clone is a refcount bump rather
+                // than a copy of the image.
+                let hooks = Arc::clone(&scan);
+                let payload = bytes.clone();
+                let verdict =
+                    tokio::task::spawn_blocking(move || (hooks.image_scanner)(&payload)).await;
+                match verdict {
+                    Ok(ScanResult::Block { .. }) => return Ok(blocked()),
+                    Ok(ScanResult::Allow) => {}
+                    Err(e) => {
+                        // The scanner panicked or the runtime is shutting down.
+                        // Fail open: a fault in us is not evidence about the
+                        // image, and blocking here would break the page.
+                        tracing::warn!("image scan task failed, allowing: {e}");
+                    }
                 }
             }
         }
