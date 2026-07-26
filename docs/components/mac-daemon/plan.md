@@ -32,12 +32,42 @@ responsible for.
 - `ProxyConfiguration.swift` — snapshot / apply / restore, plus `DefaultBypass`. **Done**,
   verified live: a full apply → restore cycle across all four real network services returns the
   machine byte-identically to its prior state.
+- `ProxySupervisor.swift` — `ProxySupervisorMachine` (the pure ordering state machine),
+  `RestartBackoff`, and the executor that drives it through injected edges. **Done**, verified
+  live: launch → health check → apply → SIGTERM → restore returns all four services
+  byte-identically, and the child is reaped.
+- `ProxyProcess.swift` — `MitmProxyProcess`, `TCPListenerProbe`, and the `SystemProxySettings`
+  adapter over `ProxyConfiguration`. **Done.**
+- `FirefoxTrust.swift` — `ImportEnterpriseRoots` policy in the `org.mozilla.firefox` preference
+  domain, with a `CFPreferences`-backed store. **Written and unit-tested, but not working**: the
+  policy lands correctly and `sudo firefox-trust` reports `enabled`, yet Firefox 152 still says the
+  Enterprise Policies service is inactive. Firefox is therefore still uncovered — see the
+  "unresolved" note in Layer 1 module 6.
 - `holy-blocker-macd` — CLI verbs (`services`, `ca-status`/`ca-install`/`ca-uninstall`,
-  `proxy-status`/`proxy-apply`/`proxy-restore`) so each module can be exercised against the real
-  system. **Done.**
-- `ProxySupervisor.swift` — not yet created.
+  `proxy-status`/`proxy-apply`/`proxy-restore`, `firefox-status`/`firefox-trust`/`firefox-untrust`,
+  and `run`) so each module can be exercised against the real system. **Done.**
 
-36 tests pass via `scripts/test.sh`.
+82 tests pass via `scripts/test.sh`.
+
+**Layer 1 is verified end to end, including a real browser.** With the supervisor running, a
+`URLSession` fetch of `http://example.com` reached the proxy — `mitm_proxy::forward: forwarding
+method=GET host=example.com port=80` — and returned 200. With the root CA installed and trusted via
+`CATrust`, **Firefox 152 renders `https://example.com` through the proxy**, and `openssl s_client
+-proxy 127.0.0.1:8080` reports `Verify return code: 0 (ok)` against our CA for a leaf issued
+`CN=Holy Blocker Local CA` / `CN=example.com`. Layer 2 may begin.
+
+Getting there required fixing a defect in `packages/mitm-proxy`: generated leaf certificates carried
+`rcgen`'s default 1975→4096 validity and no extended key usage, so Firefox rejected the handshake
+with `BadCertificate` regardless of root trust. See the mitm-proxy plan for the fix and, more
+usefully, for why a chain-verification test would *not* have caught it.
+
+**Firefox pins its own services.** Two background connections were still rejected with
+`BadCertificate` after the fix, while `example.com` succeeded. These are almost certainly Firefox's
+pinned Mozilla endpoints (telemetry / remote settings), which is the certificate-pinning limitation
+already recorded under "What Layer 1 does not cover" — pinned clients fail closed rather than being
+inspected. It could not be confirmed from the logs because **the proxy does not record the SNI when
+a browser-side handshake fails**, which is a small observability gap worth closing before the next
+coverage investigation.
 
 ### Two bugs the unit tests could not have caught
 
@@ -59,6 +89,19 @@ writing fixtures for any further `security(1)` or `networksetup(8)` parsing:
 
 Capture fixtures from real tool output. Where that is impractical (the `deny` trust result is the
 one remaining case), say so at the fixture.
+
+### Do not verify proxy coverage with `curl`
+
+macOS ships curl built against **SecureTransport** (`curl -V` reports it), and that build **ignores
+`--cacert`** and does not consult the macOS system proxy settings. So `curl --cacert ca.crt
+https://example.com` returns 200 whether or not the traffic was intercepted, and returns 200 again
+with the flag removed. It looks like a passing end-to-end test and proves nothing in either
+direction.
+
+Use a CFNetwork client instead — a `URLSession` fetch honours the per-service proxy settings this
+package writes, which is exactly the coverage question being asked. For the TLS half, `openssl
+s_client -proxy 127.0.0.1:8080 -connect host:443 -servername host` prints the issuer actually
+served, which is unambiguous. Both are recorded in the current-state section above.
 
 What already exists and is reused unchanged:
 
@@ -307,6 +350,18 @@ Test first, with `FakeCommandRunner`:
 - Disabled services are skipped.
 - `restore()` with a snapshot file left by a previous crashed run is honoured on next startup.
 
+**`restore()` is not atomic per service.** Clearing a service takes two calls —
+`-setwebproxy <svc> "" 0` to blank the host, then `-setwebproxystate <svc> off` — and the order
+cannot be reversed, because blanking also switches the proxy *on*. A process death between the two
+therefore leaves the service **enabled with an empty server**, which is worse than either endpoint
+and can break browsing outright. Observed once during development, when the supervisor was killed
+mid-restore.
+
+The persisted snapshot is what makes this recoverable: it is not deleted until the restore
+completes, so `proxy-restore` on the next start replays it and lands correctly. That is the crash
+path working as designed, but a startup check that detects and repairs "enabled with an empty
+server" would close the window properly, and is not yet written.
+
 **Bypass list.** At minimum `localhost`, `127.0.0.1`, `*.local`, and the link-local range, so the
 proxy never sits in front of loopback and Bonjour traffic. Captive-portal detection hosts belong
 here too or the user cannot join a hotel network while protected.
@@ -344,17 +399,134 @@ Responsibilities:
 Model the ordering as a pure state machine (`stopped → starting → healthy → configured →
 restoring`) so the transitions are unit-testable without spawning anything.
 
-### 6. Firefox NSS trust (deferred within Layer 1)
+**A third ordering rule emerged while building this, and it is the least obvious of the three:
+system proxy settings must be applied exactly once per run.** `ProxyConfiguration.apply()`
+snapshots current settings before writing its own, so re-applying after a restart would capture
+*our* proxy as the machine's prior state — and `restore()` would then pin the user to a dead local
+port permanently, with the real prior settings gone. The machine therefore tracks whether this run
+already owns a snapshot, and a restart that comes back healthy transitions straight to `configured`
+without re-applying.
 
-Firefox ignores the System keychain. Two options, in preference order:
+**`mitm-proxy` currently takes no command-line arguments.** It hardcodes `127.0.0.1:8080` and
+loads its CA from the relative path `data/ca`, so the child's working directory is load-bearing and
+the port is not actually selectable yet. `MitmProxyProcess` accepts an `arguments` array so this
+side needs no change once the Rust binary grows a CLI, but until it does, `HOLY_BLOCKER_PROXY_PORT`
+only changes where the supervisor *probes*, not where the proxy *binds*. Giving `mitm-proxy` a
+`--port` and `--ca-dir` is a prerequisite for running on any other port.
 
-1. Set `security.enterprise_roots.enabled` to `true` in the Firefox policy file
-   (`/Library/Application Support/Mozilla/Certificates` / `policies.json`), which makes Firefox read
-   the platform store. Clean, and admin-writable — so it fits the tamper model.
-2. Import directly into each profile's NSS database with `certutil`. Fragile; requires locating
-   every profile and a tool Firefox does not install.
+### 6. Firefox NSS trust — `FirefoxTrust.swift`
 
-Prefer option 1. Record option 2 only as a fallback for versions that ignore the policy.
+Firefox keeps its own NSS trust store and ignores the System keychain, so `CATrust` alone leaves
+every Firefox user staring at certificate errors. The `Certificates` → `ImportEnterpriseRoots`
+enterprise policy sets `security.enterprise_roots.enabled`, which makes Firefox read the platform
+store. It is supported on Windows and macOS only.
+
+An earlier draft of this section named
+`/Library/Application Support/Mozilla/Certificates / policies.json` as the policy location. **No
+such path exists.** Mozilla documents exactly two delivery mechanisms on macOS:
+
+1. **The managed-preferences domain `org.mozilla.firefox`** — what this module uses. Policy keys
+   sit at the top level of the domain: `EnterprisePoliciesEnabled` as a boolean, and `Certificates`
+   as a nested dictionary containing `ImportEnterpriseRoots`.
+2. **`Firefox.app/Contents/Resources/distribution/policies.json`** — rejected. Writing inside the
+   bundle breaks the notarized app's code-signature seal, and every Firefox update replaces the
+   bundle and silently drops the policy.
+
+Reads and writes go through `CFPreferences`, not the plist file, because that is the API Firefox
+itself reads with; writing the file directly races `cfprefsd`, which caches the domain and can
+serve or write back a stale copy. `kCFPreferencesAnyUser` + `kCFPreferencesAnyHost` is the pair
+that maps to `/Library/Preferences/org.mozilla.firefox.plist` — `kCFPreferencesCurrentHost` would
+land in `/Library/Preferences/ByHost/` under a hardware UUID instead. Writing requires root, which
+suits the tamper model: the protected user cannot revoke it unprivileged.
+
+The merge behaviour is the part worth testing, and it mirrors the third-party-proxy concern
+recorded below. An MDM-managed Mac may already carry a Firefox policy payload, so `install()`
+merges into whatever is there and `uninstall()` removes only `ImportEnterpriseRoots` — dropping the
+`Certificates` dictionary only if it empties, and `EnterprisePoliciesEnabled` only if no other
+policy still depends on it.
+
+Direct NSS import into each profile with `certutil` remains the fallback for versions that ignore
+the policy. It is fragile — it requires locating every profile and a tool Firefox does not install
+— and is not built.
+
+#### This module is not needed for coverage, and cannot work the way it is written
+
+Two findings, both from reading the shipped Firefox 152.0.5 build rather than reasoning about it.
+Together they retire the premise this step was written on.
+
+**1. Firefox already trusts System-keychain roots.** `security.enterprise_roots.enabled` is a
+`StaticPref` with a default of `true`. There is nothing to turn on. The original claim at the top of
+module 2 — that Firefox ignores the System keychain and therefore needs a separate step — has been
+obsolete for several releases.
+
+**2. Firefox deliberately ignores this exact policy when it stands alone.** From
+`modules/EnterprisePoliciesParent.sys.mjs` inside `Firefox.app/Contents/Resources/omni.ja`:
+
+```js
+// Because security.enterprise_roots.enabled is true by default, we can
+// ignore attempts by Antivirus to try to set it via policy.
+if (
+  Object.keys(provider.policies).length === 1 &&
+  provider.policies.Certificates &&
+  Object.keys(provider.policies.Certificates).length === 1 &&
+  (provider.policies.Certificates.ImportEnterpriseRoots === true ||
+    provider.policies.Certificates.ImportEnterpriseRoots === 1)
+) {
+  this.status = Ci.nsIEnterprisePolicies.INACTIVE;
+  return;
+}
+```
+
+A policy set consisting of *only* `Certificates.ImportEnterpriseRoots` short-circuits to INACTIVE
+and returns before `_activatePolicies` — so the policy is genuinely not applied, not merely
+reported oddly. **To make `ImportEnterpriseRoots` take effect via policy you must ship at least one
+other policy alongside it.** There is no warning; `about:policies` just says the service is
+inactive.
+
+Note what this does *not* mean. `forced`-ness was a dead end: hand-creating
+`/Library/Managed Preferences/org.mozilla.firefox.plist` does flip
+`CFPreferencesAppValueIsForced` to true (measured), and Firefox still reported inactive, because the
+short-circuit above is the real gate. Mozilla's KB advertising
+`sudo defaults write /Library/Preferences/org.mozilla.firefox ...` is fine as far as it goes.
+
+##### What the module is actually for
+
+Keep it, but on a different justification. It is useless as "make Firefox trust the CA" and
+potentially useful as **"re-assert the pref if something turns it off"** — a user or an antivirus
+setting `security.enterprise_roots.enabled` to false is a plausible evasion of the whole render-path
+model. That is a tamper-model concern, not a coverage one, and any implementation of it has to
+carry a companion policy or hit the short-circuit above.
+
+##### Verifying this without a human
+
+`about:policies` is a GUI page, but Firefox renders it headlessly, which makes this checkable from
+CI or an agent:
+
+```
+/Applications/Firefox.app/Contents/MacOS/firefox --headless --new-instance \
+  -profile <tmp-profile> --window-size 1200,900 \
+  --screenshot <out.png> about:policies
+```
+
+Use a throwaway `-profile` so a running Firefox is undisturbed. The shipped policy logic itself is
+readable without launching anything — `omni.ja` is a plain zip:
+
+```
+unzip -p /Applications/Firefox.app/Contents/Resources/omni.ja \
+  modules/EnterprisePoliciesParent.sys.mjs
+```
+
+Prefer that to reading `mozilla-central`, which is several versions ahead of any installed build and
+had already refactored this code path.
+
+#### Reference documents
+
+- [Firefox enterprise policy reference — Certificates](https://firefox-admin-docs.mozilla.org/reference/policies/certificates/)
+  — `ImportEnterpriseRoots` semantics, platform support, and the preference it maps to.
+- [Mozilla policy templates — `mac/org.mozilla.firefox.plist`](https://github.com/mozilla/policy-templates/blob/master/mac/org.mozilla.firefox.plist)
+  — the authoritative plist shape; confirms the keys are top-level with no wrapping container.
+- [Apple — `CFPreferences`](https://developer.apple.com/documentation/corefoundation/preferences_utilities)
+  — the user/host domain pairs and which file each resolves to.
 
 ## What Layer 1 does *not* cover on macOS — honest limits
 
@@ -432,11 +604,17 @@ environment for the iOS build. See the iOS section of
    independent check that the CA was actually trusted.
 5. ~~`ProxyConfiguration.swift` — snapshot/apply/restore under test, then a manual end to end
    check that `restore()` genuinely returns the machine to its prior state.~~ **Done** —
-   apply → restore verified byte-identical across all four real network services. Still
-   outstanding: confirming that browsing actually *works* through the proxy, which needs
-   `mitm-proxy` running and therefore waits on `ProxySupervisor`.
-6. `ProxySupervisor.swift` — the ordering state machine under test, then real process spawning.
-7. Firefox NSS trust (module 6 above).
+   apply → restore verified byte-identical across all four real network services.~~ Traffic
+   through the proxy is now confirmed too — see the end-to-end note in the current-state section.
+6. ~~`ProxySupervisor.swift` — the ordering state machine under test, then real process
+   spawning.~~ **Done.** The state machine, `RestartBackoff`, and the executor are unit-tested;
+   the `run` verb was exercised live against a real `mitm-proxy` child, including SIGTERM →
+   restore → reap.
+7. ~~Firefox NSS trust (module 6 above).~~ **Retired as a coverage step.** Firefox trusts
+   System-keychain roots by default (`security.enterprise_roots.enabled` defaults to `true`), so
+   `CATrust` alone covers it and no policy is required. `FirefoxTrust.swift` is kept for the
+   tamper-model case only; read module 6 before touching it, because Firefox silently ignores
+   `ImportEnterpriseRoots` when it is the only policy present.
 
 ---
 

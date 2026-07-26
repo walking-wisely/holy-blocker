@@ -1,8 +1,13 @@
 import Foundation
 import MacDaemon
 
-// Layer 1 command-line surface. The long-running daemon loop lands with ProxySupervisor; these
-// verbs exist so each Layer 1 module can be exercised against the real system independently.
+// Line-buffer stdout. When `run` has its output captured to a log file, the default block
+// buffering holds every progress line until the process exits — precisely when a supervisor's
+// log stops being useful.
+setvbuf(stdout, nil, _IOLBF, 0)
+
+// Layer 1 command-line surface. `run` is the supervised daemon; the remaining verbs exist so each
+// Layer 1 module can be exercised against the real system independently.
 
 let usage = """
     usage: holy-blocker-macd <command>
@@ -14,12 +19,18 @@ let usage = """
       proxy-status                      show current proxy settings per service
       proxy-apply <host> <port>         point enabled services at the proxy
       proxy-restore                     restore settings from the snapshot
+      firefox-status                    report whether Firefox trusts OS roots
+      firefox-trust                     enable the ImportEnterpriseRoots policy (requires root)
+      firefox-untrust                   remove it again (requires root)
+      run <proxy-binary> <proxy-dir>    supervise the proxy: launch, wait, route, restore on exit
 
     Proxy changes need no root for an admin user — only the default state directory does.
 
     Environment:
       HOLY_BLOCKER_STATE_DIR            where the proxy snapshot is stored
                                         (default: /Library/Application Support/HolyBlocker)
+      HOLY_BLOCKER_PROXY_HOST           proxy listen host for `run` (default: 127.0.0.1)
+      HOLY_BLOCKER_PROXY_PORT           proxy listen port for `run` (default: 8080)
     """
 
 let stateDirectory = URL(
@@ -45,6 +56,46 @@ func trust(_ arguments: [String]) -> CATrust {
         runner: runner,
         certificatePath: URL(fileURLWithPath: arguments[0]),
         commonName: arguments[1])
+}
+
+let proxyHost = ProcessInfo.processInfo.environment["HOLY_BLOCKER_PROXY_HOST"] ?? "127.0.0.1"
+let proxyPort = Int(ProcessInfo.processInfo.environment["HOLY_BLOCKER_PROXY_PORT"] ?? "") ?? 8080
+
+/// Set from a signal handler, so it must stay a plain flag with no allocation behind it.
+nonisolated(unsafe) var stopRequested: sig_atomic_t = 0
+
+/// Supervises the proxy until interrupted, then puts the machine back.
+func runSupervisor(binary: URL, workingDirectory: URL) throws {
+    let configuration = ProxyConfiguration(runner: runner, snapshotPath: snapshotPath)
+    let supervisor = ProxySupervisor(
+        host: proxyHost,
+        port: proxyPort,
+        process: MitmProxyProcess(executable: binary, workingDirectory: workingDirectory),
+        probe: TCPListenerProbe(),
+        settings: SystemProxySettings(
+            configuration: configuration, runner: runner, host: proxyHost, port: proxyPort))
+
+    // Without this the machine is left pointed at a port that dies with us on Ctrl-C.
+    for received in [SIGINT, SIGTERM] {
+        signal(received) { _ in stopRequested = 1 }
+    }
+
+    print("starting proxy \(binary.path) for \(proxyHost):\(proxyPort)")
+    try supervisor.start()
+
+    guard supervisor.state == .configured else {
+        fail(supervisor.lastFailure ?? "proxy did not become healthy")
+    }
+    print("routing traffic to \(proxyHost):\(proxyPort) — ^C to restore")
+
+    while stopRequested == 0 && supervisor.state != .stopped {
+        try supervisor.checkLiveness()
+        Thread.sleep(forTimeInterval: 1)
+    }
+
+    try supervisor.stop()
+    if let failure = supervisor.lastFailure { fail(failure) }
+    print("restored network settings")
 }
 
 let arguments = Array(CommandLine.arguments.dropFirst())
@@ -93,6 +144,25 @@ do {
         let config = ProxyConfiguration(runner: runner, snapshotPath: snapshotPath)
         try config.restore()
         print("restored from snapshot")
+
+    case "firefox-status":
+        print(try FirefoxTrust(store: CFPreferencesPolicyStore()).state())
+
+    case "firefox-trust":
+        let firefox = FirefoxTrust(store: CFPreferencesPolicyStore())
+        try firefox.install()
+        print("state: \(try firefox.state())")
+
+    case "firefox-untrust":
+        let firefox = FirefoxTrust(store: CFPreferencesPolicyStore())
+        try firefox.uninstall()
+        print("state: \(try firefox.state())")
+
+    case "run":
+        guard rest.count == 2 else { fail("expected <proxy-binary> <proxy-working-dir>") }
+        try runSupervisor(
+            binary: URL(fileURLWithPath: rest[0]),
+            workingDirectory: URL(fileURLWithPath: rest[1]))
 
     default:
         print(usage)
