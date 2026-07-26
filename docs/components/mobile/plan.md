@@ -73,6 +73,9 @@ The MVP builds that Layer 2 text path, and nothing else.
 - `ScreenCaptureService.kt` — the `MediaProjection` edge: consent order, virtual display,
   `ImageReader` frames — **Done**, verified on an android-36 arm64 emulator by
   `scripts/smoke-test-capture.sh`. It captures and gates; it does not yet classify.
+- The image path — the backbone on LiteRT and the head crate the frames are for — **not started**;
+  see §9 and [classifier-head/plan.md](../classifier-head/plan.md). It is deliberately not
+  `packages/image-sandbox`, which is the ONNX half of a per-platform split.
 - `admin/HolyBlockerAdminReceiver.kt` — device admin, so uninstall is refused until it is
   deactivated — **Done**, verified on an android-36 arm64 emulator.
 - Tamper log — **Done**, see step 9 below.
@@ -273,33 +276,9 @@ surface, reduces each frame to a 64-bit hash, and hands the few that survive the
 **The sink is empty on purpose.** The classifier is `packages/image-sandbox`, which landed on
 master while this was being built (decode → preprocess → ONNX → verdict, wired into
 `mitm-proxy`); nothing on the Android side reaches it yet, so frames go to `CountingFrameSink`
-and are dropped. **`image-sandbox` is not the mobile path, and wiring the sink to it would be a wrong turn.**
-The runtime split was decided on 2026-07-18 and is recorded in
-[learning-from-feedback.md](../../decisions/learning-from-feedback.md#on-device-runtime-and-where-the-head-lives-decided-2026-07-18):
-LiteRT runs the frozen backbone on Android, ONNX Runtime does the same job on Windows, and the
-head — the part that turns an embedding into a verdict, and that on-device learning would later
-train — is hand-written in Rust behind UniFFI and shared by both. `image-sandbox` is the ONNX
-half of that split, built for `mitm-proxy`.
-
-Measured here while confirming it, and worth not re-deriving: `packages/image-sandbox` **does**
-build for `aarch64-linux-android` with `--features onnx` (ONNX Runtime 1.24.2, statically
-linked), but `ort` ships no prebuilt runtime for `x86_64-linux-android` or
-`armv7-linux-androideabi`, so that route would cost two of the three ABIs `build-ffi.sh` targets.
-That is a reason to prefer the decided LiteRT path, not merely a build inconvenience.
-
-So the mobile image path is three pieces, none of them yet built:
-
-1. **The backbone on LiteRT** — `machine-learning`'s `export_tflite.py` already produces a
-   verified 5.90 MB flatbuffer, and the export contract terminates at the embedding on purpose.
-2. **A head crate in Rust over UniFFI** — embedding → score → verdict, reusing image-sandbox's
-   contract (`softmax(logits)[1]`, block at `>=`, fail open on every error path) so the two
-   platforms cannot drift apart.
-3. **Model provisioning** — `data/models/` is gitignored and **no artifact exists on disk today**,
-   so the runtime needs the `BlocklistStore` treatment: read from `filesDir`, and behave exactly
-   as image-sandbox's disabled sandbox does when there is nothing there.
-
-Until then `CountingFrameSink` is the honest state: the capture path runs, and nothing claims to
-be classifying. The capture half
+and are dropped. What the sink should call is **not** `packages/image-sandbox` — see §9, which is the rest of
+this step. Until that exists, `CountingFrameSink` is the honest state: the capture path runs,
+and nothing claims to be classifying. The capture half
 was built first because it is the half that cannot be got right without a device — everything
 below was measured on an android-36 arm64 emulator, and three of the five items were wrong in
 the first version.
@@ -761,6 +740,60 @@ sideloading and Play is an explicit non-goal.
 - [`AccessibilityServiceInfo#FLAG_REPORT_VIEW_IDS`](https://developer.android.com/reference/android/accessibilityservice/AccessibilityServiceInfo#FLAG_REPORT_VIEW_IDS)
 - [`AccessibilityService#GLOBAL_ACTION_BACK`](https://developer.android.com/reference/android/accessibilityservice/AccessibilityService#GLOBAL_ACTION_BACK)
 
+### 9. The image path — backbone on LiteRT + the head crate — not yet created
+
+§6 delivers frames. This is what looks at them, and it is the half of step 12 that is still
+open. **It does not go through `packages/image-sandbox`**, and the reason is a decision, not an
+oversight:
+[learning-from-feedback.md § On-device runtime and where the head lives](../../decisions/learning-from-feedback.md#on-device-runtime-and-where-the-head-lives-decided-2026-07-18)
+settled on 2026-07-18 that the frozen backbone runs on **LiteRT on Android and ONNX Runtime on
+Windows**, with the head — embedding → score → verdict — hand-written in Rust behind UniFFI and
+shared by both. `image-sandbox` is the ONNX half of that split, built for `mitm-proxy`.
+
+The short version of why: nothing can train on Android. LiteRT's on-device training needs
+TensorFlow-authored `train`/`infer` signatures that a `litert-torch` model cannot emit,
+ExecuTorch's Android AAR has no training binding at all, and `onnxruntime-training-android` has
+not published since 2024 while its inference sibling ships monthly. A head that is 2,050 numbers
+is a hundred lines of arithmetic instead, and it is the only shape that leaves room for the
+per-device updates the product design calls for. The decision doc carries the evidence.
+
+**Measured here, so nobody re-derives it:** `image-sandbox` *does* build for
+`aarch64-linux-android` with `--features onnx` (ONNX Runtime 1.24.2, statically linked, plus a
+`libc++_shared.so` to package), but `ort` ships **no prebuilt runtime for
+`x86_64-linux-android` or `armv7-linux-androideabi`** — the build fails outright. Taking that
+route would cost two of the three ABIs `build-ffi.sh` targets, which is a reason to prefer the
+decided path rather than merely an inconvenience.
+
+Three pieces, in dependency order:
+
+1. **`packages/classifier-head`** — the head and its FFI wrapper. Pure arithmetic, needs no
+   model artifact, and is therefore the piece that can be built and tested first. See
+   [classifier-head/plan.md](../classifier-head/plan.md).
+2. **The backbone on LiteRT.** `machine-learning`'s `export_tflite.py` already produces a
+   verified 5.90 MB flatbuffer, and its export contract terminates at the embedding on purpose.
+   The Android side is the LiteRT interpreter over that file, emitting the embedding the head
+   consumes. Note the tensor layout question is open: `preprocess.rs` produces NCHW for ONNX,
+   and what `litert-torch` emits has to be read off the actual artifact rather than assumed.
+3. **Model provisioning.** `data/models/` is gitignored and **no artifact exists on disk today**,
+   so this needs the `BlocklistStore` treatment — read from `filesDir`, and with nothing there
+   behave exactly as `ImageSandbox::disabled()` does: allow, and say so.
+
+`FrameSink` is the seam all three land behind; §6's `CapturedFrame` already carries tightly
+packed RGBA at capture size, which is the input the preprocessing step wants.
+
+**What this cannot claim until an artifact exists.** With no model on disk, the whole path can
+be unit tested and shown to fail open, and nothing more. A smoke test asserting "capture →
+embedding → verdict" needs a `.tflite` exported from a trained checkpoint; until then the
+emulator can only confirm that a missing model is handled the way it says it is.
+
+#### Reference documents
+
+- [learning-from-feedback.md](../../decisions/learning-from-feedback.md) — the runtime split, with the evidence for each rejected framework
+- [classifier-head/plan.md](../classifier-head/plan.md) — the head crate
+- [LiteRT for Android](https://developers.google.com/edge/litert/android) — the interpreter this needs
+- [Convert PyTorch to LiteRT](https://developers.google.com/edge/litert/models/convert_pytorch) — the export side, already exercised by `export_tflite.py`
+- [machine-learning/plan.md](../machine-learning/plan.md) — the export contract, and why it stops at the embedding
+
 ## The FFI dependency
 
 `packages/text-policy-ffi` is a UniFFI wrapper over `text-policy`, added for this module. It
@@ -921,9 +954,22 @@ scaffolding and will fail at load time if they fall out of sync with the `.so`.
     it is the same rule as the unsupported-device notice — and it was invisible to unit tests and
     to logcat alike; a screenshot is what showed it.
 
-    Ordered before step 13 rather than after it because it needs no new Rust: the userspace TCP
-    stack SNI filtering wants is a larger piece of work than the whole capture path was.
-13. SNI/IP filtering in the VPN, which needs the userspace TCP stack §5 describes. Reuses
+    Ordered before the SNI/IP work (now step 14) rather than after it because it needs no new
+    Rust: the userspace TCP stack SNI filtering wants is a larger piece of work than the whole
+    capture path was. What remains of this step is the image path — step 13, and §9.
+13. **The image path** — §9, and the rest of step 12. Ordered ahead of step 14 because capture
+    without it produces frames nobody looks at, which is the one part of this module that
+    currently costs battery and returns nothing.
+
+    a. `packages/classifier-head` + its FFI wrapper — pure arithmetic, no artifact needed, and
+       the reason this sub-order starts here. See [classifier-head/plan.md](../classifier-head/plan.md).
+    b. The LiteRT interpreter on Android over a backbone `.tflite`, emitting the embedding.
+    c. Model provisioning from `filesDir`, and `FrameSink` wired to the two.
+
+    **Blocked on an artifact for verification, not for building.** `data/models/` is gitignored
+    and nothing is on disk, so (a) is fully testable today, (b) and (c) can be built and shown
+    to fail open, and only an exported checkpoint makes an end-to-end smoke test possible.
+14. SNI/IP filtering in the VPN, which needs the userspace TCP stack §5 describes. Reuses
     net-shield's `extract_sni` and `IpFilter` over the FFI surface step 11 established.
 
 #### Reference documents — steps 7 and 8
