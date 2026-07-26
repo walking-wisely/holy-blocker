@@ -91,4 +91,15 @@
     <string name="action_enable_admin">Turn on uninstall protection</string>
     <string name="admin_add_explanation">While this is on, Holy Blocker cannot be uninstalled until you turn it off again. It grants no other permissions — it cannot lock, wipe, or change your device.</string>
     <string name="admin_disable_warning">Turning this off lets Holy Blocker be uninstalled again.</string>
+
+    <!--
+      The network guard. The copy says what it covers and what it does not,
+      because a user who believes the network is filtered when only name lookups
+      are is worse off than one who knows — same rule as the unsupported-device
+      notice above.
+    -->
+    <string name="network_status_on">Blocked sites are filtered before they are looked up.</string>
+    <string name="network_status_off">Site filtering is off.</string>
+    <string name="action_enable_network_guard">Turn on site filtering</string>
+    <string name="network_guard_explanation">Holy Blocker uses Android’s VPN slot to filter name lookups on this device. Nothing is sent anywhere: lookups are answered or passed straight through on the phone. Android allows one VPN at a time, so turning this on replaces any other VPN you use.</string>
 </resources>
