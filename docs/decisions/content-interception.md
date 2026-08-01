@@ -513,11 +513,231 @@ Caveats, stated plainly:
    FileVault plus a recovery lock are also configured — the same class of out-of-scope risk
    as Windows boot-from-external-media.
 
+#### What the Android comparison actually shows
+
+The Android build blocks the screens that would remove its guard, so the obvious question is why
+macOS does not simply do the same. The comparison is worth spelling out, because it hides two
+different mechanisms that are usually merged:
+
+- **`SettingsGuard` pressing BACK** *is* the app racing the UI. Even on Android it is fragile — it
+  needed `isAccessibilityTool` to be handed rows at all, needed focus-gating for split screen, and
+  Recents remains deferred pending real OEM hardware.
+- **Uninstall refusal while device admin is active** is *not* the app. `DeviceAdminReceiver.
+  onDisableRequested` is the OS asking the app's permission, and the OS enforces the refusal. The
+  app only supplies a string.
+
+The strong protection is the second one, and it is strong because it is OS-enforced. macOS has no
+equivalent for third parties: no `onDisableRequested`, no uninstall interception.
+
+**But Android only needed DeviceAdmin because Android apps can never be root.** DeviceAdmin is a
+substitute for privilege separation on a platform that denies apps privilege. macOS supplies the
+real thing, and a **root `LaunchDaemon` is the macOS device-admin equivalent** — a standard user
+cannot `launchctl bootout` it, `kill` it, delete it from `/Library`, or alter its TCC grants. In one
+respect it is stronger: Android device admin can be deactivated by the user after the cooldown, so
+it is friction; a root daemon against a standard user is a boundary the kernel enforces.
+
+The structural difference that does break the Settings-guard approach is simpler: **macOS users have
+a terminal and Android users do not.** On Android the accessibility screen is the only door a normal
+user has. On macOS it is one door among several, and `tccutil reset ScreenCapture <bundle-id>` was
+confirmed to run without `sudo` (it failed at bundle-ID resolution, `OSStatus -10814`, not on
+privilege). Guarding the Settings window while `tccutil`, `launchctl`, `kill` and Recovery stay open
+is guarding one door in a room with many.
+
+#### Identify the window, do not classify it — measured
+
+Detecting that System Settings is frontmost needs **no permission at all**.
+`NSWorkspace.shared.frontmostApplication` returns bundle identifier, name and PID with both Screen
+Recording and Accessibility ungranted (measured on macOS 26.5.2). Using screen capture and OCR to
+reach the same conclusion would cost ~500 ms and a full ML pipeline to be *less* reliable than
+reading a string.
+
+The rule that follows: **capture is for classifying what is inside a window, not for identifying
+which window.** Window identity is metadata, and metadata is cheap.
+
+The *pane* is not free, though. Measured on the same machine: of 21 on-screen windows,
+`CGWindowListCopyWindowInfo` exposed owner names and bounds for all of them and a non-empty
+`kCGWindowName` for **none** — titles are redacted without Screen Recording. So "Settings is open"
+is free; "Settings is open at Privacy & Security" costs a grant, or an AX tree walk.
+
+#### Why intercepting commands at the text layer cannot work
+
+An appealing idea is to watch keystrokes and inspect script contents before execution, matching with
+a precompiled matcher or a shell AST. It fails for three independent reasons, any one sufficient:
+
+1. **Text-to-effect is not injective, and the rewriting grammar is infinite.** `tccutil reset`,
+   `t''ccutil re""set`, `$(base64 -d <<< …)`, and `X=tcc; Y=util; $X$Y reset` are the same action.
+   Matching is then over every encoding of a language rather than the language — the reason
+   command-line signature scanning loses generally.
+2. **`eval` makes it halting-shaped.** An AST helps only if the parse-time tree determines the
+   run-time tree. `eval "$x"` breaks that: knowing what it runs requires running it. Precompiled
+   matchers and AST analysis are both parse-time, so they analyse a program that is not the one that
+   executes.
+3. **The keyboard is one input modality of many** — scripts, `cron`, `launchd`, app menu items,
+   AppleScript, `ssh` from another machine. It is the same shape of error as guarding one Settings
+   pane.
+
+All three collapse one layer down, where the encoding has already been resolved into a concrete path
+plus argv. That is the argument for moving the controller to the exec boundary.
+
+#### The exec boundary is Endpoint Security — and the kext path is strictly dominated
+
+`ES_EVENT_TYPE_AUTH_EXEC` is the sanctioned, kernel-mediated authorization hook: the client is called
+before `execve` completes with the resolved path, full argv and code-signing identity, and returns
+allow or deny. It is what Santa is built on, and it is below the shell, so the encoding problem does
+not arise. It also closes the binary case, which no text-layer approach can. Confirmed present on
+macOS 26.5.2 as `libEndpointSecurity.tbd` with headers at `$SDK/usr/include/EndpointSecurity/`.
+
+It also supplies the self-defence primitives DeviceAdmin provides on Android — `AUTH_SIGNAL` (deny
+`SIGKILL` aimed at the daemon), `AUTH_UNLINK` / `AUTH_RENAME` (deny deleting or moving the app),
+`AUTH_GET_TASK` (deny debugger attach).
+
+**The performance constraint is literal, not a matter of taste.** From `ESMessage.h`: the `deadline`
+field is the Mach absolute time before which an auth event must be answered, and *"if a client fails
+to respond to auth events prior to the `deadline`, the client will be killed"* — with deadlines
+varying per message. Hence `es_respond_auth_result`'s cache flag and `es_clear_cache`: Santa-style
+decision caching keyed on the binary hash is mandatory, not an optimisation.
+
+**Cost:** `com.apple.developer.endpoint-security.client` is an Apple-gated entitlement plus a
+notarized System Extension — the same gate class as `NETransparentProxyProvider`.
+
+**Self-approving it is a dead end.** `systemextensionsctl developer on` does lift the entitlement and
+notarization checks, but it refuses while SIP is enabled (the tool says so directly), so it requires
+a Recovery boot and `csrutil disable`. That cannot ship, and the reason is exact rather than
+cautious: **with SIP off, `TCC.db` becomes directly writable**, so the Screen Recording grant being
+protected can be flipped with `sqlite3` — no Settings pane, no `tccutil`. The bypass opened is
+cheaper than the one closed. It is developer-machine-only.
+
+**A kernel extension is worse in every dimension**, and the difficulty is not the code:
+
+1. The KPI is gone — `KAuth` was deprecated and removed, MACF was never public. Endpoint Security
+   exists *because* Apple removed them, so there is no supported hook to build against.
+2. A kext signing certificate is harder to obtain than the ES entitlement, and Apple's standing
+   guidance is to use System Extensions instead.
+3. Apple Silicon deployment needs Reduced Security set from Recovery, per machine, plus per-kext
+   approval and a reboot. Pre-boot Recovery has no networking, so **this also kills the
+   remote-partner setup below.**
+4. Lowering the boot policy to load it opens a larger hole than it closes — the SIP argument, one
+   level worse.
+5. A bug is a kernel panic.
+
+Empirically confirmed: **zero third-party kexts are loaded** on the development machine, and both
+security products installed there (Covenant Eyes' firewall, Tailscale) ship System Extensions.
+
+#### Remote partner-held admin is workable; FileVault is the wall
+
+The standard-user model appears to demand a physically present partner. It does not, because **Screen
+Sharing gives the partner a real GUI session**, so admin passwords can be typed into TCC padlock and
+authorization prompts from anywhere. SSH cannot answer GUI dialogs; Screen Sharing can.
+
+| Task | Remote mechanism |
+|---|---|
+| Create standard account, manage admin group | SSH + `sysadminctl` / `dseditgroup` |
+| Run root commands | SSH + `sudo` |
+| Approve a TCC / padlock prompt | **Screen Sharing** (a GUI session) |
+| Pre-grant Accessibility, lock policy | MDM PPPC profile |
+| Grant Screen Recording | Screen Sharing only — MDM cannot, ever |
+
+Three walls:
+
+1. **FileVault pre-boot is irreducible.** A reboot halts at the unlock screen before networking
+   exists. `fdesetup authrestart` buys a single authenticated restart that skips it, but an
+   unplanned reboot or power loss leaves the Mac unreachable until someone local unlocks it.
+2. **Secure Token / volume ownership.** An account created remotely may hold no token unless a
+   bootstrap token is escrowed via MDM, and a tokenless admin cannot unlock FileVault or authorize
+   OS updates. The partner's admin account must be created while a token-holder is present, or
+   through MDM with bootstrap escrow.
+3. Screen Recording still needs a human — just not a local one.
+
+#### Automating approval: a privileged helper, not a stored password
+
+"Store the admin password and let an engine approve requests" is the wrong construction. A password
+stored on the protected user's machine must be decryptable there, so it is extractable by them, and
+it grants everything rather than one action.
+
+The right primitive is a **root privileged helper** (`SMAppService` / `SMJobBless` + XPC). It is
+already privileged, so it never needs a password: the user submits a request, a policy engine
+decides, and the helper performs the action.
+
+Two hard limits:
+
+- **No engine can grant a TCC permission.** `TCC.db` is SIP-protected and root is not sufficient.
+  The only routes are the GUI prompt, an MDM PPPC profile (which cannot cover ScreenCapture), or
+  SIP-off. This is not a problem for the design, whose goal is to *preserve* a grant rather than
+  reissue one.
+- **A root helper executing user-described intent is a confused deputy.** If it can be argued into
+  running arbitrary commands, the standard-user boundary is void — the user requests `bash`, or
+  `chmod +s`, or admin-group membership. An LLM intent evaluator is prompt-injectable, so
+  general-purpose intent evaluation hands root to whoever writes the most persuasive request. The
+  sound construction is that **the engine selects among a fixed, enumerated set of operations and
+  never generates a shell command**; intent evaluation chooses *which* pre-approved operation runs,
+  never *what code* runs. This is a soundness boundary, not a tuning parameter.
+
+**The standard-user model is structurally hard for a developer.** `sudoers` supports per-command
+allowlists, but `sudo vim`, `sudo find`, `sudo git` and `sudo brew` each carry a shell escape to full
+root — the GTFOBins problem. A developer toolchain is definitionally "run arbitrary code," so a sound
+allowlist for real work is close to unconstructible. The two constructions that hold are **split
+machines** (privileged work elsewhere; the protected Mac stays standard-user with no toolchain) or
+**accepting the admin model** and relying on detection plus accountability.
+
+#### Robustness under the admin model — "no bypass that is both easy and silent"
+
+An admin with physical access cannot be prevented. That is a theorem about privilege, not a macOS
+shortcoming, and every product in this category lives with it — including Covenant Eyes, found
+running on the development machine with the user as admin.
+
+The resolution is that **the adversary here is not a security adversary — it is the same person,
+later, in a different state of mind.** Against a determined skilled attacker nothing works; against
+impulse a different toolkit works and is measurable. So the design goal is not prevention but:
+
+> **No bypass route that is both easy and silent.** Every route is either blocked, or detected and
+> reported.
+
+That is falsifiable: enumerate the routes and check coverage.
+
+| Route (admin user) | Prevented | Detected | Signal |
+|---|---|---|---|
+| Revoke Screen Recording in Settings | no | yes | `PermissionGate` polling |
+| `tccutil reset` | no | yes | **the same signal** — watch the outcome, not the route |
+| `launchctl bootout` / `kill` | no | yes | unclean-stop at next start (the Android `TamperLog` pattern) |
+| Delete the app | no | yes | absent at next login → partner notified |
+| Disable SIP via Recovery | no | yes | `csrutil status` |
+| Create a second account | no | yes | `dscl . -list /Users` |
+| Self-grant admin | no | yes | `dscl . -read /Groups/admin GroupMembership` |
+| Quit through the app | gated | yes | voice gate + cooldown + partner notification |
+
+**Every detection signal in that table was verified readable with no permissions at all** on macOS
+26.5.2, along with `kern.boottime`, which lets an unclean stop be correlated with a reboot exactly as
+`TamperLog.classifyConnect` does on Android.
+
+Three mechanisms raise cost without needing privilege that is not available:
+
+- A root `LaunchDaemon` with `KeepAlive` — killing it is insufficient; the plist must also be removed.
+- A time delay before any disable takes effect (request → cooldown → confirm), already proven in
+  `apps/mobile`.
+- Independent layers, so removing one leaves the others reporting.
+
+An admin willing to spend twenty minutes and accept that their partner is notified will get through.
+**That is acceptable, because it is no longer an impulse but a decision** — and converting impulse
+into decision is what [accountability.md](accountability.md) already defines the product as being
+for. The lock was never the mechanism; the pause and the witness are.
+
 **Net macOS assessment.** Layer 1 carries over (minus Safari's extension). The injection
 optimization is impossible, but it is not in the core model anyway. Layer 2 is fully
 buildable on Apple APIs but always permission-gated; the standard-user + partner-held-admin
 configuration locks those permissions and yields a tamper-resistant setup without MDM, while
-MDM optionally hardens Accessibility further.
+MDM optionally hardens Accessibility further — and, per the sections above, that partner
+does **not** have to be physically present, since Screen Sharing supplies the GUI session
+admin prompts require.
+
+**Two things that assessment originally understated.** First, the lock is not an Apple API
+but plain privilege separation: a root `LaunchDaemon` is the macOS analogue of Android's
+device admin, and it is the standard-user account — not any Layer 2 mechanism — that makes
+it hold. Second, and more consequential for the product: **most Mac users are their own sole
+admin, so the majority configuration is the unlocked one.** The design goal there is not
+prevention, which is unreachable, but "no bypass route that is both easy and silent" — a
+falsifiable criterion with a route-by-route coverage table above, satisfiable entirely with
+signals that need no permissions. Treat the standard-user setup as the strong configuration
+and the admin setup as the supported one, not as a failure state.
 
 ### Android — the layer order inverts
 

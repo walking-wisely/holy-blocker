@@ -593,6 +593,16 @@ messaging host, leaves `/etc/hosts` untouched, and installs no root CA. So it co
 Layer 1 rather than conflicting. Tools that *do* take the system proxy (Charles, Proxyman, mitm
 tooling, some VPN clients, corporate MDM proxy profiles) will conflict on a last-writer-wins basis.
 
+**A second peer product is present and was missed by that survey.** `systemextensionsctl list` on
+the same machine shows `com.Cvnt.ce.FirewallExtension` — **Covenant Eyes** — alongside Tailscale's
+network extension. It is a `NetworkExtension` content filter, not a system-proxy consumer, so it
+also composes with Layer 1; but it occupies the surface the transparent-proxy path below would want,
+and two filters on that surface is a genuine conflict to plan for rather than discover. Two things
+follow beyond the conflict question: the leading product in precisely this category chose the
+**network** boundary over the exec boundary, which is a strong signal about what is practically
+approvable; and it runs there with the user as a local admin, which is the configuration the tamper
+model treats as weakened.
+
 ### The transparent-proxy alternative, and why it is deferred
 
 `NETransparentProxyProvider` / `NEAppProxyProvider` (a Network Extension system extension) would
@@ -605,6 +615,34 @@ There is a second, strategic reason to build it eventually: `NEFilterDataProvide
 **same API as the iOS content filter**, so the macOS extension is the development and debugging
 environment for the iOS build. See the iOS section of
 [content-interception.md](../../decisions/content-interception.md).
+
+Note that its entitlement is the **more routinely granted** of the two gated options — it is what
+Covenant Eyes ships — so if an entitlement request is going to be made at all, this is the one with
+the shorter path and the iOS payoff.
+
+### Endpoint Security, and why it is deferred rather than rejected
+
+`ES_EVENT_TYPE_AUTH_EXEC` is the only sound place to authorize command execution: the client is
+called before `execve` completes with the resolved path, full argv and code-signing identity. It sits
+below the shell, so quoting, `base64`, variable assembly and `eval` are all already resolved, and it
+covers binaries — which no text-inspection scheme can. Confirmed present on macOS 26.5.2 as
+`libEndpointSecurity.tbd` with headers under `$SDK/usr/include/EndpointSecurity/`. It also supplies
+the self-defence events Android gets from DeviceAdmin: `AUTH_SIGNAL` (deny `SIGKILL`),
+`AUTH_UNLINK` / `AUTH_RENAME` (deny removal), `AUTH_GET_TASK` (deny debugger attach).
+
+**Two constraints to record before anyone starts.** First, the entitlement
+`com.apple.developer.endpoint-security.client` is Apple-gated and needs a notarized System Extension.
+Second, and less obvious: AUTH messages carry a per-message `deadline`, and the header states that a
+client failing to answer before it **will be killed** — so a decision cache keyed on the binary hash
+(`es_respond_auth_result`'s cache flag, `es_clear_cache`) is mandatory rather than an optimisation.
+
+It is **deferred, not rejected**, because its marginal value over root `LaunchDaemon` + standard user
+is narrow: against a standard user those already block the routes ES would block, and against an
+admin the extension is itself removable. See
+[content-interception.md](../../decisions/content-interception.md) for the full argument, including
+why `systemextensionsctl developer on` cannot ship (it needs SIP off, and SIP off makes `TCC.db`
+directly writable — a larger hole than the one being closed) and why a kernel extension is strictly
+dominated by this path.
 
 ## Layer 1 implementation order
 
@@ -735,7 +773,13 @@ struct PermissionSnapshot {
     var screenRecording: PermissionState
     var accessibility:   PermissionState
     var inputMonitoring: PermissionState
+
+    // Environment signals — none of these needs a permission. See "the tamper surface" below.
     var protectedUserIsAdmin: Bool
+    var sipEnabled:           Bool
+    var localUsers:           [String]
+    var adminGroupMembers:    [String]
+    var bootTime:             Date
 }
 ```
 
@@ -765,6 +809,33 @@ The pure part — mapping a `PermissionSnapshot` to a "what is actually protecte
 assessment and to state transitions worth reporting — is a plain function over the struct and gets
 tests first. The three preflight calls are the edge and go behind a protocol, mirroring
 `CommandRunner`.
+
+#### This module is the tamper surface — watch outcomes, not routes
+
+The design goal under the admin model is **"no bypass route that is both easy and silent"** (see
+[content-interception.md](../../decisions/content-interception.md) for the route-by-route coverage
+table). `PermissionGate` is where nearly all of that lands, and the reason is a single observation:
+**revoking Screen Recording through System Settings and running `tccutil reset` produce the same
+outcome, so one poll detects both.** Guarding a route covers one door; watching the outcome covers
+every door that leads to it.
+
+Four extra environment signals belong in the snapshot. All four were verified readable on macOS
+26.5.2 with **no permissions granted at all** — no Screen Recording, no Accessibility:
+
+| Signal | Source | Detects |
+|---|---|---|
+| SIP state | `csrutil status` | the precondition for every deep bypass (SIP-off makes `TCC.db` directly writable) |
+| Local users | `dscl . -list /Users` | a second account created to escape the guard |
+| Admin members | `dscl . -read /Groups/admin GroupMembership` | the protected user self-granting admin |
+| Boot time | `sysctl kern.boottime` | correlating an unclean stop with a reboot |
+
+The last one is the Android lesson transplanted: `TamperLog.classifyConnect` anchors on session
+boundaries rather than reading a single line, and the same reasoning applies here — a daemon that
+died and a machine that rebooted are different events and must not be conflated.
+
+Transitions from this module feed a macOS tamper log modelled directly on `apps/mobile`'s
+`policy/TamperLog.kt` (pure) + `TamperLogStore.kt` (the filesystem edge) split. That is a port of a
+proven design, not a new one.
 
 #### Admin detection, and the product decision it forces
 
@@ -1105,6 +1176,43 @@ back the other way — none of which is possible without this module.
 
 ---
 
+### 15. `SettingsGuard` — notice the settings pane, and record it
+
+```
+Sources/MacDaemon/SettingsGuard.swift
+```
+
+The macOS counterpart to `apps/mobile`'s `SettingsGuard`, with a deliberately smaller remit. Detects
+that System Settings has come forward, records it, and optionally shows the interstitial.
+
+**It costs no permissions.** Verified on macOS 26.5.2 with both grants off:
+`NSWorkspace.shared.frontmostApplication` returns bundle identifier, name and PID, so watching for
+`com.apple.systempreferences` via `NSWorkspace.didActivateApplicationNotification` needs no TCC at
+all. Detecting the *pane* is what costs a grant — of 21 on-screen windows,
+`CGWindowListCopyWindowInfo` gave owner names and bounds for all and a non-empty `kCGWindowName` for
+**none**, because titles are redacted without Screen Recording.
+
+The general rule this module exists to respect: **capture classifies what is inside a window;
+identifying which window is metadata and is cheap.** Never run OCR to learn something a bundle
+identifier already answers.
+
+Response options, in order of preference:
+
+1. **Record to the tamper log** and, in partnered mode, notify. This is the primary behaviour.
+2. **Show the interstitial** (module 10) — a verse and a pause, which is the product's actual
+   mechanism.
+3. Cover or `forceTerminate()` — available without TCC, but **rank it as friction, not a lock**, and
+   prefer not to. A process that force-quits System Settings behaves like malware, races the user,
+   and is a strong candidate for being the reason the product gets uninstalled.
+
+**Do not model this on the Android version's importance.** There, the accessibility screen is the
+only door a normal user has, which is what makes `GLOBAL_ACTION_BACK` load-bearing. On macOS the
+user has a terminal, so `tccutil`, `launchctl`, `kill` and Recovery all remain open — and
+`PermissionGate`'s revocation polling detects the *outcome* of all of them, including this one. This
+module is defence in depth on top of that, never a substitute for it.
+
+---
+
 ## What Layer 2 does *not* cover on macOS — honest limits
 
 As with Layer 1, these are inherent to the mechanism and are recorded here rather than discovered
@@ -1154,6 +1262,22 @@ later:
 7. **`AccessibilityText`** (module 12) — validate against a Chromium-based app early, since that is
    where the `AXManualAccessibility` trap bites and where the coverage question is decided.
 8. **`FullscreenControl`** (module 13) — last, and only if module 10 proves insufficient in practice.
+9. **`SettingsGuard`** (module 15) — can be built at any point after step 1, since it needs no
+   permissions; sequenced last because it is defence in depth over `PermissionGate`, not a
+   substitute for it.
+
+### Outstanding verification — one item blocks a tamper-resistance claim
+
+**Can a *standard* user reset a Screen Recording grant with `tccutil`?** Measured so far: `tccutil
+reset ScreenCapture <bundle-id>` runs without `sudo` and fails only at bundle-ID resolution
+(`OSStatus -10814`) — but it was run from an **admin** account, since the development machine's user
+is in the `admin` group. Screen Recording lives in the system-wide TCC store rather than the per-user
+one, so it plausibly fails for a standard user; "plausibly" is doing far too much work for the
+assumption the entire account model rests on.
+
+This needs a real standard-user account on a Mac and takes minutes to settle. **No tamper-resistance
+claim should ship before it is run**, because if a standard user *can* run it, the standard-user
+configuration is worth much less than the model above assumes and the plan needs revisiting.
 
 Real classifiers replace `NullScanner` once the pipeline is proven end to end; `packages/image-sandbox`
 is the image side and already runs under `mitm-proxy`, so the work is binding it to a frame rather
