@@ -22,6 +22,7 @@ let usage = """
       firefox-status                    report whether Firefox trusts OS roots
       firefox-trust                     enable the ImportEnterpriseRoots policy (requires root)
       firefox-untrust                   remove it again (requires root)
+      permissions [user]                report Layer 2 permission and tamper-surface state
       run <proxy-binary> <proxy-dir>    supervise the proxy: launch, wait, route, restore on exit
 
     Proxy changes need no root for an admin user — only the default state directory does.
@@ -157,6 +158,29 @@ do {
         let firefox = FirefoxTrust(store: CFPreferencesPolicyStore())
         try firefox.uninstall()
         print("state: \(try firefox.state())")
+
+    case "permissions":
+        let gate = PermissionGate(
+            probe: SystemPermissionProbe(), runner: runner,
+            protectedUser: rest.first ?? NSUserName())
+        let snapshot = try gate.snapshot()
+        let assessment = PermissionGate.assess(snapshot)
+
+        print("protection: \(assessment.level.rawValue)")
+        for capability in Capability.allCases {
+            print("  \(capability.rawValue): \(snapshot[capability].rawValue)")
+        }
+        print("  protected user is admin: \(snapshot.protectedUserIsAdmin)")
+        print("  SIP: \(snapshot.sipEnabled ? "enabled" : "not fully enabled")")
+        print("  local users: \(snapshot.localUsers.joined(separator: ", "))")
+        print("  admin group: \(snapshot.adminGroupMembers.joined(separator: ", "))")
+        print("  booted: \(snapshot.bootTime)")
+        for weakness in assessment.weaknesses { print("  weakness: \(weakness)") }
+
+        // TCC attributes a request to the *responsible* process, which for a binary started from
+        // a shell is the terminal — so the three capability lines above describe the terminal's
+        // grants, not the daemon's. Only the signals below them mean anything when run this way.
+        print("\nnote: run from a shell, the capability states are the terminal's, not ours.")
 
     case "run":
         guard rest.count == 2 else { fail("expected <proxy-binary> <proxy-working-dir>") }

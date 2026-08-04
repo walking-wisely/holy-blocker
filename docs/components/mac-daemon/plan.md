@@ -761,6 +761,8 @@ pbxproj format is hostile to review.
 Sources/MacDaemon/PermissionGate.swift
 ```
 
+**Built, except for the live grant/revocation check — see the notes at the end of this section.**
+
 Detect and report which permissions are held, and detect the configuration that silently defeats
 the tamper model.
 
@@ -869,6 +871,50 @@ otherwise or refusing to help. The one thing that must not happen is the status 
 listed as an open question in
 [content-interception.md](../../decisions/content-interception.md) and should be resolved there,
 not here.
+
+#### What was built, and five things that only showed up in the writing
+
+`PermissionGate.swift` ships `PermissionState` / `Capability` / `PermissionSnapshot` as specified,
+plus `ProtectionAssessment` (the "what is actually protected" mapping), `TamperEvent` (the
+transitions), `SystemEnvironment` (pure parsers for the four zero-permission signals),
+`PermissionProbing` + `SystemPermissionProbe` + `FakePermissionProbe` (the preflight edge, mirroring
+`CommandRunner`), and a `permissions` CLI verb. 38 tests.
+
+1. **`CGPreflightScreenCaptureAccess` cannot distinguish denied from never-asked** — it returns a
+   `Bool`, so two of the three `PermissionState` cases collapse. Not-granted is reported as
+   `undetermined`, because the two states have different recovery paths and `undetermined` is the
+   recoverable one; guessing `denied` would send onboarding to System Settings when a prompt would
+   still work. Only `IOHIDCheckAccess` reports all three states.
+2. **`csrutil status` has a third answer.** With individual protections toggled it prints
+   `unknown (Custom Configuration)`, not `disabled`. That is parsed as *not* enabled — it is
+   precisely the partially-disabled state the signal exists to catch — while genuinely
+   unrecognised output returns `nil` and makes `snapshot()` throw rather than default.
+3. **`dscl . -list /Users` alone is unusable** — it returns 133 rows on the development machine,
+   all but one of them service accounts, so a bypass account created to escape the guard would be
+   invisible in the noise. The listing is taken with `UniqueID` and filtered to UID ≥ 500 (Apple
+   reserves everything below for the system; the first human account is 501), which reduces it to
+   the one real name.
+4. **`kAXTrustedCheckOptionPrompt` does not compile under Swift 6.** It is imported as a mutable
+   global (`extern CFStringRef` in `HIServices/AXUIElement.h`), and reading it is a strict-
+   concurrency error. The constant's literal value `"AXTrustedCheckOptionPrompt"` is used instead —
+   it is the documented public name, not an implementation detail.
+5. **`kern.boottime` moves without a reboot.** It is derived from the current clock, so an NTP
+   correction shifts it by a second or two; a five-second tolerance keeps a clock adjustment from
+   being logged as a restart. This is the Android `TamperLog.classifyConnect` lesson — a daemon
+   that died and a machine that rebooted are different events — and `rebooted` is emitted first in
+   the transition list so everything after it can be read against it.
+
+**Still outstanding, and blocked on module 0:** a real grant, and a revocation observed through
+`poll()`. Both need the stable signing identity module 0 produces. Running `permissions` from a
+shell today reports the *terminal's* grants (the responsible-process rule), which the verb prints a
+warning about; it is useful for the four environment signals, which were confirmed live, and for
+nothing else. **The standard-user `tccutil` question in the verification section below is still
+open** and is a separate matter from this module's code.
+
+`assess()` implements the plan's recommended middle option — a self-admin user is reported as
+`weakened`, never as `protected` — but it does **not** settle the product decision above. It makes
+the two configurations distinguishable, which is the one outcome that must not be lost; what
+onboarding *does* with that is still to be resolved in `content-interception.md`.
 
 #### Reference documents
 
@@ -1244,9 +1290,13 @@ later:
 0. **Module 0 — the signed bundle and the `launchd` split.** Nothing below can be honestly verified
    before this exists, because every grant made to an unsigned binary is invalidated by the next
    build, and every grant made from a terminal belongs to the terminal.
-1. **`PermissionGate`** (module 7) — pure snapshot logic and transitions under test, then the three
-   preflight calls, then a real grant against the signed bundle. Verify revocation is *detected*,
-   not just that the grant works.
+1. **`PermissionGate`** (module 7) — ~~pure snapshot logic and transitions under test, then the
+   three preflight calls~~ **Done**, ahead of module 0 because none of it needs a grant — then a
+   real grant against the signed bundle. Verify revocation is *detected*, not just that the grant
+   works. **That last part is still outstanding and is blocked on module 0**: revocation can only
+   be observed against a stable signing identity, and today `permissions` run from a shell reports
+   the *terminal's* grants. The pure half is 38 tests (`PermissionGateTests.swift`), and all four
+   zero-permission environment signals were confirmed live through the `permissions` verb.
 2. **`ScreenCapture`** (module 8) — get one `.complete` frame out of `SCStream` and write it to a
    PNG by hand before building anything on top of it. Confirm the row-padding copy against a known
    test pattern rather than by eye; a sheared frame looks fine at a glance.

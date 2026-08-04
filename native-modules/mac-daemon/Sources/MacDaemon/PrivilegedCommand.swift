@@ -74,4 +74,10 @@ public enum SystemTool {
     public static let security = "/usr/bin/security"
     /// `networksetup(8)` — network service and proxy configuration.
     public static let networksetup = "/usr/sbin/networksetup"
+    /// `csrutil(8)` — System Integrity Protection state. Reading it needs no privilege.
+    public static let csrutil = "/usr/bin/csrutil"
+    /// `dscl(1)` — Directory Service command line: local accounts and group membership.
+    public static let dscl = "/usr/bin/dscl"
+    /// `sysctl(8)` — kernel state, used here only for `kern.boottime`.
+    public static let sysctl = "/usr/sbin/sysctl"
 }
