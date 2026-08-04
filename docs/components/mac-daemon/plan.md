@@ -980,6 +980,8 @@ onboarding *does* with that is still to be resolved in `content-interception.md`
 Sources/MacDaemon/ScreenCapture.swift
 ```
 
+**Built, except the live PNG-by-hand check — see the notes at the end of this section.**
+
 Produces the same logical frame the Windows `capture` module produces, so the downstream scan
 interface is shared:
 
@@ -1027,6 +1029,28 @@ Four traps, all of which produce plausible-looking wrong output rather than an e
    a signal in itself.
 
 `CGWindowListCreateImage` is obsoleted in macOS 15 and must not be used, including as a fallback.
+
+#### What was built, and what is still outstanding
+
+`ScreenCapture.swift` ships `CapturedFrame` as specified, plus `PixelBufferCopy.depad` (the
+row-depadding fix for trap 1), `FrameDeliveryStatus` + `FrameCache` (the retention fix for trap 2,
+kept independent of `ScreenCaptureKit` types so it is testable without linking the framework), and
+`FrameAnalysis.isAllBlack` (the DRM-black-as-signal note, turned into a callable check rather than
+left as a comment). `ScreenCapturing` is the edge protocol, mirroring `CommandRunner` and
+`PermissionProbing`; `FakeScreenCapture` is its test double, and `SCShareableContentCapture` is the
+real implementation — `SCShareableContent` → `SCContentFilter` (excluding our own bundle
+identifier) → pixel-dimensioned `SCStreamConfiguration` → `SCStream`, with frames pushed through
+`FrameCache` from the `SCStreamOutput` delegate callback. 20 tests, all on the pure logic (depad,
+retention, black-detection); the edge is exercised only through `FakeScreenCapture` in tests, per
+the `CommandRunner` pattern.
+
+A `capture` CLI verb was added alongside `permissions` for live verification. Run from a shell
+today it reaches the real `SCStream` setup and fails at the expected point — the process has no
+Screen Recording grant — with `SCStreamErrorDomain Code=-3801`, confirming the request actually
+reaches TCC rather than silently returning nothing. This is the same responsible-process gap
+`PermissionGate` recorded: a real capture, and the PNG-by-hand check the plan calls for, are
+**blocked on module 0's outstanding item** (a stable signing identity) and a human granting Screen
+Recording to it, not on anything in this module.
 
 #### Reference documents
 
@@ -1349,9 +1373,11 @@ later:
    be observed against a stable signing identity, and today `permissions` run from a shell reports
    the *terminal's* grants. The pure half is 38 tests (`PermissionGateTests.swift`), and all four
    zero-permission environment signals were confirmed live through the `permissions` verb.
-2. **`ScreenCapture`** (module 8) — get one `.complete` frame out of `SCStream` and write it to a
+2. **`ScreenCapture`** (module 8) — ~~get one `.complete` frame out of `SCStream` and write it to a
    PNG by hand before building anything on top of it. Confirm the row-padding copy against a known
-   test pattern rather than by eye; a sheared frame looks fine at a glance.
+   test pattern rather than by eye; a sheared frame looks fine at a glance.~~ **Done**, except the
+   live PNG-by-hand check, which is blocked on the same real grant as `PermissionGate` — see the
+   module 8 section above.
 3. **`Scanner` + `ScanLoop`** (module 9) with `NullScanner` — the debounce, cadence and mode logic
    are the most testable code in Layer 2 and need no permissions at all. This step can proceed in
    parallel with steps 1–2 by anyone blocked on grants.

@@ -23,6 +23,7 @@ let usage = """
       firefox-trust                     enable the ImportEnterpriseRoots policy (requires root)
       firefox-untrust                   remove it again (requires root)
       permissions [user]                report Layer 2 permission and tamper-surface state
+      capture                            grab one frame via ScreenCaptureKit and report on it
       bundle <output-dir> [identity]    assemble and sign HolyBlockerDaemon.app (default: ad-hoc)
       bundle-status                     report our own bundle and whether its grants will last
       launchd-plist <daemon|agent>      print the launchd job definition for one half
@@ -138,6 +139,31 @@ func runAgent() throws {
     print("agent stopped")
 }
 
+/// Grabs one frame through the real `ScreenCaptureKit` edge and reports on it — the live
+/// counterpart to `ScreenCaptureTests`, which only exercises the pure logic behind it.
+///
+/// Run from a shell this is still subject to the responsible-process rule `permissions` warns
+/// about: the Screen Recording grant reported (or refused) belongs to the terminal, not to a
+/// future signed bundle.
+func runCapture() async throws {
+    let capture = SCShareableContentCapture()
+    try await capture.start()
+
+    // SCStream delivers frames asynchronously off the queue set in `start()`; give it a moment to
+    // produce a first `.complete` delivery before reading.
+    try await Task.sleep(nanoseconds: 500_000_000)
+
+    let frame = capture.currentFrame()
+    try await capture.stop()
+
+    guard !frame.isEmpty else {
+        print("no frame captured — check Screen Recording is granted (see `permissions`)")
+        return
+    }
+    print("captured \(frame.width)x\(frame.height) at \(frame.captured)")
+    print("all black: \(FrameAnalysis.isAllBlack(frame))")
+}
+
 let arguments = Array(CommandLine.arguments.dropFirst())
 guard let command = arguments.first else { print(usage); exit(2) }
 let rest = Array(arguments.dropFirst())
@@ -220,6 +246,9 @@ do {
         // a shell is the terminal — so the three capability lines above describe the terminal's
         // grants, not the daemon's. Only the signals below them mean anything when run this way.
         print("\nnote: run from a shell, the capability states are the terminal's, not ours.")
+
+    case "capture":
+        try await runCapture()
 
     case "bundle":
         guard let outputDirectory = rest.first else { fail("expected <output-dir> [identity]") }
