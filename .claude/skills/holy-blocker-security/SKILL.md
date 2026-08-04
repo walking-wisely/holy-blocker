@@ -173,10 +173,24 @@ concrete attack sentence for is not a finding — drop it.
 Recording a gap as `accepted-baseline` is a valid outcome and the point of the audit: it converts
 unknown debt into scheduled work. The gate is green on *new* findings, never on a clean package.
 
+### Systemic gaps
+
+An audit that produced findings should also ask **why they survived** — what about the package's
+tests, structure, or review history let them through. Record that as `[SYSTEMIC]` using the same
+block, with `Why the findings above were missed:` and `Correction:` in place of `Attack:`.
+
+This is the one entry that is exempt from the concrete-attack rule, and only because it is
+*about* the findings rather than being one. It is capped at one per audit — if you cannot tie it
+to specific findings in the same pass, you are speculating, and it does not go in. Where the
+correction belongs to another skill (tests, CI), say so and name that skill; the entry records the
+causal link, it does not claim the work.
+
 ## Scope limits
 
 - Ordinary bugs, logic errors, and code quality → `/code-review`, not this skill.
-- Test structure and coverage → the `test` skill.
+- Test structure and coverage → the `test` skill. The single exception is a `[SYSTEMIC]` entry
+  naming missing tests as the reason findings in the same audit survived; that records causation,
+  and the work still goes to the `test` skill.
 - Workflow file security (pinned actions, permissions blocks) → the `ci-workflows` skill.
 - Legal and regulatory questions → out of scope entirely. This skill does not give legal advice.
 

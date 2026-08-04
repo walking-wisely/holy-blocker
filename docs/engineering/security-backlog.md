@@ -317,16 +317,31 @@ above — which are program-level controls — each entry here is a specific def
 attack and a file reference. The gate for a PR is that it introduces no *new* finding; an entry
 marked `accepted-baseline` is known debt scheduled against the owning package's plan, not a pass.
 
-This section is public deliberately. A finding is held back into a private draft advisory only when
-it would give a stranger a working attack against a **released** version — see
+This section is public deliberately. A finding that would give a stranger a working attack against a
+**released** version never appears here — it goes straight into a private draft advisory, and this
+file gets at most a placeholder naming the package and the advisory. See
 [`SECURITY.md`](../../SECURITY.md). There are no releases yet, so nothing currently meets that bar.
 
 ### `packages/net-shield` and `packages/mitm-proxy` — audited 2026-08-04
 
 Audited at commit `fb69d30`. Boundaries matched: untrusted input parsers, TLS interception and CA.
 `dns.rs`, `udp.rs` and `radix.rs` were reviewed and produced no findings — bounds are checked
-through `get()`/`checked_add()` throughout, and the default `FilterAction::Proxy` on an unmatched
-lookup means a parse failure degrades to inspection rather than to allow.
+through `get()`/`checked_add()` throughout.
+
+Three distinct failure paths in `net-shield` are easy to conflate, and all three happen to be
+fail-safe, but for different reasons. Worth stating separately so a later change cannot quietly
+rely on the wrong one:
+
+- **Packet parse failure** — neither `parse_ipv4_packet` nor `parse_ipv6_packet` accepts the
+  buffer. `process_packet` returns `false` and dispatches nothing at all, so the packet is not
+  forwarded. Fail-closed, and not a `FilterAction` at any point.
+- **SNI extraction failure** — the packet parses but `extract_sni` returns `None`. The decision
+  falls back to `ip_filter.lookup(dst_ip)`, which is a real lookup and can return any action.
+- **Unmatched lookup** — a name or address matches no rule. Both filters default to
+  `FilterAction::Proxy`, so an unknown destination is inspected rather than allowed.
+
+Only the third is the `Proxy` default. The finding below on split ClientHellos concerns the second,
+and depends on the third to contain it.
 
 #### [HIGH] net-shield: a 24-byte crafted packet panics the filter loop
 
@@ -377,14 +392,16 @@ lookup means a parse failure degrades to inspection rather than to allow.
 - **Evidence:** `packages/net-shield/src/lib.rs:67-71`, `packages/net-shield/src/sni.rs:21`
 - **Status:** open
 
-#### [LOW] net-shield: the wire-format parsers have no fuzz or property tests
+#### [SYSTEMIC] net-shield: the wire-format parsers have no fuzz or property tests
 
 - **Boundary:** untrusted input parsers
-- **Attack:** no single attack — this is the reason the two panics above reached `master` with 70
-  passing unit tests. Every test feeds a well-formed packet built by a helper; none feeds a
-  truncated or hostile one. `proptest` over `dns::parse_query`, `udp::parse_ipv4_udp`,
-  `sni::extract_sni` and `NetShield::process_packet` asserting only "does not panic" would have
-  caught both.
+- **Why the findings above were missed:** all 70 unit tests feed well-formed packets built by a
+  helper; none feeds a truncated or hostile one. Both panics are reachable by the first malformed
+  input a fuzzer would try, which is why a package with full unit coverage still shipped them.
+- **Correction:** `proptest` over `dns::parse_query`, `udp::parse_ipv4_udp`, `sni::extract_sni`
+  and `NetShield::process_packet` asserting only "does not panic" would have caught both. Track
+  the implementation through the `test` skill; it is recorded here because the gap is what let two
+  `[HIGH]`s through, not because writing tests is a security task.
 - **Evidence:** `packages/net-shield/src/{dns,udp,sni,tun}.rs` test modules
 - **Status:** open
 
