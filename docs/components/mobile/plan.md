@@ -62,9 +62,20 @@ The MVP builds that Layer 2 text path, and nothing else.
 - `policy/NetworkGuard.kt` — the TUN's shape, when the VPN should be up, and which resolvers a
   permitted query is forwarded to — **Done.**
 - `NetworkGuardService.kt` — the `VpnService`: DNS filtering over a single-route TUN — **Done**,
-  unit tested; **not yet run on a device.** SNI/IP filtering is still to come, and needs a
-  userspace TCP stack — see step 11 below.
-- `MediaProjection` capture + image path — not yet created.
+  verified on an android-36 arm64 emulator by `scripts/smoke-test-vpn.sh`. SNI/IP filtering is
+  still to come, and needs a userspace TCP stack — see step 11 below.
+- `policy/ScreenCapture.kt` — the capture surface's size, the luma reduction, the frame hash, and
+  when capture should be running — **Done.**
+- `policy/FrameGate.kt` — which captured frames are worth analysing: a rate cap and a change
+  threshold, both measured against the last frame actually analysed — **Done.**
+- `FrameSink.kt` — the seam the image path plugs into, with a counting stand-in — **Done**; the
+  analysis behind it waits on `packages/image-sandbox`.
+- `ScreenCaptureService.kt` — the `MediaProjection` edge: consent order, virtual display,
+  `ImageReader` frames — **Done**, verified on an android-36 arm64 emulator by
+  `scripts/smoke-test-capture.sh`. It captures and gates; it does not yet classify.
+- The image path — the backbone on LiteRT and the head crate the frames are for — **not started**;
+  see §9 and [classifier-head/plan.md](../classifier-head/plan.md). It is deliberately not
+  `packages/image-sandbox`, which is the ONNX half of a per-platform split.
 - `admin/HolyBlockerAdminReceiver.kt` — device admin, so uninstall is refused until it is
   deactivated — **Done**, verified on an android-36 arm64 emulator.
 - Tamper log — **Done**, see step 9 below.
@@ -255,28 +266,81 @@ success — a test that passes when the guard is broken.
 - Still ahead, for SNI/IP: [RFC 6066 §3](https://www.rfc-editor.org/rfc/rfc6066#section-3) — TLS
   SNI extension, and [RFC 8446](https://www.rfc-editor.org/rfc/rfc8446) — TLS 1.3 ClientHello
 
-### 6. `MediaProjection` — capture + image path — not yet created
+### 6. `MediaProjection` — **capture done**, image path still to come
 
-Feeds OCR and the image classifier once `packages/image-sandbox` exists. Consent is **per
-session** — there is no persistent grant to cache, and it cannot run silently.
+`ScreenCaptureService.kt` over `policy/ScreenCapture.kt` (pure) and `policy/FrameGate.kt` (pure):
+a `mediaProjection`-typed foreground service that mirrors the display into a small `ImageReader`
+surface, reduces each frame to a 64-bit hash, and hands the few that survive the gate to a
+`FrameSink`.
+
+**The sink is empty on purpose.** The classifier is `packages/image-sandbox`, which landed on
+master while this was being built (decode → preprocess → ONNX → verdict, wired into
+`mitm-proxy`); nothing on the Android side reaches it yet, so frames go to `CountingFrameSink`
+and are dropped. What the sink should call is **not** `packages/image-sandbox` — see §9, which is the rest of
+this step. Until that exists, `CountingFrameSink` is the honest state: the capture path runs,
+and nothing claims to be classifying. The capture half
+was built first because it is the half that cannot be got right without a device — everything
+below was measured on an android-36 arm64 emulator, and three of the five items were wrong in
+the first version.
+
+Consent is **per session** — there is no persistent grant to cache, it cannot run silently, and
+the token is single-use from Android 14. That has consequences the UI has to state rather than
+paper over: capture does not survive a reboot, there is nothing for `BootReceiver` to restore
+(unlike the VPN), and `ScreenCaptureService.isRunning` is a process-lifetime flag rather than
+something read back from the system.
 
 **The start order is strict on modern Android and easy to get wrong.** The foreground service
 must be running before `getMediaProjection()`, but *after* the user has consented — it is not
 started first:
 
 1. `MediaProjectionManager.createScreenCaptureIntent()` → launch it.
-2. Handle the activity result; keep `resultCode` + `data`.
+2. Handle the activity result; keep `resultCode` + `data`. **The VPN's habit of ignoring the
+   result does not transfer** — `VpnService.prepare` can be re-asked and is the authority on its
+   own grant, but here the result `Intent` *is* the grant.
 3. **Only now** start the `mediaProjection`-typed foreground service and call `startForeground()`.
 4. From inside that service, `getMediaProjection(resultCode, data)`.
 
-A frame throttle — perceptual-difference or hash gating, so identical frames do not re-run OCR
-or the image model — is pure logic and gets unit tests like the rest of the decision core.
+`registerCallback` must come **before** `createVirtualDisplay` on Android 14+, or the projection
+throws. It is also how a user-stopped projection is noticed, which is not optional: the system's
+status-bar chip ends a projection in one tap and there is no permission that prevents it —
+recorded as `SCREEN_CAPTURE_REVOKED`, the same ceiling as every other bypass in §7.
+
+#### The gate is a durability feature, not an optimisation
+
+`MediaProjection` delivers a frame per composition — 60 to 120 a second while anything moves —
+and the path behind it will be a downscale, an OCR pass and a model. `FrameGate` applies a hard
+one-per-second rate cap and a change threshold over the frame's difference hash, and **compares
+against the last frame actually analysed rather than the previous frame**, so a slow dissolve
+cannot walk past it a few bits at a time. Measured on the emulator: a session left on a static
+screen for ~45 seconds analysed **4 frames**.
+
+The hash is a *gradient* comparison (`dHash`), not an absolute one, so auto-brightness and a
+dark-theme animation do not read as a new screen. The reduction also throws away everything but
+72 luma samples, which is the right property for the one value that outlives the frame.
+
+#### What could not be verified from adb
+
+Two teardown paths are exercised by code review only, and the reasons are worth recording so
+nobody re-tries them:
+
+- **The disarm-driven stop.** Flipping the protection mode from a script needs the app process
+  down (`SharedPreferences` caches in memory), and a force-stop kills the projection first — so
+  the graceful path can never be the one observed.
+- **Revoking the appop mid-session.** `appops set PROJECT_MEDIA deny` does **not** stop a live
+  projection; the op is checked when the grant is issued. Measured, not assumed.
+- `am stopservice` is refused for a non-exported service, so there is no third way in either.
+
+The revoke path *is* verified, through the system's own stop-sharing chip — see
+`scripts/smoke-test-capture.sh`, which drives it.
 
 #### Reference documents
 
-- [`MediaProjection`](https://developer.android.com/reference/android/media/projection/MediaProjection)
+- [`MediaProjection`](https://developer.android.com/reference/android/media/projection/MediaProjection) — `registerCallback`, and its ordering requirement against `createVirtualDisplay`
 - [`MediaProjectionManager`](https://developer.android.com/reference/android/media/projection/MediaProjectionManager)
-- [Foreground service types](https://developer.android.com/develop/background-work/services/fgs/service-types) — the `mediaProjection` type and its start-order requirement
+- [Foreground service types](https://developer.android.com/develop/background-work/services/fgs/service-types) — the `mediaProjection` type, its start-order requirement, and the `FOREGROUND_SERVICE_MEDIA_PROJECTION` permission
+- [`ImageReader`](https://developer.android.com/reference/android/media/ImageReader) and [`Image.Plane`](https://developer.android.com/reference/android/media/Image.Plane) — `rowStride`/`pixelStride`, which is why nothing assumes a tightly packed buffer
+- [`DisplayManager#VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR`](https://developer.android.com/reference/android/hardware/display/DisplayManager#VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR)
+- [ITU-R BT.601-7](https://www.itu.int/rec/R-REC-BT.601) §2.5.1 — the luma coefficients in `ScreenCapture.lumaGrid`
 
 ### 7. Tamper resistance — partially built
 
@@ -676,6 +740,60 @@ sideloading and Play is an explicit non-goal.
 - [`AccessibilityServiceInfo#FLAG_REPORT_VIEW_IDS`](https://developer.android.com/reference/android/accessibilityservice/AccessibilityServiceInfo#FLAG_REPORT_VIEW_IDS)
 - [`AccessibilityService#GLOBAL_ACTION_BACK`](https://developer.android.com/reference/android/accessibilityservice/AccessibilityService#GLOBAL_ACTION_BACK)
 
+### 9. The image path — backbone on LiteRT + the head crate — not yet created
+
+§6 delivers frames. This is what looks at them, and it is the half of step 12 that is still
+open. **It does not go through `packages/image-sandbox`**, and the reason is a decision, not an
+oversight:
+[learning-from-feedback.md § On-device runtime and where the head lives](../../decisions/learning-from-feedback.md#on-device-runtime-and-where-the-head-lives-decided-2026-07-18)
+settled on 2026-07-18 that the frozen backbone runs on **LiteRT on Android and ONNX Runtime on
+Windows**, with the head — embedding → score → verdict — hand-written in Rust behind UniFFI and
+shared by both. `image-sandbox` is the ONNX half of that split, built for `mitm-proxy`.
+
+The short version of why: nothing can train on Android. LiteRT's on-device training needs
+TensorFlow-authored `train`/`infer` signatures that a `litert-torch` model cannot emit,
+ExecuTorch's Android AAR has no training binding at all, and `onnxruntime-training-android` has
+not published since 2024 while its inference sibling ships monthly. A head that is 2,050 numbers
+is a hundred lines of arithmetic instead, and it is the only shape that leaves room for the
+per-device updates the product design calls for. The decision doc carries the evidence.
+
+**Measured here, so nobody re-derives it:** `image-sandbox` *does* build for
+`aarch64-linux-android` with `--features onnx` (ONNX Runtime 1.24.2, statically linked, plus a
+`libc++_shared.so` to package), but `ort` ships **no prebuilt runtime for
+`x86_64-linux-android` or `armv7-linux-androideabi`** — the build fails outright. Taking that
+route would cost two of the three ABIs `build-ffi.sh` targets, which is a reason to prefer the
+decided path rather than merely an inconvenience.
+
+Three pieces, in dependency order:
+
+1. **`packages/classifier-head`** — the head and its FFI wrapper. Pure arithmetic, needs no
+   model artifact, and is therefore the piece that can be built and tested first. See
+   [classifier-head/plan.md](../classifier-head/plan.md).
+2. **The backbone on LiteRT.** `machine-learning`'s `export_tflite.py` already produces a
+   verified 5.90 MB flatbuffer, and its export contract terminates at the embedding on purpose.
+   The Android side is the LiteRT interpreter over that file, emitting the embedding the head
+   consumes. Note the tensor layout question is open: `preprocess.rs` produces NCHW for ONNX,
+   and what `litert-torch` emits has to be read off the actual artifact rather than assumed.
+3. **Model provisioning.** `data/models/` is gitignored and **no artifact exists on disk today**,
+   so this needs the `BlocklistStore` treatment — read from `filesDir`, and with nothing there
+   behave exactly as `ImageSandbox::disabled()` does: allow, and say so.
+
+`FrameSink` is the seam all three land behind; §6's `CapturedFrame` already carries tightly
+packed RGBA at capture size, which is the input the preprocessing step wants.
+
+**What this cannot claim until an artifact exists.** With no model on disk, the whole path can
+be unit tested and shown to fail open, and nothing more. A smoke test asserting "capture →
+embedding → verdict" needs a `.tflite` exported from a trained checkpoint; until then the
+emulator can only confirm that a missing model is handled the way it says it is.
+
+#### Reference documents
+
+- [learning-from-feedback.md](../../decisions/learning-from-feedback.md) — the runtime split, with the evidence for each rejected framework
+- [classifier-head/plan.md](../classifier-head/plan.md) — the head crate
+- [LiteRT for Android](https://developers.google.com/edge/litert/android) — the interpreter this needs
+- [Convert PyTorch to LiteRT](https://developers.google.com/edge/litert/models/convert_pytorch) — the export side, already exercised by `export_tflite.py`
+- [machine-learning/plan.md](../machine-learning/plan.md) — the export contract, and why it stops at the embedding
+
 ## The FFI dependency
 
 `packages/text-policy-ffi` is a UniFFI wrapper over `text-policy`, added for this module. It
@@ -816,8 +934,42 @@ scaffolding and will fail at load time if they fall out of sync with the `.so`.
     settings list names the active VPN app — but "plausibly" is the reason to dump it rather than
     the reason not to. `TamperEvent.NETWORK_GUARD_REVOKED` records the removal either way, which
     is the same ceiling every other bypass here sits under.
-12. `MediaProjection` capture once `image-sandbox` lands.
-13. SNI/IP filtering in the VPN, which needs the userspace TCP stack §5 describes. Reuses
+12. ~~`MediaProjection` capture.~~ **Done for capture; the analysis waits on `image-sandbox`.**
+    `policy/ScreenCapture.kt` and `policy/FrameGate.kt` (pure) + `ScreenCaptureService.kt` +
+    `FrameSink.kt`, with the consent flow in `MainActivity`. See §6 for the start order, the gate,
+    and the two teardown paths adb cannot reach.
+
+    **Verified on an android-36 arm64 emulator** — `scripts/smoke-test-capture.sh` asserts six
+    claims: the start order lands a `mediaProjection`-typed FGS with its notification and a tamper
+    entry; frames arrive at the size `captureSize` derives from the display; the app reports
+    scanning as on while it is on; the system stop chip is noticed and recorded as revoked; the
+    session's frame count stays in single digits over a static screen; and a reboot neither
+    restores capture nor leaves the app claiming it did.
+
+    **The defect that run found is the one worth carrying forward**: `isRunning` was set in the
+    service, but `onActivityResult` runs *before* `onResume`, so the onboarding screen re-read the
+    flag before `startForeground` had happened and reported "Screen scanning is off" over a live
+    projection. It is now set in `start()` before the service is dispatched and cleared on every
+    refusal. A status surface that under-reports is the failure mode this product cannot afford —
+    it is the same rule as the unsupported-device notice — and it was invisible to unit tests and
+    to logcat alike; a screenshot is what showed it.
+
+    Ordered before the SNI/IP work (now step 14) rather than after it because it needs no new
+    Rust: the userspace TCP stack SNI filtering wants is a larger piece of work than the whole
+    capture path was. What remains of this step is the image path — step 13, and §9.
+13. **The image path** — §9, and the rest of step 12. Ordered ahead of step 14 because capture
+    without it produces frames nobody looks at, which is the one part of this module that
+    currently costs battery and returns nothing.
+
+    a. `packages/classifier-head` + its FFI wrapper — pure arithmetic, no artifact needed, and
+       the reason this sub-order starts here. See [classifier-head/plan.md](../classifier-head/plan.md).
+    b. The LiteRT interpreter on Android over a backbone `.tflite`, emitting the embedding.
+    c. Model provisioning from `filesDir`, and `FrameSink` wired to the two.
+
+    **Blocked on an artifact for verification, not for building.** `data/models/` is gitignored
+    and nothing is on disk, so (a) is fully testable today, (b) and (c) can be built and shown
+    to fail open, and only an exported checkpoint makes an end-to-end smoke test possible.
+14. SNI/IP filtering in the VPN, which needs the userspace TCP stack §5 describes. Reuses
     net-shield's `extract_sni` and `IpFilter` over the FFI surface step 11 established.
 
 #### Reference documents — steps 7 and 8
@@ -863,6 +1015,16 @@ Each of these cost real time and none is discoverable by reading the API docs.
 - **Re-fire suppression must know when the user left**, or it becomes the bypass: back out, tap
   straight back in inside the window, and the guard idles. Worse, `evaluate` only runs on events,
   so a static screen that has finished rendering never wakes it again.
+- **`onActivityResult` runs before `onResume`.** Any state the activity re-reads on resume must
+  already be true by the time the result handler returns — a flag set later, inside the service
+  the result starts, is read too early and the screen reports the opposite of what is happening.
+  See step 12.
+- **The `PROJECT_MEDIA` appop is checked when consent is granted, not while it is used.** Allowing
+  it makes the consent activity return `RESULT_OK` without showing UI, which is what makes the
+  capture path scriptable at all; *denying* it does nothing to a projection already running.
+- **`am stopservice` cannot touch a non-exported service** — "Error stopping service", by design.
+  There is no adb route into a service that is correctly locked down, which is a constraint on
+  what a smoke test can assert rather than a bug to fix.
 - **`ACTION_BOOT_COMPLETED` is not evidence of a boot.** It is delivered when the app leaves the
   force-stopped state — reproduced twice on an android-36 emulator with three minutes of uptime,
   `BootReceiver` logging "boot completed" seconds after an `am force-stop`. Anything inferring a
@@ -904,7 +1066,11 @@ Each of these cost real time and none is discoverable by reading the API docs.
 - Unit tests: `./gradlew :app:testDebugUnitTest` (no emulator, no NDK required).
 - APK: `./gradlew :app:assembleDebug`.
 - FFI tests: `cargo test` from `packages/text-policy-ffi`.
-- End-to-end: `scripts/smoke-test.sh` against a booted emulator or device.
+- End-to-end, text path: `scripts/smoke-test.sh` against a booted emulator or device.
+- End-to-end, network path: `scripts/smoke-test-vpn.sh` (reboots the device — it is the only
+  reliable DNS cache flush available to a non-root shell).
+- End-to-end, capture path: `scripts/smoke-test-capture.sh` (also reboots, to prove capture does
+  *not* come back).
 
 `ANDROID_HOME` must point at the SDK (or add `local.properties`).
 

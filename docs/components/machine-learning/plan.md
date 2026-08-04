@@ -179,7 +179,9 @@ a representative dataset is passed. Both probes above were fp32.
 Whatever backbone is chosen, `export_tflite.py` must export the **backbone only**,
 terminating at the embedding, with `forward` returning `(logits, embedding)`.
 Classification stays outside the graph — see the runtime findings recorded in
-[../../decisions/learning-from-feedback.md](../../decisions/learning-from-feedback.md).
+[../../decisions/learning-from-feedback.md](../../decisions/learning-from-feedback.md#on-device-runtime-and-where-the-head-lives-decided-2026-07-18),
+and [classifier-head/plan.md](../classifier-head/plan.md) for the crate that consumes the
+embedding.
 Baking the head into the `.tflite` would forfeit the ability to retarget the runtime
 later, and would break the on-device training design. The quantization recipe must be
 pinned and the embedding dtype/scale treated as a versioned interface: an int8
@@ -348,8 +350,8 @@ reproduced across opsets 17–21 at both 32px and 224px. `export.py` passes
 
 - Federated learning, server aggregation, or any cloud components. This pipeline stays
   strictly local and self-contained. The head that federated learning would train is
-  described above as a design direction only; if it is ever built it belongs in its own
-  Rust crate, not here, and any network path must be opt-in and off by default per the
+  described above as a design direction only; the crate it belongs in is planned as
+  [classifier-head](../classifier-head/plan.md), not here, and any network path must be opt-in and off by default per the
   local-first rule in AGENTS.md.
 - Sourcing or curating training data. The `data/` directory is gitignored; data curation is a separate out-of-repo process.
 - Text NLP model training. Text classification is handled deterministically by `packages/text-policy`; see [../content-classification.md](../../architecture/content-classification.md) (§ When To Add ML) for the gating rationale.

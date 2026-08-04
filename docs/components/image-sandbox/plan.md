@@ -9,6 +9,15 @@ This document is the build plan: what modules to add, in what order, and what ea
 `mitm-proxy` calls it at the Phase 4 hook. Verified live: an HTTPS PNG fetched through the
 tunnel returns `403 Blocked` at `--image-threshold 0` and 200 at `1`.
 
+**This crate is the Windows/desktop half of a deliberate per-platform split, and is not the
+Android path.** The runtime decision recorded in
+[learning-from-feedback.md](../../decisions/learning-from-feedback.md#on-device-runtime-and-where-the-head-lives-decided-2026-07-18)
+is LiteRT on Android, ONNX Runtime here, and the head — the part after the embedding — hand-written
+in Rust behind UniFFI and shared by both (see [classifier-head/plan.md](../classifier-head/plan.md)).
+Wiring `apps/mobile` to this crate would collapse that split; `ort` also ships no prebuilt runtime
+for two of the three Android ABIs the app targets, measured 2026-07-26. When the head crate lands,
+`classifier.rs` should hand its score contract over rather than keep a second copy of it.
+
 What shipped, and how it differs from the order below:
 
 - **ONNX first, hashing deferred.** The plan builds pHash and the SQLite blocklist before the
