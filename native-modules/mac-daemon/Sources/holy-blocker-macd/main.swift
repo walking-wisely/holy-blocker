@@ -23,7 +23,11 @@ let usage = """
       firefox-trust                     enable the ImportEnterpriseRoots policy (requires root)
       firefox-untrust                   remove it again (requires root)
       permissions [user]                report Layer 2 permission and tamper-surface state
+      bundle <output-dir> [identity]    assemble and sign HolyBlockerDaemon.app (default: ad-hoc)
+      bundle-status                     report our own bundle and whether its grants will last
+      launchd-plist <daemon|agent>      print the launchd job definition for one half
       run <proxy-binary> <proxy-dir>    supervise the proxy: launch, wait, route, restore on exit
+      agent                             Layer 2: watch for permission loss (LaunchAgent entry)
 
     Proxy changes need no root for an admin user — only the default state directory does.
 
@@ -97,6 +101,41 @@ func runSupervisor(binary: URL, workingDirectory: URL) throws {
     try supervisor.stop()
     if let failure = supervisor.lastFailure { fail(failure) }
     print("restored network settings")
+}
+
+/// Poll interval for the Layer 2 agent. Permission loss is not urgent to the second, and a tight
+/// loop would spend the day waking the machine for four subprocesses.
+let permissionPollSeconds: TimeInterval = 30
+
+/// The Layer 2 entry point: stay alive and notice when a capability is taken away.
+///
+/// This is the macOS shape of the Android `GuardStatusService` lesson — the still-alive process
+/// that can record a disable the guard itself cannot report. It watches; it does not yet capture.
+func runAgent() throws {
+    let gate = PermissionGate(runner: runner)
+
+    let signature = try CodeSigning(runner: runner).identity(of: CodeSigning.currentCodePath)
+    if !signature.isStable {
+        // Worth saying loudly: every grant this process holds dies with the next build, and the
+        // symptom is a capture path that silently returns nothing.
+        print("warning: signature is \(signature) — TCC grants will not survive a rebuild")
+    }
+
+    for received in [SIGINT, SIGTERM] {
+        signal(received) { _ in stopRequested = 1 }
+    }
+
+    let initial = try gate.poll()  // Establishes the baseline; reports nothing by design.
+    _ = initial
+    if let snapshot = gate.lastSnapshot {
+        print("watching: \(PermissionGate.assess(snapshot).level.rawValue)")
+    }
+
+    while stopRequested == 0 {
+        Thread.sleep(forTimeInterval: permissionPollSeconds)
+        for event in try gate.poll() { print("tamper: \(event)") }
+    }
+    print("agent stopped")
 }
 
 let arguments = Array(CommandLine.arguments.dropFirst())
@@ -181,6 +220,63 @@ do {
         // a shell is the terminal — so the three capability lines above describe the terminal's
         // grants, not the daemon's. Only the signals below them mean anything when run this way.
         print("\nnote: run from a shell, the capability states are the terminal's, not ours.")
+
+    case "bundle":
+        guard let outputDirectory = rest.first else { fail("expected <output-dir> [identity]") }
+        guard let executable = Bundle.main.executableURL else { fail("cannot locate own binary") }
+        let identity = BundleIdentity.holyBlocker
+        let root = URL(fileURLWithPath: outputDirectory)
+            .appendingPathComponent("HolyBlockerDaemon.app")
+
+        try AppBundle.assemble(at: root, identity: identity, executable: executable)
+        // Ad-hoc by default so the bundle is runnable with no certificate — but ad-hoc is exactly
+        // the identity that does not survive a rebuild, so say so rather than leave it implied.
+        let signingIdentity = rest.count > 1 ? rest[1] : "-"
+        try CodeSigning(runner: runner).sign(bundle: root, identity: signingIdentity)
+
+        let applied = try CodeSigning(runner: runner).identity(of: root)
+        print("assembled \(root.path)")
+        print("signature: \(applied)")
+        if !applied.isStable {
+            print("warning: TCC grants made against this bundle die on the next build")
+        }
+
+    case "bundle-status":
+        // Run as a bare binary this reports no identifier at all, which is the point: that is the
+        // state in which every grant is keyed to a cdhash that changes on each build.
+        print("bundle: \(Bundle.main.bundleURL.path)")
+        print("identifier: \(Bundle.main.bundleIdentifier ?? "none — not running from a bundle")")
+        let signature = try CodeSigning(runner: runner).identity(of: CodeSigning.currentCodePath)
+        print("signature: \(signature)")
+        print("grants survive a rebuild: \(signature.isStable)")
+
+    case "launchd-plist":
+        guard let half = rest.first else { fail("expected <daemon|agent>") }
+        let executable = URL(fileURLWithPath: "/Applications/HolyBlockerDaemon.app")
+            .appendingPathComponent("Contents/MacOS/\(BundleIdentity.holyBlocker.executableName)")
+        let job: LaunchdJob
+        switch half {
+        case "daemon":
+            job = LaunchdJob.daemon(
+                label: "com.holyblocker.daemon", executable: executable,
+                arguments: ["run", "/usr/local/bin/mitm-proxy", "/Library/Application Support/HolyBlocker"],
+                logPath: URL(fileURLWithPath: "/var/log/holy-blocker-daemon.log"))
+        case "agent":
+            job = LaunchdJob.agent(
+                label: "com.holyblocker.agent", executable: executable, arguments: ["agent"],
+                home: FileManager.default.homeDirectoryForCurrentUser, uid: getuid(),
+                logPath: FileManager.default.homeDirectoryForCurrentUser
+                    .appendingPathComponent("Library/Logs/holy-blocker-agent.log"))
+        default:
+            fail("expected <daemon|agent>")
+        }
+        print("# install at: \(job.installPath.path)")
+        print("# load with:  launchctl bootstrap \(job.domainTarget) \(job.installPath.path)")
+        print("# unload:     launchctl bootout \(job.serviceTarget)")
+        print(String(decoding: try job.plist(), as: UTF8.self))
+
+    case "agent":
+        try runAgent()
 
     case "run":
         guard rest.count == 2 else { fail("expected <proxy-binary> <proxy-working-dir>") }

@@ -751,6 +751,55 @@ Xcode project alongside the package. **Prefer the script** — it keeps the pack
 truth, keeps `scripts/test.sh` working unchanged, and avoids committing an `.xcodeproj` whose
 pbxproj format is hostile to review.
 
+### Built — and one instruction above is wrong
+
+**Done**, except for obtaining a stable certificate, which is a decision rather than code (see the
+end of this section). Shipped: `AppBundle` (layout, `Info.plist` generation, `assemble`),
+`LaunchdJob` (both halves), `CodeSigning` (sign, read back, and the `isStable` question),
+`scripts/bundle.sh`, and four CLI verbs — `bundle`, `bundle-status`, `launchd-plist`, and `agent`.
+The script stayed a script: it builds the binary and asks it to bundle itself, so the tested
+`AppBundle` code is the only description of the layout and the shell holds no duplicate plist.
+
+Verified live: `HolyBlockerDaemon.app` assembles, signs, passes `codesign --verify` as *"valid on
+disk"* and *"satisfies its Designated Requirement"*, resolves as `com.holyblocker.daemon` through
+`Bundle`, and the LaunchAgent **bootstraps into `gui/501`, reaches `state = running`, takes a
+permission baseline, and boots out cleanly**. Under launchd the responsible process is the agent
+itself rather than a terminal, which is the entire point of the exercise.
+
+Five things the writing turned up:
+
+1. **The instruction to ship "usage-description strings" cannot be followed — those keys do not
+   exist for these three capabilities.** The authoritative list is the set of `NS*UsageDescription`
+   keys `tccd` itself reads; on macOS 26.5.2 it contains no `NSScreenCaptureUsageDescription`, no
+   `NSInputMonitoringUsageDescription`, and nothing for Accessibility. (The widely-repeated advice
+   to add them is wrong, and easy to believe because adding a key that nothing reads has no visible
+   effect.) Those prompts use fixed system wording and interpolate only the bundle name, so
+   **`CFBundleName` carries the entire opportunity to say who is asking.** Extract the real list
+   with `strings /System/Library/PrivateFrameworks/TCC.framework/Support/tccd | grep UsageDescription`
+   rather than trusting a blog post.
+2. **A bare SwiftPM binary is already ad-hoc signed** — Apple silicon will not execute an unsigned
+   Mach-O at all. So the problem module 0 solves is *not* an absent signature; it is that the
+   ad-hoc identity is derived from the `cdhash` and therefore changes on every build. `unsigned`
+   is a state you will rarely actually see.
+3. **`Bundle.main.bundleURL` is the containing directory when there is no bundle**, not the
+   binary — so passing it to `codesign` fails with "bundle format unrecognized" for exactly the
+   un-bundled case a diagnostic is most needed in. `CodeSigning.codePath` picks the right one.
+4. **`codesign -dvv` writes its report to stderr.** Reading stdout reports every bundle on the
+   machine as unsigned.
+5. **Assembly must delete the previous bundle rather than write over it** — a `_CodeSignature`
+   directory left from the last build makes `codesign` refuse the new signature.
+
+The `launchd` split is encoded rather than described: the agent carries
+`LimitLoadToSessionType = Aqua` and **no** `UserName` key (a TCC grant belongs to the logged-in
+user, and root cannot be given one), while the daemon carries `UserName = root` and no session
+restriction.
+
+**What is still open, and it is a decision, not code:** the bundle signs ad-hoc by default, which
+`bundle` and `agent` both warn about at runtime. A stable identity — a Developer ID certificate, or
+a self-signed code-signing certificate used consistently — has to exist before any TCC grant is
+worth making, and creating one writes to a keychain. Set `HOLY_BLOCKER_SIGNING_IDENTITY` and
+`scripts/bundle.sh` uses it. Until then, backlog item 1 stays open.
+
 ---
 
 ## Modules to add
@@ -1287,9 +1336,12 @@ later:
 
 ## Layer 2 implementation order
 
-0. **Module 0 — the signed bundle and the `launchd` split.** Nothing below can be honestly verified
-   before this exists, because every grant made to an unsigned binary is invalidated by the next
-   build, and every grant made from a terminal belongs to the terminal.
+0. ~~**Module 0 — the signed bundle and the `launchd` split.** Nothing below can be honestly
+   verified before this exists, because every grant made to an unsigned binary is invalidated by
+   the next build, and every grant made from a terminal belongs to the terminal.~~ **Done**, with
+   one decision outstanding: the bundle signs ad-hoc until a stable certificate exists, and both
+   `bundle` and `agent` say so at runtime. See the module 0 section above for the five findings,
+   the first of which contradicts the instruction the section was written with.
 1. **`PermissionGate`** (module 7) — ~~pure snapshot logic and transitions under test, then the
    three preflight calls~~ **Done**, ahead of module 0 because none of it needs a grant — then a
    real grant against the signed bundle. Verify revocation is *detected*, not just that the grant
