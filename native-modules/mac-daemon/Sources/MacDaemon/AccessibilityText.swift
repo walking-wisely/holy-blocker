@@ -111,6 +111,7 @@ public final class FakeAXElementProbe: AXElementProbing, @unchecked Sendable {
     private let root: AXNodeID?
     private let nodes: [AXNodeID: Node]
     private var _visited: [AXNodeID] = []
+    private var _rootRequests = 0
     private var _silenceAfter: Int?
 
     public init(root: AXNodeID?, nodes: [AXNodeID: Node] = [:]) {
@@ -140,7 +141,21 @@ public final class FakeAXElementProbe: AXElementProbing, @unchecked Sendable {
         }
     }
 
-    public func focusedRoot() -> AXNodeID? { root }
+    /// How many walks were started. Counted separately from `visited` because a walk that resolves
+    /// no root visits nothing at all, and "did not walk" and "walked and found nothing" are the two
+    /// cases a caller rate-limiting its own walks has to tell apart.
+    public var rootRequests: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return _rootRequests
+    }
+
+    public func focusedRoot() -> AXNodeID? {
+        lock.lock()
+        _rootRequests += 1
+        lock.unlock()
+        return root
+    }
 
     public func children(of node: AXNodeID) -> [AXNodeID] {
         lock.lock()
