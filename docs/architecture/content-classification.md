@@ -10,6 +10,58 @@ captured pixels
   -> final decision
 ```
 
+## Image Localization
+
+A whole-frame classifier answers "is something wrong in this frame" but not "where."
+That gap matters for two reasons: a screen-capture frame composites an entire window (or
+display) at once, so a single flagged image sitting among otherwise-safe content still
+scores the whole frame; and the response layer needs a location to act on anything more
+targeted than covering the entire surface — a blurred region instead of a full-window
+cover, or evidence output that points at what actually triggered a verdict instead of an
+opaque frame-level score.
+
+The image stage should therefore be able to return zero or more located detections, not
+a single label:
+
+```text
+ImageDetection {
+    label:      string
+    confidence: float        // 0.0..1.0
+    box:        NormalizedRect  // x, y, width, height, each 0.0..1.0, relative to the
+                                 // classified frame — not pixels. Frame resolution varies
+                                 // by display and Retina scale factor, and a normalized
+                                 // box stays valid across any resize or crop later in the
+                                 // pipeline. Callers that need screen or window
+                                 // coordinates convert using the frame's known bounds at
+                                 // capture time.
+}
+```
+
+This is an image-side gap specifically. OCR already returns per-span location via
+`OcrResult`'s location metadata (see below), so text evidence is already located; nothing
+here changes the OCR or text-policy stages.
+
+Two implementation strategies, in order of preference:
+
+1. **Object-detection model** — a detector (e.g. a lightweight YOLO-family ONNX model)
+   that outputs `ImageDetection` directly is the target end state. This is new work for
+   `machine-learning` (a detector has a different training target and export shape than
+   the existing whole-image classifier — boxes and per-box scores, not a single class
+   vector) and is not scheduled yet.
+2. **Coarse-grid fallback** — until a detector exists, run the existing whole-frame
+   classifier as a trigger; when it flags a frame, re-run the same classifier over a
+   fixed tiled grid of sub-regions (e.g. a 3×3 split, possibly with overlap) and report
+   the tiles that independently score above threshold as `ImageDetection`s with grid-cell
+   boxes. This is deliberately cheap and deliberately coarse — it reuses the model that
+   already exists instead of blocking bounding boxes on a new one — and any code
+   implementing it must say "coarse-grid fallback" in a comment so it is not mistaken for
+   real localization when a detector eventually replaces it.
+
+A verdict with no located detections (empty box list) is still a valid outcome — for
+example the coarse-grid fallback triggered on the whole frame but no single tile scored
+above threshold on its own. Consumers must treat an empty list as "cover the whole
+surface," the existing behavior, not as "nothing to do."
+
 ## OCR Strategy
 
 OCR is an extraction step, not the moderation decision itself. The OCR provider should return text plus confidence and location metadata where available.

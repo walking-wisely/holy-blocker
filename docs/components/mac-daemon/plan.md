@@ -1076,16 +1076,32 @@ enum ScanAction { case allow, warn, block }
 enum ScanSource { case ocr, image, text }
 enum ProtectionMode { case full, warn, off }
 
+struct NormalizedRect {
+    let x: Double, y: Double, width: Double, height: Double  // each 0.0–1.0, frame-relative
+}
+
+struct ImageDetection {
+    let label:      String
+    let confidence: Double        // 0.0–1.0
+    let box:        NormalizedRect
+}
+
 struct ScanVerdict {
-    let action:    ScanAction   // effective action, after applying ProtectionMode
-    let rawAction: ScanAction   // as returned by the scanner, before the mode downgrade
-    let score:     Double       // 0.0–1.0
-    let source:    ScanSource
+    let action:     ScanAction   // effective action, after applying ProtectionMode
+    let rawAction:  ScanAction   // as returned by the scanner, before the mode downgrade
+    let score:      Double       // 0.0–1.0
+    let source:     ScanSource
+    let regions:    [ImageDetection]  // located image detections, empty for text-sourced
+                                       // verdicts and for image verdicts where nothing
+                                       // localized — see content-classification.md's
+                                       // "Image Localization" section. An empty list on a
+                                       // non-allow verdict means "cover the whole surface",
+                                       // never "nothing to do".
 }
 
 protocol Scanner { func scan(_ frame: CapturedFrame) -> ScanVerdict }
 
-struct NullScanner: Scanner { /* always .allow — the only implementation at first */ }
+struct NullScanner: Scanner { /* always .allow, empty regions — the only implementation at first */ }
 ```
 
 The loop is the scheduler bridging `EventHooks` callbacks and the scanner:
@@ -1126,6 +1142,16 @@ Not decided here because it affects the Windows daemon too, and because it adds 
 a package that currently has none. Flagging it so the choice is made once, deliberately, rather than
 by default at implementation time.
 
+#### Where image localization should live — open
+
+`ScanVerdict.regions` is the interface the rest of Layer 2 (`Overlay`, `DaemonIPC`) is written
+against, but nothing today populates it beyond an empty list. Per
+[content-classification.md](../../architecture/content-classification.md#image-localization), the
+target is a real detector model; until `machine-learning` has one, the pragmatic first
+implementation is the coarse-grid fallback described there, run inside the real `Scanner`
+implementation that eventually replaces `NullScanner` — this module's job is only to make sure the
+type carries the information once it exists, not to implement the detection itself.
+
 ---
 
 ### 10. `Overlay` — borderless `NSWindow`
@@ -1141,6 +1167,14 @@ The response surface. Two distinct visual states, and the sketch conflated them:
 | Warn interstitial | **Must be swallowed** | Blur + verse + a deliberate choice, per [warn-interstitial.md](../../product/flows/warn-interstitial.md) |
 | Block cover | **Must be swallowed** | Full interrupt, per [block.md](../../product/flows/block.md) |
 | Pre-blur / passive | `ignoresMouseEvents = true` | A hint that does not interrupt |
+
+`ScanVerdict.regions` (module 9) makes a fourth, narrower state possible — a cover limited to the
+detected `NormalizedRect`s instead of the whole window or display — but treat full-surface cover as
+the only implemented behavior for now. A region cover needs the window's on-screen bounds *at
+capture time* to convert a frame-normalized box into screen coordinates, and the window can move or
+resize between capture and render; get the simple case (whole-surface cover, ignoring `regions`)
+correct and verified first, and revisit region-level cover once `Scanner` actually populates
+`regions` instead of always returning an empty list.
 
 `ignoresMouseEvents` belongs to the passive case only. An interstitial that lets clicks through to
 the content underneath is not an interstitial — the user can keep interacting with exactly what was
@@ -1286,8 +1320,13 @@ back the other way — none of which is possible without this module.
   reachable by every process on the machine including a browser page, which for a control channel
   that can set `protection_mode` is a bypass.
 - Message shapes match the Windows daemon's so `daemon-ipc.ts` needs one transport adapter rather
-  than a second protocol: `scan_event { action, score, source, ts }` outbound,
-  `config_update { block_threshold, warn_threshold, protection_mode }` inbound.
+  than a second protocol: `scan_event { action, score, source, ts, regions }` outbound,
+  `config_update { block_threshold, warn_threshold, protection_mode }` inbound. `regions` is
+  `ScanVerdict.regions` (module 9) serialized as normalized rects and is an empty array until a real
+  detector or the coarse-grid fallback populates it — see
+  [content-classification.md](../../architecture/content-classification.md#image-localization). Keep
+  the field in the shared shape now, even though only macOS produces it today, so the Windows daemon
+  does not have to break protocol compatibility to add it later.
 - The warn path additionally carries the captured frame for the blurred backdrop. Given the size of
   a Retina frame, encode as JPEG rather than raw BGRA, and hold to the same rule as the overlay: it
   is never written to disk and never logged.
@@ -1378,13 +1417,33 @@ later:
    test pattern rather than by eye; a sheared frame looks fine at a glance.~~ **Done**, except the
    live PNG-by-hand check, which is blocked on the same real grant as `PermissionGate` — see the
    module 8 section above.
-3. **`Scanner` + `ScanLoop`** (module 9) with `NullScanner` — the debounce, cadence and mode logic
+3. **`Scanner` + `ScanLoop`** (module 9) with `NullScanner` — ~~the debounce, cadence and mode logic
    are the most testable code in Layer 2 and need no permissions at all. This step can proceed in
-   parallel with steps 1–2 by anyone blocked on grants.
-4. **`Overlay`** (module 10) — verify over native-fullscreen video and on a multi-display setup
-   specifically. Both failure modes are silent.
-5. **`DaemonIPC`** (module 14) — end to end into the Electron app, so verdicts become visible and
-   every later step is debuggable from the UI rather than from logs.
+   parallel with steps 1–2 by anyone blocked on grants.~~ **Done.** `ScanVerdict` carries the
+   `regions: [ImageDetection]` field per
+   [content-classification.md](../../architecture/content-classification.md#image-localization), but
+   nothing populates it yet — `NullScanner` and every test double return an empty list, per that
+   section's deferral of real image localization. The mode→action mapping is plain Swift, not
+   UniFFI/`text-policy-ffi` — see module 9's "open" note, still undecided. 62 new tests
+   (`ScannerTests.swift`, `ScanLoopTests.swift`).
+4. **`Overlay`** (module 10) — the pure part is **done**: `OverlayPlan.plan(intent:screens:)` decides
+   one placement per screen from a verdict-shaped intent, with `.screenSaver`-equivalent level and
+   `.canJoinAllSpaces`/`.fullScreenAuxiliary`-equivalent collection behavior recorded as data for a
+   later AppKit task to consume. Region-level cover is deliberately not implemented — every placement
+   still covers the full screen frame, per the `Overlay` section's note above. Still outstanding and
+   unchanged from before: real `NSWindow`/`NSApplication` construction (needs the run loop this
+   package doesn't have yet), and live verification over native-fullscreen video and on a
+   multi-display setup — both failure modes are silent and neither can be checked without the AppKit
+   half. 16 new tests (`OverlayTests.swift`).
+5. **`DaemonIPC`** (module 14) — the pure part is **done**: length-prefixed JSON framing, an
+   incremental decoder (`.needsMoreData` / `.message` / `.oversized` / `.invalid`, never throwing on
+   a partial read), and validated `scan_event`/`config_update` Codable types, with `regions`
+   (`ImageDetection`, always an array, never omitted) on `scan_event` per the module 14 section above.
+   34 new tests (`DaemonIPCTests.swift`). Still outstanding: the actual Unix domain socket
+   transport, and wiring into `apps/desktop/src/main/daemon-ipc.ts`, whose current shape
+   (`verdict`/`windowTitle`/`at`, camelCase) does not yet match this wire protocol. Also flagged but
+   not resolved: `ts` is encoded here as a Double (Unix epoch seconds), while the Windows daemon plan
+   documents an ISO-8601 string — a cross-platform choice to make once, deliberately, not by default.
 6. **`EventHooks`** (module 11) — measure which permission the scroll monitor actually requires
    before writing onboarding copy.
 7. **`AccessibilityText`** (module 12) — validate against a Chromium-based app early, since that is
