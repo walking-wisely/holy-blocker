@@ -27,6 +27,7 @@ let usage = """
       capture                            grab one frame via ScreenCaptureKit and report on it
       ax-text [delay] [no-manual]       read the frontmost window's AX text (default delay: 3s;
                                         no-manual skips Chromium's AXManualAccessibility opt-in)
+      overlay [seconds] [passive]       cover every screen with a real overlay window
       bundle <output-dir> [identity] [ffi-lib-dir]
                                         assemble and sign HolyBlockerDaemon.app (default: ad-hoc)
       bundle-status                     report our own bundle and whether its grants will last
@@ -166,6 +167,33 @@ func runCapture() async throws {
     }
     print("captured \(frame.width)x\(frame.height) at \(frame.captured)")
     print("all black: \(FrameAnalysis.isAllBlack(frame))")
+}
+
+/// Puts a real overlay on every screen for a few seconds — the live counterpart to
+/// `OverlayPlanTests`/`OverlayReconciliationTests`, which only exercise the pure planning behind
+/// it. The scan-driven version of this loop is a later step; this verb exists so the window level,
+/// the Spaces behaviour and the multi-display reconcile can be watched by a human now.
+///
+/// Needs no TCC grant at all: drawing a window over the screen is not capturing it.
+@MainActor
+func runOverlay(seconds: Double, passive: Bool) {
+    AppLifecycle.configureAccessoryApp()
+
+    let controller = OverlayController()
+    controller.start()
+    controller.apply(intent: passive ? .passive : .interstitial(swallowsMouseEvents: true))
+    print("overlay up on \(ScreenConfiguration.current().count) screen(s) for \(seconds)s")
+    print(passive ? "passive: clicks pass through" : "interstitial: clicks are swallowed")
+
+    // The timer has to be scheduled before `run()` takes the thread, and on the main run loop —
+    // a timer created off it is never added to it and silently never fires.
+    Timer.scheduledTimer(withTimeInterval: seconds, repeats: false) { _ in
+        MainActor.assumeIsolated {
+            controller.stop()
+            NSApplication.shared.terminate(nil)
+        }
+    }
+    NSApplication.shared.run()
 }
 
 /// How long to hold the AX client open between the two walks below. Measured against Chrome 151:
@@ -389,6 +417,11 @@ do {
 
     case "agent":
         try runAgent()
+
+    case "overlay":
+        runOverlay(
+            seconds: rest.first.flatMap(Double.init) ?? 5,
+            passive: rest.contains("passive"))
 
     case "run":
         guard rest.count == 2 else { fail("expected <proxy-binary> <proxy-working-dir>") }

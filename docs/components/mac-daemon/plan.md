@@ -1217,6 +1217,12 @@ Requirements:
 Keep the drawing thin: the pure part is *which* overlays should exist for a given verdict and screen
 configuration, and that is a testable function returning a set of frames. AppKit does the rest.
 
+**Built.** `Overlay.swift` is the pure half (`OverlayPlan.plan`, plus `OverlayReconciliation.diff`,
+which the AppKit half needs and which is logic rather than drawing); `OverlayWindow.swift` is the
+AppKit half (`AppLifecycle`, `ScreenConfiguration.current()`, the level/collection-behavior
+mappings, `OverlayController`, `OverlayContentView`). See step 4 of the implementation order below
+for what was learned and what is still unverified.
+
 #### Reference documents
 
 - [Apple — `NSWindow.CollectionBehavior`](https://developer.apple.com/documentation/appkit/nswindow/collectionbehavior) — `.canJoinAllSpaces` and `.fullScreenAuxiliary` semantics for overlays over fullscreen Spaces.
@@ -1565,15 +1571,39 @@ later:
    section's deferral of real image localization. The mode→action mapping is plain Swift, not
    UniFFI/`text-policy-ffi` — see module 9's "open" note, still undecided. 62 new tests
    (`ScannerTests.swift`, `ScanLoopTests.swift`).
-4. **`Overlay`** (module 10) — the pure part is **done**: `OverlayPlan.plan(intent:screens:)` decides
-   one placement per screen from a verdict-shaped intent, with `.screenSaver`-equivalent level and
-   `.canJoinAllSpaces`/`.fullScreenAuxiliary`-equivalent collection behavior recorded as data for a
-   later AppKit task to consume. Region-level cover is deliberately not implemented — every placement
-   still covers the full screen frame, per the `Overlay` section's note above. Still outstanding and
-   unchanged from before: real `NSWindow`/`NSApplication` construction (needs the run loop this
-   package doesn't have yet), and live verification over native-fullscreen video and on a
-   multi-display setup — both failure modes are silent and neither can be checked without the AppKit
-   half. 16 new tests (`OverlayTests.swift`).
+4. ~~**`Overlay`** (module 10)~~ — **Done**, both halves. The pure part decides one placement per
+   screen from a verdict-shaped intent, with `.screenSaver`-equivalent level and
+   `.canJoinAllSpaces`/`.fullScreenAuxiliary`-equivalent collection behavior recorded as data.
+   Region-level cover is deliberately not implemented — every placement still covers the full screen
+   frame, per the `Overlay` section's note above. The AppKit half is `OverlayWindow.swift`:
+   `AppLifecycle.configureAccessoryApp()` (`NSApplication.shared` +
+   `setActivationPolicy(.accessory)`, without running the loop, so the caller keeps the thread),
+   `ScreenConfiguration.current()`/`init?(screen:)`, the two mappings onto `NSWindow.Level` and
+   `NSWindow.CollectionBehavior`, a `@MainActor OverlayController` owning `[screenID: NSWindow]` and
+   observing `didChangeScreenParametersNotification`, and an `OverlayContentView` backdrop. An
+   `overlay [seconds] [passive]` verb drives it from the CLI; the process runs, covers the one
+   attached display, and terminates cleanly. **Still outstanding — the *visual* is unverified**:
+   confirming the overlay is actually drawn, sits above native-fullscreen video, and reconciles
+   across a display connect/disconnect needs a human looking at a screen (and, for a screenshot, a
+   Screen Recording grant a terminal-run binary does not have). Three implementation notes:
+   - **The reconcile is a third pure function, not AppKit glue.** `OverlayReconciliation.diff`
+     (`Overlay.swift`) splits the live window set against a fresh plan into create/update/close.
+     Reusing an existing window instead of rebuilding it is not an optimization — the scan loop
+     reconciles several times a second, and recreating an unchanged window would flicker the
+     overlay continuously. Pulling this out is what keeps `OverlayWindow.swift` branch-free and so
+     legitimately exempt from tests. 11 new tests.
+   - **The backdrop reads no pixels at all.** `NSVisualEffectView` blurs the composited desktop
+     *behind* the window, so the native interstitial matches the proxy's injected
+     `backdrop-filter: blur(24px)` over `rgba(0,0,0,0.55)` without a captured frame existing to be
+     mishandled — stronger than the module's "the frame is a texture" rule.
+   - **A `Timer` scheduled after `NSApplication.run()` never fires**, and neither does one created
+     off the main run loop — the same trap as an `AXObserver` with no run-loop source. The `overlay`
+     verb schedules its teardown timer before surrendering the thread.
+   The verse and the two-button deliberate choice from
+   [warn-interstitial.md](../../product/flows/warn-interstitial.md) are **not** built: they need the
+   verse table and a dismissal path back to the scan loop, neither of which exists on this platform.
+   The content view draws a placeholder label where that card goes. 27 tests total
+   (`OverlayTests.swift`).
 5. **`DaemonIPC`** (module 14) — the pure part is **done**: length-prefixed JSON framing, an
    incremental decoder (`.needsMoreData` / `.message` / `.oversized` / `.invalid`, never throwing on
    a partial read), and validated `scan_event`/`config_update` Codable types, with `regions`
@@ -1653,7 +1683,7 @@ merged; 6 is human-only, no code):
    for the measurements. The edge shipped as `SystemAXProbe` rather than `RealAXElementProbe`, and
    the walk takes an `AXNodeID` handle rather than a raw element so it stays free of AX types.
    22 tests.
-3. **`feat/mac-daemon-overlay-appkit`** — module 10's second half, new file
+3. ~~**`feat/mac-daemon-overlay-appkit`** — module 10's second half, new file
    `OverlayWindow.swift` (existing `Overlay.swift` stays AppKit-free per its own header comment).
    `OverlayController` owns the live `[screenID: NSWindow]` set, observes
    `NSApplication.didChangeScreenParametersNotification`, and reconciles from
@@ -1664,7 +1694,17 @@ merged; 6 is human-only, no code):
    `ignoresMouseEvents` direct. `AppLifecycle.configureAccessoryApp()` calls
    `NSApplication.shared`/`setActivationPolicy(.accessory)`. No new tests — thin glue over the
    already-tested pure `OverlayPlan`, same exemption as the rest of this split; no existing
-   `NSScreen` fake exists in this codebase and building one just for this session isn't worth it.
+   `NSScreen` fake exists in this codebase and building one just for this session isn't worth
+   it.~~ **Done**, with one correction to this bullet: **it does need new tests**, because the
+   reconcile is not glue. Splitting the live window set against a fresh plan into
+   create/update/close is ordinary logic, it lives in the AppKit-free file as
+   `OverlayReconciliation.diff(existing:planned:)`, and it earns 11 tests — reusing a window
+   instead of rebuilding it is load-bearing rather than tidy, since the controller runs on every
+   scan tick and recreating unchanged windows would flicker the overlay several times a second.
+   Extracting it is also what makes the "no `NSScreen` fake" exemption honest: what remains in
+   `OverlayWindow.swift` has no branches to test. See step 4 of the implementation order above for
+   the rest of the findings. The overlay's *visual* is unverified and is one of the things session
+   6 should look at.
 4. **`feat/mac-daemon-real-scanner`** (needs 1+2 merged) — module 9 gets its first real
    `Scanner`, new file `AccessibilityScanner.swift`. **Interface resolution**:
    `Scanner.scan(_ frame: CapturedFrame)` is frame-driven, AX text isn't —
