@@ -1462,6 +1462,107 @@ later:
    permissions; sequenced last because it is defence in depth over `PermissionGate`, not a
    substitute for it.
 
+### The first live e2e pass — text-only, split into six sessions
+
+Everything above through step 5 is pure logic with no permissions and nothing visible on screen.
+The next milestone is the first thing a human can actually watch happen: a real overlay appearing
+over real on-screen text, scored by the real Rust policy engine, under a real (non-terminal) TCC
+grant. This is too much for one session — it fans out into three independent pieces, a merge
+point, and an integration pass, mirroring how modules 9/10/14 were each their own branch and
+`merge:` commit. Scope for this pass is text only: no image classifier, no `DaemonIPC` socket
+transport or `apps/desktop` wiring, no `EventHooks`/`FullscreenControl`/`SettingsGuard`, no
+region-level overlay cover.
+
+The mode→action "open" question in module 9 above is resolved for this pass: consume
+`packages/text-policy-ffi`'s `PolicyEngine`/`evaluate` over UniFFI from Swift rather than add a
+third independent reimplementation of policy logic. `packages/text-policy-ffi/src/lib.rs` already
+exports exactly what's needed — a `uniffi::Object` `PolicyEngine`
+(`with_builtin_dictionary()`/`with_thresholds(block:warn:)`) with
+`evaluate(text: String, source: SourceKind) -> Verdict { action: Action, score: u32 }`, and
+`SourceKind::AccessibilityTree` already exists — no Rust changes needed.
+
+Sessions, in dependency order (1–3 can run in parallel worktrees; 4 needs 1+2 merged; 5 needs 3+4
+merged; 6 is human-only, no code):
+
+1. **`infra/text-policy-ffi-swift-bindings`** — a new **module 16**. `scripts/build-ffi.sh`
+   (modeled on `apps/mobile/scripts/build-ffi.sh`, one crate, `--language swift` instead of
+   kotlin, run from the crate dir since `uniffi-bindgen` resolves `cargo metadata` off cwd, not
+   `--manifest-path`) builds `libtext_policy_ffi.dylib` for `aarch64-apple-darwin` and generates
+   Swift bindings into `Sources/TextPolicyFFI/generated/` — gitignored, never committed, same
+   treatment as `apps/mobile`'s `app/src/generated/kotlin`. Two new SwiftPM targets
+   (`CTextPolicyFFI` wrapping the generated header, `TextPolicyFFI` wrapping the generated
+   `.swift` file) that `MacDaemon` depends on. `scripts/test.sh` must call `build-ffi.sh` itself
+   and export `DYLD_LIBRARY_PATH` for the loose dylib. **The real gap this session closes**:
+   `AppBundle.assemble` (`AppBundle.swift:79`) today only copies the single executable into
+   `Contents/MacOS/` — it has no concept of embedding a dylib. Add a `Frameworks/` directory to
+   `BundleLayout`, copy `libtext_policy_ffi.dylib` there, and **sign the dylib before the bundle**
+   in `CodeSigning.sign(bundle:identity:)` (an unsigned/differently-signed loose dylib under a
+   signed bundle can be refused at `dlopen` time) — test-first via the existing
+   `AppBundleTests.swift`/`FakeCommandRunner` fake-filesystem pattern.
+2. **`feat/mac-daemon-accessibility-text`** — module 12, `AccessibilityText.swift`. Pure,
+   test-first: `AXElementProbing` protocol + `FakeAXElementProbe` (same shape as
+   `CommandRunner`/`FakeCommandRunner`), `AccessibilityText.extractText(from:probe:limits:)`
+   bounded by depth/node-count (`AXWalkLimits`, defaults 40/2000), adjacent-only dedup, and a
+   documented separator choice. Tests cover an empty tree, a cyclic fake graph (real AX trees can
+   legitimately cycle), the depth and node-count bounds, and whitespace filtering. The real edge
+   (`RealAXElementProbe`) is thin AppKit/AX glue, exempted from test-first same as
+   `SCShareableContentCapture`: `AXUIElementSetMessagingTimeout` (~300ms) plus a coarser ~500ms
+   wall-clock budget on the whole walk, off the scan-timer thread; `kAXManualAccessibility` set to
+   `true` on the frontmost app's application element before reading its focused window (required
+   for Chrome/Electron, which expose nothing without it); any AX error mid-walk stops that subtree
+   rather than throwing. Verify live against Safari and a real Chromium app, with and without the
+   manual-accessibility set.
+3. **`feat/mac-daemon-overlay-appkit`** — module 10's second half, new file
+   `OverlayWindow.swift` (existing `Overlay.swift` stays AppKit-free per its own header comment).
+   `OverlayController` owns the live `[screenID: NSWindow]` set, observes
+   `NSApplication.didChangeScreenParametersNotification`, and reconciles from
+   `OverlayPlan.plan(intent:screens:)`. Mechanical mappings onto real AppKit:
+   `OverlayWindowLevel.screenSaver → NSWindow.Level.screenSaver`, both
+   `.canJoinAllSpaces`/`.fullScreenAuxiliary` set together (never just one — missing either
+   silently fails over native-fullscreen video, per the module 10 section above),
+   `ignoresMouseEvents` direct. `AppLifecycle.configureAccessoryApp()` calls
+   `NSApplication.shared`/`setActivationPolicy(.accessory)`. No new tests — thin glue over the
+   already-tested pure `OverlayPlan`, same exemption as the rest of this split; no existing
+   `NSScreen` fake exists in this codebase and building one just for this session isn't worth it.
+4. **`feat/mac-daemon-real-scanner`** (needs 1+2 merged) — module 9 gets its first real
+   `Scanner`, new file `AccessibilityScanner.swift`. **Interface resolution**:
+   `Scanner.scan(_ frame: CapturedFrame)` is frame-driven, AX text isn't —
+   `AccessibilityScanner` ignores its `frame` parameter and does its own independent AX read,
+   which needs zero changes to `Scanner.swift`/`ScanLoop.swift`/their 62 existing tests and slots
+   into `ScanLoop`'s OCR-cadence slot (1–2s), the right tier for this kind of scan. Because
+   `ScanLoop` calls one injected `Scanner` on *both* its ~500ms image cadence and its ~1–2s OCR
+   cadence, `AccessibilityScanner` must internally rate-limit its own AX walk so the faster cadence
+   doesn't trigger a full walk every time — test-first. `PolicyEngineHandle` is the UniFFI seam
+   (`RealPolicyEngine` wraps the generated `PolicyEngine`), kept fake-able so
+   `Scanner.swift`/`ScanLoop.swift` stay UniFFI-agnostic. The Rust `Action` enum has 5 cases
+   (Block/Blur/Warn/Log/Allow), `ScanAction` has 3 (allow/warn/block) — map `Block → .block`,
+   `Warn → .warn`, `Allow`/`Log → .allow`, **`Blur → .warn`** (no dedicated blur visual state
+   exists yet), with its own named test since it's a real information-loss decision. Test-first:
+   the 5→3 mapping, the rate-limit gate, the empty-tree/no-root → `.allow` fallback, and the
+   `u32` 0–100 → `Double` 0.0–1.0 score normalization, all against fakes.
+5. **`feat/mac-daemon-agent-render-loop`** (needs 3+4 merged) — rewires `runAgent()` in
+   `Sources/holy-blocker-macd/main.swift`: replaces the `Thread.sleep(30s)` poll loop with
+   `AppLifecycle.configureAccessoryApp()` + a real `NSApplication` run loop. A main-thread
+   repeating `Timer` (~0.25s, created before `app.run()` — an off-thread timer never added to the
+   main run loop silently never fires, the same trap as `AXObserver`) ticks
+   `scanLoop.tick(now:)` and reconciles `overlay.apply(intent:)`; a second timer keeps polling
+   `gate.poll()` for tamper events; a third watches `stopRequested` and calls `app.terminate(nil)`
+   since `app.run()` now owns the thread. This timer is an explicitly acknowledged stand-in for
+   module 11 (`EventHooks`), not a replacement for it. **Known coupling, flagged not fixed**:
+   `ScanLoop.tick` (`ScanLoop.swift:179`) gates on `!frame.isEmpty`, so without a Screen Recording
+   grant the AX-text scanner never runs at all even though it doesn't touch frame pixels — since
+   Screen Recording is being granted anyway for session 6, `ScanLoop` is left untouched rather than
+   special-cased for a frame-less scanner; revisit once a real image scanner exists.
+6. **Live verification** (needs 5 merged, human-in-the-loop, no code): rebuild bindings and bundle,
+   reload the LaunchAgent, grant Accessibility + Screen Recording for real via System Settings
+   against `HolyBlockerDaemon.app` specifically (never a shell binary — the responsible-process
+   rule), confirm `holy-blocker-macd permissions` reports both granted, bring text the shipped
+   starter dictionary scores `Block` on (e.g. "explicit act", already used in
+   `text-policy-ffi`'s own test fixtures) frontmost and confirm an interstitial appears and
+   swallows a click within ~1–2s, confirm it tears down over clean text, check native-fullscreen
+   Space interaction, and multi-display connect/disconnect if a second display is available. Strike
+   the completed order items above and update this file's status once done.
+
 ### Outstanding verification — one item blocks a tamper-resistance claim
 
 **Can a *standard* user reset a Screen Recording grant with `tccutil`?** Measured so far: `tccutil
