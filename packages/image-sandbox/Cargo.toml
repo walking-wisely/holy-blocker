@@ -1,0 +1,20 @@
+[package]
+name = "image-sandbox"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "image_sandbox"
+path = "src/lib.rs"
+
+[features]
+default = []
+# ONNX inference. Off by default so the crate builds and tests without an ONNX
+# Runtime present; `ort` fetches a prebuilt runtime at *build* time, which is
+# not a runtime network path and so does not break the local-first rule.
+onnx = ["dep:ort"]
+
+[dependencies]
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif"] }
+ort = { version = "2.0.0-rc.10", optional = true }
+tracing = "0.1"

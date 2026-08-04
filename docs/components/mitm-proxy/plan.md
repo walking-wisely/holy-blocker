@@ -27,6 +27,43 @@ Additional modules are now complete:
 
 What remains is `ProtectionMode` runtime switching (step 7 in the implementation order).
 
+### Fixed: leaf certificates were rejected by every browser
+
+**Done.** `tls.rs` built leaf certificates with `CertificateParams::new(...)` and never assigned
+`not_before` or `not_after`, so they inherited `rcgen`'s defaults — 1975-01-01 to 4096-01-01, a
+774,680-day validity period — and set no key usage or extended key usage at all. Firefox aborted
+the handshake with `received fatal alert: BadCertificate` even with the root CA installed and
+trusted in the macOS System keychain.
+
+`generate_leaf_cert_der` now sets, with the reasoning inline at each constant:
+
+- `not_before` = now − 1 hour (clock-skew tolerance; leaves are minted during the handshake, so a
+  client even seconds behind would otherwise see a not-yet-valid certificate),
+- `not_after` = now + 397 days, keeping the total window under Apple's 398-day maximum,
+- `extendedKeyUsage` = `id-kp-serverAuth`, which Apple requires,
+- `keyUsage` = `digitalSignature`, correct for the ECDSA P-256 leaf key.
+
+Verified live: Firefox 152 renders `https://example.com` through the proxy, and the served leaf
+reports `notBefore=Jul 26 15:16:42 2026 GMT`, `notAfter=Aug 27 16:16:42 2027 GMT`, `TLS Web Server
+Authentication`, with `Verify return code: 0 (ok)` against the CA.
+
+#### Why it survived so long, and what the new tests do about it
+
+**No verifying client had ever been pointed at the proxy.** The existing tests asserted SAN
+correctness and cache behaviour, not acceptance; `openssl s_client` does not validate by default;
+and macOS `curl` is SecureTransport-built and silently ignores `--cacert`, returning 200 whether or
+not interception happened.
+
+An earlier draft of this section suggested fixing it by "verifying a generated leaf against the CA
+rather than only inspecting its fields". **That advice was wrong and would not have caught this
+bug.** The 1975–4096 window *contains the present moment*, so chain verification succeeds and
+webpki raises no objection — rejection came from Firefox's own sanity limits, which webpki does not
+implement. The bug is only catchable by asserting an explicit *bound* on the validity period, which
+is what `leaf_cert_validity_is_bounded_and_current` does. A chain-verification test is still worth
+having for signing and chain errors, but it is not the guard for this class of defect.
+
+Both new tests were confirmed to fail against the unfixed code before the fix landed.
+
 ## Modules to add
 
 ### 1. `tls` — certificate generation and TLS termination

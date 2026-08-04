@@ -12,5 +12,25 @@ __pycache__/
 *.tflite
 *.pt
 *.pth
-data/raw/
-data/processed/
+# Datasets and model artifacts never enter the repo. These need the `**/` prefix:
+# a pattern containing a slash is anchored to this file's directory, so a bare
+# `data/raw/` would match only at the root and miss `machine-learning/data/raw/`.
+**/data/raw/
+**/data/processed/
+**/data/eval/
+**/data/train/
+**/data/val/
+# Extracted feature vectors — derived from explicit corpora, never committed.
+*.npz
+artifacts/
+# The corpus is large enough that worktrees share one copy and symlink to it.
+# A trailing slash matches directories only, so the patterns above skip a
+# symlink standing in for one — the same defect that left `machine-learning/`
+# unprotected until the `**/` prefixes were added.
+**/machine-learning/data
+**/machine-learning/artifacts
+.pytest_cache/
+# Dev-time credentials. .env.example is tracked; .env never is.
+.env
+.env.*
+!.env.example

@@ -242,5 +242,5 @@ Logic-only source files (`scan_loop.cpp`, `ipc.cpp`) should be compiled into a s
 - Windows native OCR (`Windows.Media.Ocr`) integration — deferred; requires WinRT headers and async/coroutine plumbing.
 - Accessibility tree scanning — planned; see [edge-daemons.md](../../architecture/edge-daemons.md).
 - Expanded WinEvent set (`EVENT_SYSTEM_MINIMIZESTART`, `EVENT_SYSTEM_DESKTOPSWITCH`, etc.) — the current two hooks are sufficient for the scan loop; the full recommended set from [edge-daemons.md](../../architecture/edge-daemons.md) can be added alongside the accessibility work.
-- Android daemon — lives in `native-modules/android-service/`; not covered here.
+- Android daemon — lives in `apps/mobile/`; not covered here.
 - Frame-difference hashing to skip redundant OCR — noted in [edge-daemons.md](../../architecture/edge-daemons.md); depends on OCR being wired first.

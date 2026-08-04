@@ -1,0 +1,25 @@
+[package]
+name = "net-shield-ffi"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "net_shield_ffi"
+crate-type = ["cdylib", "lib"]
+path = "src/lib.rs"
+
+[features]
+# Same reasoning as text-policy-ffi: the bindgen CLI is a build-time tool that
+# drags in cargo_metadata, whose transitive cargo-platform needs a newer rustc
+# than the toolchain CI pins. Off by default so `cargo test` builds the library
+# on the CI toolchain, while scripts/build-ffi.sh opts in locally.
+bindgen = ["uniffi/cli"]
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
+required-features = ["bindgen"]
+
+[dependencies]
+net-shield = { path = "../net-shield" }
+uniffi = { version = "0.32.0", default-features = false }

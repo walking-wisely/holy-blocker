@@ -1,0 +1,198 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!--
+      Only needed for the TYPE_APPLICATION_OVERLAY fallback in OverlayController;
+      an accessibility service can draw TYPE_ACCESSIBILITY_OVERLAY without it.
+      https://developer.android.com/reference/android/Manifest.permission#SYSTEM_ALERT_WINDOW
+    -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+
+    <!--
+      The status service. specialUse because none of the typed categories
+      describes it: it is neither media, location, nor data sync, and the
+      Android 14+ type list has no entry for "watches whether this app's own
+      guard is still running". The subtype property below is the required
+      justification. Play review is not a factor — distribution is by sideloading
+      and Play is an explicit non-goal.
+      https://developer.android.com/develop/background-work/services/fgs/service-types
+    -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+
+    <!--
+      Android 14+ requires the type-specific permission alongside the service's
+      foregroundServiceType. Without it startForeground(..., MEDIA_PROJECTION)
+      throws SecurityException — and it throws inside the five-second window the
+      service has to reach the foreground, so the failure arrives as an ANR-shaped
+      crash rather than as a permission error.
+      https://developer.android.com/develop/background-work/services/fgs/service-types#media-projection
+    -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
+
+    <!--
+      Android 13+ runtime permission. Without it the foreground service still
+      runs but its notification is not shown, which for a service whose entire
+      output is that notification is indistinguishable from it not running.
+      MainActivity asks.
+    -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!--
+      Only to restore the status service; the accessibility service is rebound by
+      the system without it. See BootReceiver for why nothing is recorded here.
+    -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
+    <!--
+      Required by ConnectivityManager.registerNetworkCallback, which is how the
+      network guard finds the resolvers of the network *underneath* the VPN.
+      Normal permission, granted at install.
+
+      Not optional and not defensive: without it the call throws SecurityException
+      and takes the service down *after* the TUN has been established, which on an
+      android-36 emulator left tun0 up with nothing draining it. Establishing a
+      VPN and then crashing is worse than never establishing one.
+      https://developer.android.com/reference/android/net/ConnectivityManager#registerNetworkCallback(android.net.NetworkRequest,%20android.net.ConnectivityManager.NetworkCallback)
+    -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <!--
+      The first network permission this app has ever needed, and it is worth
+      being precise about why: it is used for exactly one thing, which is
+      relaying the user's own DNS queries to the resolver their own network
+      already advertises. Nothing is sent to us or to anyone we chose — there is
+      no fallback to a public resolver precisely so that this permission cannot
+      quietly become one. The local-first rule in AGENTS.md is intact; a VPN that
+      forwards a permitted query has to be able to send it.
+
+      Without it, send() fails with SocketException and every permitted lookup
+      goes unanswered while blocked ones still resolve — a failure shape that
+      looks like the filter working, which is how it survived a first pass on an
+      android-36 emulator.
+    -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <application
+        android:allowBackup="false"
+        android:label="@string/app_name"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.HolyBlocker">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!--
+          BIND_ACCESSIBILITY_SERVICE must be required so only the system can bind.
+          https://developer.android.com/guide/topics/ui/accessibility/service
+        -->
+        <service
+            android:name=".ScreenGuardService"
+            android:exported="true"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/accessibility_service_config" />
+        </service>
+
+        <!--
+          The always-visible status surface, and the process that outlives the
+          guard so a disable it cannot report gets recorded anyway. Not exported:
+          nothing outside the app has any business starting it.
+
+          It is also the FGS host the VpnService and MediaProjection steps need
+          (plan.md §6) — MediaProjection in particular requires a running
+          foreground service before getMediaProjection(), and adding a second
+          type here later is a manifest change rather than a new service.
+        -->
+        <service
+            android:name=".GuardStatusService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Continuously reports whether the on-device screen guard is running, and records locally when it stops while the user has protection armed." />
+        </service>
+
+        <!--
+          The network guard. BIND_VPN_SERVICE must be required so only the
+          system can bind, and the service must be exported for the system to
+          reach it at all — the same shape as the accessibility service above.
+
+          No <uses-permission> accompanies this: the VPN capability is granted
+          by the user through VpnService.prepare()'s consent dialog, not by a
+          manifest permission, and it is revocable from Settings at any time.
+          onRevoke() is where that shows up.
+          https://developer.android.com/reference/android/net/VpnService
+        -->
+        <service
+            android:name=".NetworkGuardService"
+            android:exported="true"
+            android:permission="android.permission.BIND_VPN_SERVICE">
+            <intent-filter>
+                <action android:name="android.net.VpnService" />
+            </intent-filter>
+        </service>
+
+        <!--
+          The capture service. Not exported: the only legal way in is an
+          activity result this app just received, and a projection started by
+          anything else would be one nobody consented to.
+
+          There is deliberately no <intent-filter> and no boot restore. A
+          MediaProjection grant lives for one session and its token is single-use
+          from Android 14, so there is nothing for a receiver to restore — unlike
+          the VPN, which BootReceiver does bring back.
+        -->
+        <service
+            android:name=".ScreenCaptureService"
+            android:exported="false"
+            android:foregroundServiceType="mediaProjection" />
+
+        <!--
+          Restores the status service after a restart or an app update. Both
+          actions are background-start exemptions, which is what makes the
+          foreground start from here legal on Android 12+. Exported because the
+          system is what delivers these.
+        -->
+        <receiver
+            android:name=".BootReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
+
+        <!--
+          Device admin. Active admin status is what makes the package manager
+          refuse uninstall; see HolyBlockerAdminReceiver for why no policies are
+          declared.
+
+          BIND_DEVICE_ADMIN must be required so only the system can send these
+          broadcasts, and the receiver must be exported for the system to reach
+          it at all.
+          https://developer.android.com/guide/topics/admin/device-admin
+        -->
+        <receiver
+            android:name=".admin.HolyBlockerAdminReceiver"
+            android:exported="true"
+            android:permission="android.permission.BIND_DEVICE_ADMIN">
+            <meta-data
+                android:name="android.app.device_admin"
+                android:resource="@xml/device_admin" />
+            <intent-filter>
+                <action android:name="android.app.action.DEVICE_ADMIN_ENABLED" />
+            </intent-filter>
+        </receiver>
+    </application>
+</manifest>

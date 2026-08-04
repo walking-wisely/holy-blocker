@@ -164,6 +164,31 @@ The loop runs until an unrecoverable adapter error occurs or the returned `Futur
 3. ~~`src/lib.rs` — public re-exports and the `NetShield` struct shell. At this point `run` can be a stub returning `Ok(())`.~~ **Done.**
 4. ~~`tun.rs` — `PacketSink` trait and `RawPacket` type first; test the routing dispatch logic using a fake sink against pre-built packet buffers. Then add the Wintun `TunAdapter` implementation behind `#[cfg(target_os = "windows")]`.~~ **Done.**
 5. ~~Wire `NetShield::run()` to the full loop: integrate `TunAdapter`, `DomainFilter`, `IpFilter`, and `extract_sni`; smoke-test by routing a known-block domain and confirming the packet is dropped.~~ **Done.**
+6. ~~`dns.rs`, `udp.rs`, `dns_shield.rs` — the DNS path, added for the Android VPN.~~ **Done.**
+
+### 6. The DNS path — `dns`, `udp`, `dns_shield`
+
+Added for `apps/mobile`'s `VpnService`, and reusable by any TUN that has to *answer* rather than
+only route.
+
+- `dns.rs` — parses the question out of a standard query and builds an NXDOMAIN refusal for a
+  blocked name. No resolver, no answer-section parsing: a permitted query is forwarded verbatim
+  and its reply passed back untouched. Compression pointers in a QNAME are **rejected rather than
+  followed** — a query's QNAME is the first name in the message, so there is nothing earlier to
+  point at, and following one is the only place a malformed input could drive a loop.
+- `udp.rs` — IPv4/UDP framing: parse a datagram off a TUN, and build one with correct IPv4-header
+  and UDP checksums. IPv4 only, because the one consumer addresses its own TUN and gives it a
+  single IPv4 resolver address, so a second pseudo-header would be dead code. Fragments are
+  refused rather than reassembled.
+- `dns_shield.rs` — the whole decision as one pure function over one packet: `Ignore`, `Blocked`
+  with the reply bytes, or `Forward` with the query to send upstream. No I/O and no clock, so the
+  interesting half is testable on any host and the Kotlin edge stays free of wire formats.
+
+Note the deliberate asymmetry with `NetShield`: `PacketSink`'s `pass_packet` assumes Wintun-style
+re-injection, which **Android does not offer**. That is why the DNS path returns bytes for the
+caller to write instead of dispatching through a sink.
+
+`packages/net-shield-ffi` is the UniFFI wrapper over `dns_shield`, mirroring `text-policy-ffi`.
 
 ## Reference documents
 
@@ -197,5 +222,5 @@ Everything in this package operates directly on wire formats and OS-level APIs. 
 - **macOS `NetworkExtension`** (`NEPacketTunnelProvider`) — handled separately in `native-modules/mac-network/`. The `PacketSink` trait can be reused, but the adapter layer is Swift and out of scope here.
 - **DNS-over-HTTPS and DNS blocking** — not part of Phase 1. Domain lookup operates on SNI / Host header values extracted from live connections, not on DNS queries.
 - **QUIC / HTTP3** — UDP port 443 QUIC handling requires a separate policy decision (block entirely to force HTTP/2 fallback, or allow selectively). This is deferred pending the QUIC policy design.
-- **Android** — handled separately in `native-modules/android-service/`.
+- **Android** — handled separately in `apps/mobile/`.
 - **`win-network` adapter lifetime management** — installing and removing the Wintun driver, setting Windows routing rules, and managing the adapter across reboots are responsibilities of `native-modules/win-network/`, not this package.

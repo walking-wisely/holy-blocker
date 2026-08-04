@@ -1,0 +1,124 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      translatable="false" is load-bearing, not tidiness. SettingsGuard matches
+      settings screens by looking for this label in the node tree, which works
+      only because it is a brand string rather than localised copy. A translated
+      app_name would silently disable the catch-all in that locale — the exact
+      failure the guard avoids by never matching Settings' own wording.
+    -->
+    <string name="app_name" translatable="false">Holy Blocker</string>
+
+    <!--
+      Shown on the system's accessibility settings screen. States what the
+      service reads, since the user is granting a broad permission.
+    -->
+    <string name="accessibility_service_description">Reads on-screen text so it can cover content that matches your settings. Text is analysed on this device and is never sent anywhere.</string>
+
+    <!--
+      Overlay copy. Per docs/decisions/formation-model.md these describe what the
+      tool did — they never name a fault or address the person's conscience.
+    -->
+    <string name="overlay_covered">Covered</string>
+    <string name="overlay_warn">Heads up</string>
+
+    <!-- Onboarding -->
+    <string name="onboarding_title">Holy Blocker</string>
+    <string name="status_service_on">Screen guard is on.</string>
+    <string name="status_service_off">Screen guard is off.</string>
+    <string name="action_open_accessibility_settings">Open accessibility settings</string>
+    <string name="restricted_settings_hint">If the toggle is greyed out, open App info, tap the three-dot menu, and choose “Allow restricted settings”. Android requires this for apps installed outside the Play Store.</string>
+
+    <!--
+      The protection mode and its exit path. Deliberately plain and always
+      reachable: a tool that cannot be switched off is not an accountability
+      tool, and this is also the only in-app recovery if screen matching
+      misfires on an untested device.
+
+      The copy states what the tool is doing and what happens next. It never
+      congratulates the user for arming it or questions them for disarming it —
+      see docs/decisions/formation-model.md.
+    -->
+    <string name="action_arm">Turn on protection</string>
+    <string name="action_request_disarm">Turn off protection</string>
+    <string name="action_cancel_disarm">Cancel</string>
+    <string name="action_confirm_disarm">Turn off protection now</string>
+    <string name="status_protection_off">Protection is off. Settings and uninstall are not blocked.</string>
+    <string name="status_protection_armed">Protection is on. The screens that remove this app are blocked.</string>
+    <string name="status_disarm_pending">Protection turns off in %1$d min. It stays on until then.</string>
+    <string name="status_disarm_ready">You can turn protection off now. This offer expires in %1$d min.</string>
+    <!--
+      A quantity string because the last minute of the window says "1 more
+      minute", and "1 more minutes" on the one screen whose job is to be
+      trusted reads as carelessness.
+    -->
+    <plurals name="status_disarmed">
+        <item quantity="one">Protection is off for %1$d more minute, then turns itself back on.</item>
+        <item quantity="other">Protection is off for %1$d more minutes, then turns itself back on.</item>
+    </plurals>
+    <string name="hint_disarm_to_remove">To uninstall Holy Blocker: turn off protection here, then turn off uninstall protection in Settings, then uninstall.</string>
+
+    <!--
+      Shown when the device has no verified settings-screen identifiers. Failing
+      visibly beats failing open: the guard genuinely is not running here, and
+      claiming otherwise would be the one thing worse than not having it.
+    -->
+    <string name="status_device_unsupported">Screen protection is unverified on this device — settings are not guarded.</string>
+
+    <!--
+      The ongoing status notification. It states what is or is not running and
+      stops there — see docs/decisions/formation-model.md. Most states reuse the
+      onboarding copy above so the two surfaces cannot drift apart; only the two
+      below have no equivalent there.
+
+      "The screen guard is not running" is the one line here that has to be
+      unambiguous: it is the only report the user gets of a disable that happened
+      outside this app — adb, a guest session, or a settings screen the guard does
+      not recognise on this build.
+    -->
+    <string name="channel_status_name">Protection status</string>
+    <string name="channel_status_description">Shows whether the screen guard is running. Silent and always on screen while protection is set up.</string>
+    <string name="notification_guard_not_running">Protection is on, but the screen guard is not running. Nothing is being blocked.</string>
+    <string name="notification_protection_off">Protection is off.</string>
+
+    <!--
+      Device admin. The explanation is shown on the system activation screen and
+      the warning on the deactivation screen; both state the consequence and stop
+      there, per docs/decisions/formation-model.md.
+    -->
+    <string name="admin_status_on">Uninstall protection is on.</string>
+    <string name="admin_status_off">Uninstall protection is off.</string>
+    <string name="action_enable_admin">Turn on uninstall protection</string>
+    <string name="admin_add_explanation">While this is on, Holy Blocker cannot be uninstalled until you turn it off again. It grants no other permissions — it cannot lock, wipe, or change your device.</string>
+    <string name="admin_disable_warning">Turning this off lets Holy Blocker be uninstalled again.</string>
+
+    <!--
+      The network guard. The copy says what it covers and what it does not,
+      because a user who believes the network is filtered when only name lookups
+      are is worse off than one who knows — same rule as the unsupported-device
+      notice above.
+    -->
+    <string name="network_status_on">Blocked sites are filtered before they are looked up.</string>
+    <string name="network_status_off">Site filtering is off.</string>
+    <string name="action_enable_network_guard">Turn on site filtering</string>
+    <!--
+      Screen scanning. The copy has to carry two facts a user is entitled to
+      before granting the broadest permission this app asks for: that it is the
+      whole screen, and that the images stay here. It also has to say plainly
+      that the grant lasts one session — Android gives no way to keep it, and a
+      user who thinks it is permanent will believe they are covered when they are
+      not, which is the failure the unsupported-device notice above avoids.
+
+      Nothing here claims the images are analysed yet: they are not, until
+      packages/image-sandbox exists. See plan.md §6.
+    -->
+    <string name="capture_status_on">Screen scanning is on.</string>
+    <string name="capture_status_off">Screen scanning is off.</string>
+    <string name="action_enable_capture">Turn on screen scanning</string>
+    <string name="capture_explanation">Android asks you to confirm this each time, and turns it off whenever the phone restarts or you stop it from the status bar. Everything captured is checked on this device and immediately discarded — no images are saved and nothing is sent anywhere.</string>
+    <string name="channel_capture_name">Screen scanning</string>
+    <string name="channel_capture_description">Shows when Holy Blocker is reading the screen. Silent and always on screen while scanning runs.</string>
+    <string name="notification_screen_scan">Screen scanning is on. Images are checked on this device and discarded.</string>
+
+    <string name="network_guard_explanation">Holy Blocker uses Android’s VPN slot to filter name lookups on this device. Nothing is sent anywhere: lookups are answered or passed straight through on the phone. Android allows one VPN at a time, so turning this on replaces any other VPN you use.</string>
+</resources>
