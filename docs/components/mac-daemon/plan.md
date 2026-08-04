@@ -753,8 +753,8 @@ pbxproj format is hostile to review.
 
 ### Built — and one instruction above is wrong
 
-**Done**, except for obtaining a stable certificate, which is a decision rather than code (see the
-end of this section). Shipped: `AppBundle` (layout, `Info.plist` generation, `assemble`),
+**Done**, including a stable signing identity — see the end of this section and
+[signing-identity.md](signing-identity.md). Shipped: `AppBundle` (layout, `Info.plist` generation, `assemble`),
 `LaunchdJob` (both halves), `CodeSigning` (sign, read back, and the `isStable` question),
 `scripts/bundle.sh`, and four CLI verbs — `bundle`, `bundle-status`, `launchd-plist`, and `agent`.
 The script stayed a script: it builds the binary and asks it to bundle itself, so the tested
@@ -794,11 +794,20 @@ The `launchd` split is encoded rather than described: the agent carries
 user, and root cannot be given one), while the daemon carries `UserName = root` and no session
 restriction.
 
-**What is still open, and it is a decision, not code:** the bundle signs ad-hoc by default, which
+~~**What is still open, and it is a decision, not code:** the bundle signs ad-hoc by default, which
 `bundle` and `agent` both warn about at runtime. A stable identity — a Developer ID certificate, or
 a self-signed code-signing certificate used consistently — has to exist before any TCC grant is
 worth making, and creating one writes to a keychain. Set `HOLY_BLOCKER_SIGNING_IDENTITY` and
-`scripts/bundle.sh` uses it. Until then, backlog item 1 stays open.
+`scripts/bundle.sh` uses it. Until then, backlog item 1 stays open.~~ **Done** — a self-signed
+`Holy Blocker Dev` code-signing identity now lives in the development machine's login keychain,
+`bundle-status` reports `signed(authority: "Holy Blocker Dev")` with `grants survive a rebuild:
+true`, and `scripts/bundle.sh` is wired to it via `HOLY_BLOCKER_SIGNING_IDENTITY`. See
+[signing-identity.md](signing-identity.md) for the runbook — where the identity lives, how to
+recreate it if lost, and how to rotate it. This is still a development-only identity; a Developer
+ID certificate is a separate, later decision needed before shipping to anyone else's machine (see
+that page's "Before shipping to anyone else"). Backlog item 1's remaining blocker is now only the
+human step: granting Screen Recording / Accessibility to the signed bundle and observing a real
+revocation.
 
 ---
 
