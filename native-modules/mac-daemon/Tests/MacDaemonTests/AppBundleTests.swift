@@ -35,6 +35,17 @@ struct BundleLayoutTests {
         #expect(layout.infoPlist.path == "/tmp/HolyBlockerDaemon.app/Contents/Info.plist")
     }
 
+    @Test("puts embedded dylibs where the executable's rpath points")
+    func frameworksPath() {
+        // holy-blocker-macd links libtext_policy_ffi.dylib at @rpath and carries exactly one
+        // bundle-relative rpath, @executable_path/../Frameworks. Any other directory is invisible
+        // to dyld no matter what the bundle contains.
+        #expect(layout.frameworks.path == "/tmp/HolyBlockerDaemon.app/Contents/Frameworks")
+        #expect(
+            layout.embeddedLibrary(named: "libtext_policy_ffi.dylib").path
+                == "/tmp/HolyBlockerDaemon.app/Contents/Frameworks/libtext_policy_ffi.dylib")
+    }
+
     @Test("lists every directory that has to exist before assembly")
     func directories() {
         #expect(
@@ -42,6 +53,7 @@ struct BundleLayoutTests {
                 "/tmp/HolyBlockerDaemon.app/Contents",
                 "/tmp/HolyBlockerDaemon.app/Contents/MacOS",
                 "/tmp/HolyBlockerDaemon.app/Contents/Resources",
+                "/tmp/HolyBlockerDaemon.app/Contents/Frameworks",
             ])
     }
 }
@@ -155,6 +167,80 @@ struct BundleAssemblyTests {
             try AppBundle.assemble(at: root, identity: identity, executable: executable)
 
             #expect(!FileManager.default.fileExists(atPath: leftover.path))
+        }
+    }
+
+    /// A stand-in for the UniFFI dylib scripts/build-ffi.sh stages.
+    private func makeLibrary(in directory: URL, named name: String) throws -> URL {
+        let path = directory.appendingPathComponent(name)
+        try Data("not really a mach-o".utf8).write(to: path)
+        return path
+    }
+
+    @Test("carries the UniFFI dylib inside the bundle")
+    func embedsLibraries() throws {
+        try withTemporaryDirectory { directory in
+            let root = directory.appendingPathComponent("HolyBlockerDaemon.app")
+            let library = try makeLibrary(in: directory, named: "libtext_policy_ffi.dylib")
+
+            try AppBundle.assemble(
+                at: root, identity: identity, executable: try makeExecutable(in: directory),
+                libraries: [library])
+
+            let layout = AppBundle.layout(root: root, identity: identity)
+            // Left beside the executable instead of under Frameworks, this loads during
+            // development — the build-tree rpath still resolves — and fails only once the bundle
+            // is moved to another machine.
+            #expect(
+                FileManager.default.fileExists(
+                    atPath: layout.embeddedLibrary(named: "libtext_policy_ffi.dylib").path))
+        }
+    }
+
+    @Test("assembles without libraries, so the bundle verb stays usable before build-ffi.sh runs")
+    func librariesAreOptional() throws {
+        try withTemporaryDirectory { directory in
+            let root = directory.appendingPathComponent("HolyBlockerDaemon.app")
+
+            try AppBundle.assemble(
+                at: root, identity: identity, executable: try makeExecutable(in: directory))
+
+            let layout = AppBundle.layout(root: root, identity: identity)
+            #expect(FileManager.default.fileExists(atPath: layout.frameworks.path))
+        }
+    }
+
+    @Test("names the library the executable actually links")
+    func embeddedLibraryNames() {
+        // The list is here rather than in bundle.sh so the name the linker uses and the name the
+        // bundler copies cannot drift apart silently.
+        #expect(AppBundle.embeddedLibraryNames == ["libtext_policy_ffi.dylib"])
+    }
+
+    @Test("reports the nested code that has to be signed, deepest first")
+    func nestedCodeToSign() throws {
+        try withTemporaryDirectory { directory in
+            let root = directory.appendingPathComponent("HolyBlockerDaemon.app")
+            let library = try makeLibrary(in: directory, named: "libtext_policy_ffi.dylib")
+            try AppBundle.assemble(
+                at: root, identity: identity, executable: try makeExecutable(in: directory),
+                libraries: [library])
+
+            let layout = AppBundle.layout(root: root, identity: identity)
+            #expect(
+                try AppBundle.nestedCode(in: layout).map(\.lastPathComponent)
+                    == ["libtext_policy_ffi.dylib"])
+        }
+    }
+
+    @Test("finds no nested code in a bundle that embeds nothing")
+    func nestedCodeWhenEmpty() throws {
+        try withTemporaryDirectory { directory in
+            let root = directory.appendingPathComponent("HolyBlockerDaemon.app")
+            try AppBundle.assemble(
+                at: root, identity: identity, executable: try makeExecutable(in: directory))
+
+            #expect(try AppBundle.nestedCode(in: AppBundle.layout(root: root, identity: identity)).isEmpty)
         }
     }
 }
@@ -391,6 +477,37 @@ struct CodeSigningInvocationTests {
             try CodeSigning(runner: runner).sign(
                 bundle: URL(fileURLWithPath: "/tmp/HolyBlockerDaemon.app"), identity: "missing")
         }
+    }
+
+    @Test("signs an embedded dylib before the bundle that seals it")
+    func signsNestedCodeFirst() throws {
+        // codesign seals the bundle's contents into its own signature. Signing the dylib after the
+        // bundle invalidates that seal, and an embedded library whose signature disagrees with the
+        // bundle's is refused at dlopen — a launch-time failure, well after the build looked fine.
+        let runner = FakeCommandRunner()
+        let bundle = URL(fileURLWithPath: "/tmp/HolyBlockerDaemon.app")
+        let dylib = bundle.appendingPathComponent("Contents/Frameworks/libtext_policy_ffi.dylib")
+
+        try CodeSigning(runner: runner).sign(
+            bundle: bundle, identity: "Holy Blocker Dev", nestedCode: [dylib])
+
+        #expect(runner.invocations.count == 2)
+        #expect(runner.invocations[0].arguments.contains(dylib.path))
+        #expect(runner.invocations[1].arguments.contains(bundle.path))
+    }
+
+    @Test("stops at a failed nested signature instead of sealing over it")
+    func propagatesNestedFailure() {
+        let runner = FakeCommandRunner(
+            defaultResult: CommandResult(exitCode: 1, standardError: "no identity found"))
+
+        #expect(throws: CodeSigningError.self) {
+            try CodeSigning(runner: runner).sign(
+                bundle: URL(fileURLWithPath: "/tmp/HolyBlockerDaemon.app"), identity: "missing",
+                nestedCode: [URL(fileURLWithPath: "/tmp/HolyBlockerDaemon.app/Contents/Frameworks/x.dylib")])
+        }
+        // The bundle must not have been signed after the dylib failed.
+        #expect(runner.invocations.count == 1)
     }
 
     @Test("reads back the identity actually applied")

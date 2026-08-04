@@ -24,12 +24,17 @@ CONFIGURATION="${CONFIGURATION:-debug}"
 IDENTITY="${HOLY_BLOCKER_SIGNING_IDENTITY:--}"
 OUTPUT="${OUTPUT:-.build}"
 
+# The daemon links libtext_policy_ffi.dylib, which is generated rather than committed. This has to
+# run before `swift build`, and the same staged copy is what gets embedded in the bundle below —
+# the bundled dylib must be the one the executable was linked against, not another build of it.
+./scripts/build-ffi.sh
+
 swift build -c "$CONFIGURATION"
 
 BINARY="$(swift build -c "$CONFIGURATION" --show-bin-path)/holy-blocker-macd"
 [[ -x "$BINARY" ]] || { echo "bundle.sh: no binary at $BINARY" >&2; exit 1; }
 
-"$BINARY" bundle "$OUTPUT" "$IDENTITY"
+"$BINARY" bundle "$OUTPUT" "$IDENTITY" "$PWD/.ffi/lib"
 
 echo
 echo "next: $OUTPUT/HolyBlockerDaemon.app/Contents/MacOS/holy-blocker-macd bundle-status"

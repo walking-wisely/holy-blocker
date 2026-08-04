@@ -173,6 +173,10 @@ Two toolchain quirks, both already worked around, both worth knowing before touc
 Note also that `xcode-select -p` may point at the Command Line Tools even when `Xcode.app` is
 installed; the script tests the active toolchain, not the presence of Xcode.
 
+3. **The script also builds the UniFFI bindings**, which are generated and gitignored, so a bare
+   `swift test` on a fresh checkout fails at package-layout resolution before it compiles anything.
+   Set `HOLY_BLOCKER_SKIP_FFI=1` to skip that step when iterating on Swift alone. See module 16.
+
 ---
 
 # Layer 1 — network path
@@ -1267,7 +1271,7 @@ not assert what it has not run.
 
 ---
 
-### 12. `AccessibilityText` — AX text extraction
+### 12. `AccessibilityText` — AX text extraction. **Done.**
 
 ```
 Sources/MacDaemon/AccessibilityText.swift
@@ -1293,11 +1297,67 @@ Two traps:
    client sets `AXManualAccessibility` to true on the application element. Without that, the walk
    returns a nearly empty tree and reads as "this app has no text" — which, given how much of the
    relevant surface is a browser, would quietly gut the module's value.
+   **This is measured wrong — see the table below.** The symptom is real; the stated cause and fix
+   are not. Chrome 151 refuses the attribute outright.
+
+#### What was built, and what the live measurements overturned
+
+**Done.** `AccessibilityText.swift` ships `AXNodeID` (an opaque handle, so the walk needs no AX
+types), `AXWalkLimits` (40 deep / 2000 nodes), `AXTextWalk` (text plus which bound stopped it), the
+`AXElementProbing` edge with `FakeAXElementProbe`, the pure iterative walk, and `SystemAXProbe`.
+22 tests (`AccessibilityTextTests.swift`), 272 in the suite. An `ax-text [delay] [no-manual]` verb
+exercises the real edge; it walks **twice** from one process, because a single walk cannot tell a
+tree that is still building apart from an app that exposes nothing.
+
+**Trap 2 above is wrong, and it was wrong in the direction that matters.** Measured on macOS 26.5:
+
+| Application | `AXManualAccessibility` write | Web content exposed |
+|---|---|---|
+| Chrome 151 | **rejected** — `kAXErrorAttributeUnsupported` (`-25205`) | yes, ~3s after any client starts reading |
+| Chrome 151, `AXEnhancedUserInterface` | **rejected** — `kAXErrorNotImplemented` (`-25208`) | — |
+| Obsidian, Todoist (Electron) | **accepted** — `kAXErrorSuccess` | **no** `AXWebArea`, still absent after 4s |
+
+So the opt-in the plan called the fix is refused by the one application it was written for, and
+accepted by the ones where it changes nothing. What actually built Chrome's tree was **being an AX
+client at all** — the first walk returned 65 nodes of toolbar chrome, and a walk about three
+seconds later returned the page's heading, body text, button label and image `alt` text. The write
+is kept: it is one ignored message, and it is the only lever there is on older Chromium builds.
+
+The *consequence* the plan drew is unchanged and is what to design around — **the first walk against
+a browser is legitimately thin, and only a repeated walk sees content**. `AccessibilityScanner`
+(session 4) walks on the OCR cadence and so gets this for free; a one-shot caller does not.
+
+Four smaller findings:
+
+- **A `static let` of type `CFString` does not compile under Swift 6** — non-`Sendable` global. Held
+  as a `String` and bridged at the call site, the same shape as `PermissionGate`'s
+  `trustedCheckOptionPrompt`.
+- **Cycle detection cannot be skipped in favour of the depth bound.** A cycle still costs a full
+  40-level walk on every branch that enters it. `AXUIElement` is a CoreFoundation type with no
+  useful Swift identity, so the visited set is keyed on `CFEqual`/`CFHash`.
+- **A real window can nearly saturate the 2000-node bound** — a Telegram window measured 1524 nodes
+  and 61 KB of text. The default is the right order of magnitude, but not by much.
+- **The element separator is not a boundary, and no character could be.** Elements are joined with a
+  newline, but `text-policy`'s `collapse_whitespace` rewrites it to a space and its `compact`
+  pipeline strips it entirely — so a lexicon phrase can match across two unrelated elements (a
+  sidebar label ending in one word, a heading starting with the next). The only real fix is to
+  evaluate elements separately rather than as one blob, which is a **decision for session 4's
+  `AccessibilityScanner`**, not something this module can make by choosing a different character.
+- **An app can report zero windows while running.** Safari returned an empty `AXWindows` with its
+  windows on another Space, and `open` reused them there rather than moving one across. Harmless
+  for the daemon, which only ever reads the frontmost app on the active Space, but it makes any
+  "measure app X without focusing it" diagnostic unreliable.
+
+**Outstanding:** Safari's page *body* has not been confirmed extracted — Safari read fine (45 nodes
+of real window content) but every attempt to put the test page in front of it lost focus back to the
+terminal. Chrome proves the web-content path works; this is a 20-second manual re-run of
+`ax-text`, not a code question.
 
 #### Reference documents
 
 - [Apple — `AXUIElement` attributes](https://developer.apple.com/documentation/applicationservices/axuielement_h) — attribute reads and `AXUIElementSetMessagingTimeout`.
-- [Chromium — accessibility on macOS](https://www.chromium.org/developers/design-documents/accessibility/) — the on-demand tree and the `AXManualAccessibility` opt-in behind trap 2.
+- [Apple — `AXError`](https://developer.apple.com/documentation/applicationservices/axerror) — the `-25205`/`-25208` codes in the table above.
+- [Chromium — accessibility on macOS](https://www.chromium.org/developers/design-documents/accessibility/) — the on-demand tree and the `AXManualAccessibility` opt-in behind trap 2, which Chrome 151 no longer implements.
 
 ---
 
@@ -1383,6 +1443,76 @@ only door a normal user has, which is what makes `GLOBAL_ACTION_BACK` load-beari
 user has a terminal, so `tccutil`, `launchctl`, `kill` and Recovery all remain open — and
 `PermissionGate`'s revocation polling detects the *outcome* of all of them, including this one. This
 module is defence in depth on top of that, never a substitute for it.
+
+---
+
+### 16. `TextPolicyFFI` — the Rust policy engine over UniFFI. **Done.**
+
+```
+scripts/build-ffi.sh
+Sources/text_policy_ffiFFI/     generated C module (gitignored)
+Sources/TextPolicyFFI/generated/ generated Swift bindings (gitignored)
+.ffi/lib/libtext_policy_ffi.dylib
+```
+
+Resolves module 9's "where the mode→action decision should live" question: the daemon consumes
+`packages/text-policy-ffi`'s `PolicyEngine`/`evaluate` rather than adding a third independent
+implementation of the thresholding rules next to the Rust and the planned C++ ones. No Rust changes
+were needed — `SourceKind::AccessibilityTree` and the `u32` score already exist.
+
+`scripts/build-ffi.sh` is modelled on `apps/mobile/scripts/build-ffi.sh`: one crate, `--language
+swift`, run from the crate directory because `uniffi-bindgen` shells out to `cargo metadata`, which
+resolves from the working directory rather than `--manifest-path`. `scripts/test.sh` and
+`scripts/bundle.sh` both call it first; nothing generated is committed, exactly as `apps/mobile`
+treats its generated Kotlin.
+
+Verified live: the bundle assembles with the dylib in `Contents/Frameworks`, `codesign --verify
+--deep --strict` validates the nested dylib and reports the bundle satisfies its Designated
+Requirement, and the bundled binary still runs with `.ffi/lib` **moved away entirely** — proving the
+load comes from inside the bundle rather than from the build tree.
+
+#### Five findings, two of which contradict the spec above
+
+1. **The C module's name is not a free choice.** The generated `text_policy_ffi.swift` contains a
+   literal `import text_policy_ffiFFI`, and a SwiftPM `systemLibrary` target's module name *is* its
+   target name — so the target is called `text_policy_ffiFFI`, not the `CTextPolicyFFI` this plan
+   asked for. Renaming it means patching generated code on every build.
+2. **`DYLD_LIBRARY_PATH` does not work for `swift test`**, so the instruction above to export it is
+   wrong. `swift test` execs Apple's signed `swiftpm-testing-helper`, and SIP strips every `DYLD_*`
+   variable across that exec; the variable never reaches the process that `dlopen`s the test bundle,
+   and it is absent from dyld's search list in the failure output. What actually works is an rpath —
+   and it must be declared on the **`TextPolicyFFI` target**, not the executable target, because
+   linker settings propagate to every product that links the target and that is the only way to
+   reach `MacDaemonPackageTests.xctest` without putting `unsafeFlags` on the test target.
+3. **`unsafeFlags` on a *non-test* target does not break test discovery.** The `Package.swift`
+   warning is specific to test targets; the FFI target carries `-L` and two `-rpath` flags and all
+   250 tests are still found and run. Worth knowing, because the obvious reading of that warning is
+   that `unsafeFlags` is banned package-wide.
+4. **cargo stamps the dylib's `LC_ID_DYLIB` with the absolute path of its own target directory.**
+   An executable linked against it records that path verbatim, so the app keeps loading the copy
+   under `packages/text-policy-ffi/target` and fails outright on any machine without that
+   directory — a bug that is invisible on the build machine. `build-ffi.sh` rewrites the id to
+   `@rpath/libtext_policy_ffi.dylib`. That rewrite then invalidates the ad-hoc signature cargo's
+   linker applied (Apple silicon refuses an unsigned Mach-O), so the script re-signs immediately.
+5. **An embedded dylib must be signed before the bundle**, because signing the bundle seals whatever
+   its contents are at that moment. In the other order the seal describes an unsigned dylib while
+   the dylib is signed, and the mismatch is refused at launch rather than at build time.
+   `CodeSigning.sign(bundle:identity:nestedCode:)` takes them in that order explicitly; `--deep`
+   would do it in one call and is documented by Apple as not to be used, since it signs whatever it
+   happens to find rather than what was meant to ship.
+
+`AppBundle` gained the concept it was missing: `BundleLayout.frameworks`, an optional `libraries:`
+argument to `assemble`, `AppBundle.embeddedLibraryNames` (kept in Swift rather than in `bundle.sh`
+so the name the linker resolves and the name the bundler copies cannot drift apart), and
+`AppBundle.nestedCode(in:)`. The `bundle` verb takes an optional third argument, the directory
+`build-ffi.sh` staged the dylib in, and warns rather than failing when it is absent — a bundle with
+no dylib assembles and signs cleanly and then dies at the first policy call, so the warning is the
+only thing between that and a confusing launch failure.
+
+One consequence worth stating plainly: **a fresh checkout cannot build until `scripts/build-ffi.sh`
+has run.** SwiftPM fails at package-layout resolution with `missing system target module map at
+.../Sources/text_policy_ffiFFI/module.modulemap`; a committed `README.md` in that directory explains
+the fix, since the message reads like a broken manifest rather than a missing build step.
 
 ---
 
@@ -1485,12 +1615,134 @@ later:
    documents an ISO-8601 string — a cross-platform choice to make once, deliberately, not by default.
 6. **`EventHooks`** (module 11) — measure which permission the scroll monitor actually requires
    before writing onboarding copy.
-7. **`AccessibilityText`** (module 12) — validate against a Chromium-based app early, since that is
-   where the `AXManualAccessibility` trap bites and where the coverage question is decided.
+7. ~~**`AccessibilityText`** (module 12) — validate against a Chromium-based app early, since that is
+   where the `AXManualAccessibility` trap bites and where the coverage question is decided.~~
+   **Done**, and validating early was worth it: the trap is real but its documented fix is not, and
+   Chrome 151 refuses the attribute the plan was written around. See module 12's section above for
+   the measurements and for the one outstanding check (Safari's page body). 22 new tests
+   (`AccessibilityTextTests.swift`).
 8. **`FullscreenControl`** (module 13) — last, and only if module 10 proves insufficient in practice.
 9. **`SettingsGuard`** (module 15) — can be built at any point after step 1, since it needs no
    permissions; sequenced last because it is defence in depth over `PermissionGate`, not a
    substitute for it.
+
+### The first live e2e pass — text-only, split into six sessions
+
+Everything above through step 5 is pure logic with no permissions and nothing visible on screen.
+The next milestone is the first thing a human can actually watch happen: a real overlay appearing
+over real on-screen text, scored by the real Rust policy engine, under a real (non-terminal) TCC
+grant. This is too much for one session — it fans out into three independent pieces, a merge
+point, and an integration pass, mirroring how modules 9/10/14 were each their own branch and
+`merge:` commit. Scope for this pass is text only: no image classifier, no `DaemonIPC` socket
+transport or `apps/desktop` wiring, no `EventHooks`/`FullscreenControl`/`SettingsGuard`, no
+region-level overlay cover.
+
+The mode→action "open" question in module 9 above is resolved for this pass: consume
+`packages/text-policy-ffi`'s `PolicyEngine`/`evaluate` over UniFFI from Swift rather than add a
+third independent reimplementation of policy logic. `packages/text-policy-ffi/src/lib.rs` already
+exports exactly what's needed — a `uniffi::Object` `PolicyEngine`
+(`with_builtin_dictionary()`/`with_thresholds(block:warn:)`) with
+`evaluate(text: String, source: SourceKind) -> Verdict { action: Action, score: u32 }`, and
+`SourceKind::AccessibilityTree` already exists — no Rust changes needed.
+
+Sessions, in dependency order (1–3 can run in parallel worktrees; 4 needs 1+2 merged; 5 needs 3+4
+merged; 6 is human-only, no code):
+
+1. ~~**`infra/text-policy-ffi-swift-bindings`** — a new **module 16**. `scripts/build-ffi.sh`
+   (modeled on `apps/mobile/scripts/build-ffi.sh`, one crate, `--language swift` instead of
+   kotlin, run from the crate dir since `uniffi-bindgen` resolves `cargo metadata` off cwd, not
+   `--manifest-path`) builds `libtext_policy_ffi.dylib` for `aarch64-apple-darwin` and generates
+   Swift bindings into `Sources/TextPolicyFFI/generated/` — gitignored, never committed, same
+   treatment as `apps/mobile`'s `app/src/generated/kotlin`. Two new SwiftPM targets
+   (`CTextPolicyFFI` wrapping the generated header, `TextPolicyFFI` wrapping the generated
+   `.swift` file) that `MacDaemon` depends on. `scripts/test.sh` must call `build-ffi.sh` itself
+   and export `DYLD_LIBRARY_PATH` for the loose dylib. **The real gap this session closes**:
+   `AppBundle.assemble` (`AppBundle.swift:79`) today only copies the single executable into
+   `Contents/MacOS/` — it has no concept of embedding a dylib. Add a `Frameworks/` directory to
+   `BundleLayout`, copy `libtext_policy_ffi.dylib` there, and **sign the dylib before the bundle**
+   in `CodeSigning.sign(bundle:identity:)` (an unsigned/differently-signed loose dylib under a
+   signed bundle can be refused at `dlopen` time) — test-first via the existing
+   `AppBundleTests.swift`/`FakeCommandRunner` fake-filesystem pattern.~~ **Done** — see module 16
+   above for the five findings, two of which contradict this bullet: the C target could not be
+   named `CTextPolicyFFI`, and `DYLD_LIBRARY_PATH` does not survive `swift test` under SIP.
+2. ~~**`feat/mac-daemon-accessibility-text`** — module 12, `AccessibilityText.swift`. Pure,
+   test-first: `AXElementProbing` protocol + `FakeAXElementProbe` (same shape as
+   `CommandRunner`/`FakeCommandRunner`), `AccessibilityText.extractText(from:probe:limits:)`
+   bounded by depth/node-count (`AXWalkLimits`, defaults 40/2000), adjacent-only dedup, and a
+   documented separator choice. Tests cover an empty tree, a cyclic fake graph (real AX trees can
+   legitimately cycle), the depth and node-count bounds, and whitespace filtering. The real edge
+   (`RealAXElementProbe`) is thin AppKit/AX glue, exempted from test-first same as
+   `SCShareableContentCapture`: `AXUIElementSetMessagingTimeout` (~300ms) plus a coarser ~500ms
+   wall-clock budget on the whole walk, off the scan-timer thread; `kAXManualAccessibility` set to
+   `true` on the frontmost app's application element before reading its focused window (required
+   for Chrome/Electron, which expose nothing without it); any AX error mid-walk stops that subtree
+   rather than throwing. Verify live against Safari and a real Chromium app, with and without the
+   manual-accessibility set.~~ **Done**, and verifying live is what earned this session's findings:
+   **the `kAXManualAccessibility` instruction in this bullet is wrong** — Chrome 151 refuses the
+   attribute outright, and what builds its tree is being an AX client at all. See module 12 above
+   for the measurements. The edge shipped as `SystemAXProbe` rather than `RealAXElementProbe`, and
+   the walk takes an `AXNodeID` handle rather than a raw element so it stays free of AX types.
+   22 tests.
+3. ~~**`feat/mac-daemon-overlay-appkit`** — module 10's second half, new file
+   `OverlayWindow.swift` (existing `Overlay.swift` stays AppKit-free per its own header comment).
+   `OverlayController` owns the live `[screenID: NSWindow]` set, observes
+   `NSApplication.didChangeScreenParametersNotification`, and reconciles from
+   `OverlayPlan.plan(intent:screens:)`. Mechanical mappings onto real AppKit:
+   `OverlayWindowLevel.screenSaver → NSWindow.Level.screenSaver`, both
+   `.canJoinAllSpaces`/`.fullScreenAuxiliary` set together (never just one — missing either
+   silently fails over native-fullscreen video, per the module 10 section above),
+   `ignoresMouseEvents` direct. `AppLifecycle.configureAccessoryApp()` calls
+   `NSApplication.shared`/`setActivationPolicy(.accessory)`. No new tests — thin glue over the
+   already-tested pure `OverlayPlan`, same exemption as the rest of this split; no existing
+   `NSScreen` fake exists in this codebase and building one just for this session isn't worth
+   it.~~ **Done**, with one correction to this bullet: **it does need new tests**, because the
+   reconcile is not glue. Splitting the live window set against a fresh plan into
+   create/update/close is ordinary logic, it lives in the AppKit-free file as
+   `OverlayReconciliation.diff(existing:planned:)`, and it earns 11 tests — reusing a window
+   instead of rebuilding it is load-bearing rather than tidy, since the controller runs on every
+   scan tick and recreating unchanged windows would flicker the overlay several times a second.
+   Extracting it is also what makes the "no `NSScreen` fake" exemption honest: what remains in
+   `OverlayWindow.swift` has no branches to test. See step 4 of the implementation order above for
+   the rest of the findings. The overlay's *visual* is unverified and is one of the things session
+   6 should look at.
+4. **`feat/mac-daemon-real-scanner`** (needs 1+2 merged) — module 9 gets its first real
+   `Scanner`, new file `AccessibilityScanner.swift`. **Interface resolution**:
+   `Scanner.scan(_ frame: CapturedFrame)` is frame-driven, AX text isn't —
+   `AccessibilityScanner` ignores its `frame` parameter and does its own independent AX read,
+   which needs zero changes to `Scanner.swift`/`ScanLoop.swift`/their 62 existing tests and slots
+   into `ScanLoop`'s OCR-cadence slot (1–2s), the right tier for this kind of scan. Because
+   `ScanLoop` calls one injected `Scanner` on *both* its ~500ms image cadence and its ~1–2s OCR
+   cadence, `AccessibilityScanner` must internally rate-limit its own AX walk so the faster cadence
+   doesn't trigger a full walk every time — test-first. `PolicyEngineHandle` is the UniFFI seam
+   (`RealPolicyEngine` wraps the generated `PolicyEngine`), kept fake-able so
+   `Scanner.swift`/`ScanLoop.swift` stay UniFFI-agnostic. The Rust `Action` enum has 5 cases
+   (Block/Blur/Warn/Log/Allow), `ScanAction` has 3 (allow/warn/block) — map `Block → .block`,
+   `Warn → .warn`, `Allow`/`Log → .allow`, **`Blur → .warn`** (no dedicated blur visual state
+   exists yet), with its own named test since it's a real information-loss decision. Test-first:
+   the 5→3 mapping, the rate-limit gate, the empty-tree/no-root → `.allow` fallback, and the
+   `u32` 0–100 → `Double` 0.0–1.0 score normalization, all against fakes.
+5. **`feat/mac-daemon-agent-render-loop`** (needs 3+4 merged) — rewires `runAgent()` in
+   `Sources/holy-blocker-macd/main.swift`: replaces the `Thread.sleep(30s)` poll loop with
+   `AppLifecycle.configureAccessoryApp()` + a real `NSApplication` run loop. A main-thread
+   repeating `Timer` (~0.25s, created before `app.run()` — an off-thread timer never added to the
+   main run loop silently never fires, the same trap as `AXObserver`) ticks
+   `scanLoop.tick(now:)` and reconciles `overlay.apply(intent:)`; a second timer keeps polling
+   `gate.poll()` for tamper events; a third watches `stopRequested` and calls `app.terminate(nil)`
+   since `app.run()` now owns the thread. This timer is an explicitly acknowledged stand-in for
+   module 11 (`EventHooks`), not a replacement for it. **Known coupling, flagged not fixed**:
+   `ScanLoop.tick` (`ScanLoop.swift:179`) gates on `!frame.isEmpty`, so without a Screen Recording
+   grant the AX-text scanner never runs at all even though it doesn't touch frame pixels — since
+   Screen Recording is being granted anyway for session 6, `ScanLoop` is left untouched rather than
+   special-cased for a frame-less scanner; revisit once a real image scanner exists.
+6. **Live verification** (needs 5 merged, human-in-the-loop, no code): rebuild bindings and bundle,
+   reload the LaunchAgent, grant Accessibility + Screen Recording for real via System Settings
+   against `HolyBlockerDaemon.app` specifically (never a shell binary — the responsible-process
+   rule), confirm `holy-blocker-macd permissions` reports both granted, bring text the shipped
+   starter dictionary scores `Block` on (e.g. "explicit act", already used in
+   `text-policy-ffi`'s own test fixtures) frontmost and confirm an interstitial appears and
+   swallows a click within ~1–2s, confirm it tears down over clean text, check native-fullscreen
+   Space interaction, and multi-display connect/disconnect if a second display is available. Strike
+   the completed order items above and update this file's status once done.
 
 ### Outstanding verification — one item blocks a tamper-resistance claim
 
