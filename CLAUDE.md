@@ -132,6 +132,43 @@ Commit messages follow the same prefix convention with the conventional-commits 
 
 The body should explain *why* the change was made — the what is visible in the diff. Keep the subject line under 72 characters.
 
+## Working Rhythm — Worktree In, PR Out
+
+Every piece of work starts in its **own git worktree** and ends as an **open pull request**, with no
+prompting needed for either. Both halves are the default, not a thing to propose and wait on.
+
+### Start: a separate worktree, branched from the base branch
+
+Do not work in the main checkout, and do not branch from whatever happens to be checked out. Create
+a worktree on a new branch off the branch that carries the changes this work depends on:
+
+```
+git worktree add .claude/worktrees/<slug> -b <prefix>/<slug> <base>
+```
+
+`<base>` is **almost always `master`** (this repository's default branch). Use a different base only
+when this work genuinely builds on an unmerged branch — for example a session that needs an earlier
+session's commits. **If which base is correct is ambiguous, ask before creating the worktree**; the
+cost of asking is one question, and the cost of guessing is a branch that has to be redone.
+
+Run every command from the worktree. Note that the git stash stack is shared across worktrees, so
+prefer a temporary WIP commit over `git stash`.
+
+### Finish: commit, push, and open the PR immediately
+
+When the work is complete and the [verification checks](#verification-expectations) pass, go
+straight through to a PR in one pass — commit, `git push -u origin <branch>`, `gh pr create` — and
+then report what was done. Do not stop after the commit to ask whether to push, and do not stop
+after the push to ask whether to open the PR. "Complete" means the whole task is done and checked,
+including the plan and status-table updates the [Documentation](#documentation) section requires.
+
+**The one exception:** if the request asked to review, inspect, or hold the change before it goes
+out — anything of the shape "let me look first", "don't push yet", "just commit" — stop where asked
+and leave the rest to them. An earlier request to hold does not carry over to later, separate work.
+
+If a check fails or something in the work is genuinely blocked, that is not "complete": say so
+instead of opening a PR over it.
+
 ## Verification Expectations
 
 Before finishing a code change, run the narrowest relevant checks:
