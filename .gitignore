@@ -34,3 +34,11 @@ artifacts/
 .env
 .env.*
 !.env.example
+
+# UniFFI Swift bindings and the dylib the mac daemon links, both produced by
+# native-modules/mac-daemon/scripts/build-ffi.sh. Same treatment as apps/mobile's
+# generated Kotlin: regenerated from the Rust crate on every build, never committed.
+native-modules/mac-daemon/.ffi/
+native-modules/mac-daemon/Sources/TextPolicyFFI/generated/
+native-modules/mac-daemon/Sources/text_policy_ffiFFI/module.modulemap
+native-modules/mac-daemon/Sources/text_policy_ffiFFI/text_policy_ffiFFI.h
