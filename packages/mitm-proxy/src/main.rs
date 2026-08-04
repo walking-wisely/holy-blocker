@@ -1,3 +1,4 @@
+mod cli;
 mod connect;
 mod forward;
 mod proxy;
@@ -12,27 +13,36 @@ use tracing::info;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let options = match cli::Options::from_args(std::env::args().skip(1)) {
+        Ok(options) => options,
+        Err(message) => {
+            eprintln!("{message}\n\n{}", cli::USAGE);
+            std::process::exit(2);
+        }
+    };
+
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("mitm_proxy=debug,warn"));
     tracing_subscriber::fmt().with_env_filter(filter).init();
 
-    let ca_dir = std::path::PathBuf::from("data/ca");
-    let tls = Arc::new(tls::TlsState::load(&ca_dir)?);
+    let tls = Arc::new(tls::TlsState::load(&options.ca_dir)?);
 
     let engine = Arc::new(scan::build_default_engine());
+    let sandbox = Arc::new(scan::build_image_sandbox(options.image_model.as_deref(), options.image_threshold));
     let scan = {
         let url_engine = Arc::clone(&engine);
         let body_engine = Arc::clone(&engine);
+        let image_sandbox = Arc::clone(&sandbox);
         Arc::new(tunnel::ScanHooks {
             url_scanner: Box::new(move |url| scan::scan_url(&url_engine, url)),
             body_scanner: Box::new(move |html| scan::scan_body(&body_engine, html)),
+            image_scanner: Box::new(move |bytes| scan::scan_image(&image_sandbox, bytes)),
             ..tunnel::ScanHooks::default()
         })
     };
 
-    let addr = "127.0.0.1:8080";
-    let listener = TcpListener::bind(addr).await?;
-    info!("proxy listening on {addr}");
+    let listener = TcpListener::bind(options.listen).await?;
+    info!("proxy listening on {}", options.listen);
 
     loop {
         let (stream, peer_addr) = listener.accept().await?;

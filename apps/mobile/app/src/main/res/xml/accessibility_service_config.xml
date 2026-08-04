@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  AccessibilityService declaration.
+  Reference: https://developer.android.com/reference/android/accessibilityservice/AccessibilityServiceInfo
+
+  typeWindowStateChanged  — foreground app/window changed (the app-switch signal)
+  typeWindowContentChanged — content within the current window changed
+  typeViewScrolled        — user scrolled; new content entered the viewport
+
+  ScanGate debounces the last two, which fire far faster than a scan is useful.
+
+  isAccessibilityTool is load-bearing, not a label. Android 14 added
+  accessibilityDataSensitive (View#setAccessibilityDataSensitive), and nodes
+  marked with it are withheld from every service that does not declare this
+  attribute. AOSP Settings marks the device-admin list rows sensitive, so
+  without it the guard is handed the screen's chrome — content_parent,
+  collapsing_toolbar, an empty recycler_view — and none of the rows. Measured on
+  an android-36 emulator: with the attribute off the row nodes are absent at
+  0.4s, 1s, 2s and 25s, findAccessibilityNodeInfosByText returns nothing, and
+  refresh() and clearCache() change neither; with it on the same query returns
+  the row and reports isAccessibilityDataSensitive=true. That is what left the
+  screen gating uninstall unguarded, and it silently weakened the self-mention
+  catch-all on any other screen marked the same way.
+
+  flagIncludeNotImportantViews was the documented suspect and is deliberately
+  *not* set: it does restore the non-important container nodes, but the rows
+  stay missing without isAccessibilityTool, and setting it widens what this
+  service ingests in every app for nothing.
+-->
+<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:accessibilityEventTypes="typeWindowStateChanged|typeWindowContentChanged|typeViewScrolled"
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:accessibilityFlags="flagReportViewIds|flagRetrieveInteractiveWindows"
+    android:canRetrieveWindowContent="true"
+    android:isAccessibilityTool="true"
+    android:description="@string/accessibility_service_description"
+    android:notificationTimeout="100" />

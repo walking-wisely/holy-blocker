@@ -13,6 +13,7 @@ path = "src/main.rs"
 
 [dependencies]
 text-policy = { path = "../text-policy" }
+image-sandbox = { path = "../image-sandbox", features = ["onnx"] }
 anyhow = "1"
 bytes = "1"
 http-body-util = "0.1"
@@ -22,6 +23,8 @@ pem = "3"
 rcgen = { version = "0.14", features = ["x509-parser"] }
 rustls = { version = "0.23", features = ["ring"] }
 rustls-native-certs = "0.8"
+# Already in the tree via rcgen, whose CertificateParams exposes time::OffsetDateTime directly.
+time = "0.3"
 tokio = { version = "1", features = ["full"] }
 tokio-rustls = "0.26"
 tracing = "0.1"

@@ -5,6 +5,7 @@ on:
     paths:
       - ".github/workflows/ci-rust.yml"
       - "packages/text-policy/**"
+      - "packages/text-policy-ffi/**"
       - "packages/mitm-proxy/**"
       - "packages/net-shield/**"
   push:
@@ -13,6 +14,7 @@ on:
     paths:
       - ".github/workflows/ci-rust.yml"
       - "packages/text-policy/**"
+      - "packages/text-policy-ffi/**"
       - "packages/mitm-proxy/**"
       - "packages/net-shield/**"
 
@@ -32,6 +34,7 @@ jobs:
       matrix:
         package:
           - packages/text-policy
+          - packages/text-policy-ffi
           - packages/mitm-proxy
           - packages/net-shield
     steps:
@@ -41,7 +44,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup Rust toolchain
-        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # stable
+        uses: dtolnay/rust-toolchain@67ef31d5b988238dd797d409d6f9574278e20537 # stable
         with:
           toolchain: 1.88.0
 

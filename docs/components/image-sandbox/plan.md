@@ -5,9 +5,75 @@ This document is the build plan: what modules to add, in what order, and what ea
 
 ## Current state
 
-The package `packages/image-sandbox/` does not exist yet. Nothing has been built for this area. This plan describes what to create from scratch as a Rust library crate.
+**v0 is built and wired.** `packages/image-sandbox/` exists as a Rust library crate and
+`mitm-proxy` calls it at the Phase 4 hook. Verified live: an HTTPS PNG fetched through the
+tunnel returns `403 Blocked` at `--image-threshold 0` and 200 at `1`.
 
-What is missing is the entire Phase 4 pipeline: decoding intercepted image bytes, computing a perceptual hash, looking that hash up in the local SQLite blocklist, and falling back to an ONNX vision model for images that are not in the database.
+**This crate is the Windows/desktop half of a deliberate per-platform split, and is not the
+Android path.** The runtime decision recorded in
+[learning-from-feedback.md](../../decisions/learning-from-feedback.md#on-device-runtime-and-where-the-head-lives-decided-2026-07-18)
+is LiteRT on Android, ONNX Runtime here, and the head — the part after the embedding — hand-written
+in Rust behind UniFFI and shared by both (see [classifier-head/plan.md](../classifier-head/plan.md)).
+Wiring `apps/mobile` to this crate would collapse that split; `ort` also ships no prebuilt runtime
+for two of the three Android ABIs the app targets, measured 2026-07-26. When the head crate lands,
+`classifier.rs` should hand its score contract over rather than keep a second copy of it.
+
+What shipped, and how it differs from the order below:
+
+- **ONNX first, hashing deferred.** The plan builds pHash and the SQLite blocklist before the
+  model. No hash database exists or can be populated in-repo — the plan itself calls curation
+  an out-of-repo operation — so that path blocks nothing on day one. It is a cache in front of
+  the model, not a prerequisite for it. `hash.rs` and `db.rs` are still unbuilt.
+- **`preprocess.rs` replaced the transform this plan specified.** See the correction below.
+- **`classifier.rs`, not `onnx.rs`**, and it exposes the score rather than a label, because the
+  threshold comparison belongs to the caller.
+
+### Correction: the preprocessing in this plan was wrong
+
+Sections 3 and 4 below say to "resize to 224×224 (bilinear)". That is a squash, and it matches
+neither the training nor the evaluation transform. The model was evaluated under
+`dataset.build_transform(224, augment=False)`:
+
+```
+Resize(int(224 * 1.14))   # shorter side to 255, aspect preserved
+CenterCrop(224)
+ToTensor(); Normalize(IMAGENET_MEAN, IMAGENET_STD)
+```
+
+`torchvision.transforms.Resize` with a scalar resizes the **shorter** side. Every number in
+[results.md](../machine-learning/results.md) was measured under that pipeline, so a squash
+would mean the published accuracy describes something other than what ships.
+
+`tests/parity.rs` guards this against a torchvision-generated fixture, and it immediately caught
+a second-order version of the same class of bug: torchvision's `CenterCrop` computes
+`int(round((extent - crop) / 2.0))`, rounding a half-pixel offset **up**, where the obvious Rust
+integer division truncates. That one-pixel shift moved the tensor mean by 0.0085 — systematic,
+not noise, and invisible to any test that only checks Rust against itself.
+
+### Provisional constants
+
+Both are `SandboxConfig`/`PreprocessConfig` fields rather than hardcoded, because both are
+guesses awaiting measurement by `holy_blocker_ml.inputs`:
+
+- **Threshold 0.20.** The 5%-miss-budget operating point from
+  [the operating point decision](../../decisions/classifier-operating-point.md) — but derived on
+  the *unfreeze-3* checkpoint, while the shipped artifact is the full-unfreeze model. That
+  document states plainly that the threshold is model-specific and must be re-derived.
+- **32px size floor.** `transforms.Resize` has no lower bound, so a favicon is upscaled to 255px
+  and scored on interpolation. 32 excludes tracking pixels while keeping plausible thumbnails.
+  Note a floor is also a bypass: content served just under it is unfiltered.
+
+There is also an 8:1 aspect clamp, which is a resource guard rather than a quality one — resizing
+a 1000×10 banner's shorter side to 255 produces a 25500×255 intermediate (~19.5 MB) from which the
+crop keeps a sliver.
+
+### Known coverage gap
+
+The centre crop discards ~23% of a wide image, so explicit content in the side of a banner is
+never seen. The corpus cannot show this — `[redacted-dataset]` is scraped photos with centred
+subjects filling the frame. `holy_blocker_ml.inputs` measures four candidate geometries
+(centre-crop, squash, letterbox, tile-max) against off-centre composites; tile-max needs no
+retraining because every tile is an ordinary 224 crop.
 
 ## Modules to add
 
@@ -205,11 +271,20 @@ pub use onnx::{ImageClassifier, ClassifyResult};
 
 ## Implementation order
 
-1. `hash.rs` — pHash computation and Hamming distance; unit test with known image pairs and known hash values to pin the algorithm output.
-2. `db.rs` — SQLite wrapper; test with an in-memory database (`rusqlite::Connection::open_in_memory()`), insert known hashes, verify lookup returns the correct match and correct distance.
-3. `sandbox.rs` with stub ONNX (`classifier: None`) — test the full Allow/Block decision flow using a constructed `HashDb` and synthetic pixel buffers.
-4. `onnx.rs` behind the `onnx` feature flag — test that the session loads, that the input tensor has the expected shape `[1, 3, 224, 224]`, and that the output type is `f32`.
-5. Wire `ImageSandbox` into `packages/mitm-proxy` at the Phase 4 hook once the proxy tunnel is implemented (see [network-pipeline.md](../../architecture/network-pipeline.md) Phase 2).
+The order below is the original plan. What was actually built is recorded under
+**Current state** — steps 1 and 2 are deferred, and the model path was built first.
+
+1. `hash.rs` — pHash computation and Hamming distance; unit test with known image pairs and known hash values to pin the algorithm output. **Deferred** — no hash database exists to look into.
+2. `db.rs` — SQLite wrapper; test with an in-memory database (`rusqlite::Connection::open_in_memory()`), insert known hashes, verify lookup returns the correct match and correct distance. **Deferred** for the same reason.
+3. ~~`sandbox.rs`~~ **Done**, though with `db: None` rather than `classifier: None` — the model is what blocks, so the stub went on the other side.
+4. ~~`onnx.rs` behind the `onnx` feature flag~~ **Done** as `classifier.rs`. Non-default feature; without it the crate compiles and allows everything, so a build without an ONNX Runtime is a functioning build. `tests/inference.rs` exercises the real exported artifact and skips when it is absent, since `data/models/` is gitignored.
+5. ~~Wire `ImageSandbox` into `packages/mitm-proxy` at the Phase 4 hook~~ **Done.** Inference runs under `tokio::task::spawn_blocking` — `image_scanner` is a sync `Fn` invoked inside the async handler, so running a MobileNetV3 forward pass inline would hold a tokio worker and stall every other connection it drives.
+
+Still to do, in the order the measurements unblock them:
+
+6. Replace the provisional threshold and size floor with measured values from
+   `holy_blocker_ml.inputs`, and adopt whichever geometry that experiment selects.
+7. `hash.rs` + `db.rs` as a short-circuit cache, if and when a hash database exists.
 
 ## What this does not cover
 

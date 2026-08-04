@@ -35,10 +35,10 @@ The system is split into platform-specific daemons, shared Rust packages, and na
 ```text
 apps/
   desktop/                 Electron control panel
+  mobile/                  Android AccessibilityService text guard and overlay
 
 native-modules/
   win-daemon/              Windows foreground hooks and capture loop
-  android-service/         [planned] Android AccessibilityService and capture/control integration
   win-network/             [planned] Wintun driver binding and Windows routing policy
   mac-network/             [planned] macOS NetworkExtension NEPacketTunnelProvider
 
