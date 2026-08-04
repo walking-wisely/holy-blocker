@@ -1299,7 +1299,7 @@ Two traps:
 **Done.** `AccessibilityText.swift` ships `AXNodeID` (an opaque handle, so the walk needs no AX
 types), `AXWalkLimits` (40 deep / 2000 nodes), `AXTextWalk` (text plus which bound stopped it), the
 `AXElementProbing` edge with `FakeAXElementProbe`, the pure iterative walk, and `SystemAXProbe`.
-22 tests (`AccessibilityTextTests.swift`), 260 in the suite. An `ax-text [delay] [no-manual]` verb
+22 tests (`AccessibilityTextTests.swift`), 272 in the suite. An `ax-text [delay] [no-manual]` verb
 exercises the real edge; it walks **twice** from one process, because a single walk cannot tell a
 tree that is still building apart from an app that exposes nothing.
 
@@ -1618,7 +1618,7 @@ exports exactly what's needed — a `uniffi::Object` `PolicyEngine`
 Sessions, in dependency order (1–3 can run in parallel worktrees; 4 needs 1+2 merged; 5 needs 3+4
 merged; 6 is human-only, no code):
 
-1. **`infra/text-policy-ffi-swift-bindings`** — a new **module 16**. `scripts/build-ffi.sh`
+1. ~~**`infra/text-policy-ffi-swift-bindings`** — a new **module 16**. `scripts/build-ffi.sh`
    (modeled on `apps/mobile/scripts/build-ffi.sh`, one crate, `--language swift` instead of
    kotlin, run from the crate dir since `uniffi-bindgen` resolves `cargo metadata` off cwd, not
    `--manifest-path`) builds `libtext_policy_ffi.dylib` for `aarch64-apple-darwin` and generates
@@ -1632,8 +1632,10 @@ merged; 6 is human-only, no code):
    `BundleLayout`, copy `libtext_policy_ffi.dylib` there, and **sign the dylib before the bundle**
    in `CodeSigning.sign(bundle:identity:)` (an unsigned/differently-signed loose dylib under a
    signed bundle can be refused at `dlopen` time) — test-first via the existing
-   `AppBundleTests.swift`/`FakeCommandRunner` fake-filesystem pattern.
-2. **`feat/mac-daemon-accessibility-text`** — module 12, `AccessibilityText.swift`. Pure,
+   `AppBundleTests.swift`/`FakeCommandRunner` fake-filesystem pattern.~~ **Done** — see module 16
+   above for the five findings, two of which contradict this bullet: the C target could not be
+   named `CTextPolicyFFI`, and `DYLD_LIBRARY_PATH` does not survive `swift test` under SIP.
+2. ~~**`feat/mac-daemon-accessibility-text`** — module 12, `AccessibilityText.swift`. Pure,
    test-first: `AXElementProbing` protocol + `FakeAXElementProbe` (same shape as
    `CommandRunner`/`FakeCommandRunner`), `AccessibilityText.extractText(from:probe:limits:)`
    bounded by depth/node-count (`AXWalkLimits`, defaults 40/2000), adjacent-only dedup, and a
@@ -1645,7 +1647,12 @@ merged; 6 is human-only, no code):
    `true` on the frontmost app's application element before reading its focused window (required
    for Chrome/Electron, which expose nothing without it); any AX error mid-walk stops that subtree
    rather than throwing. Verify live against Safari and a real Chromium app, with and without the
-   manual-accessibility set.
+   manual-accessibility set.~~ **Done**, and verifying live is what earned this session's findings:
+   **the `kAXManualAccessibility` instruction in this bullet is wrong** — Chrome 151 refuses the
+   attribute outright, and what builds its tree is being an AX client at all. See module 12 above
+   for the measurements. The edge shipped as `SystemAXProbe` rather than `RealAXElementProbe`, and
+   the walk takes an `AXNodeID` handle rather than a raw element so it stays free of AX types.
+   22 tests.
 3. **`feat/mac-daemon-overlay-appkit`** — module 10's second half, new file
    `OverlayWindow.swift` (existing `Overlay.swift` stays AppKit-free per its own header comment).
    `OverlayController` owns the live `[screenID: NSWindow]` set, observes
