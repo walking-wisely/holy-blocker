@@ -13,7 +13,7 @@
 //! the path of all browser traffic.
 
 use crate::classifier::{ClassifyResult, ImageClassifier};
-use crate::preprocess::{PreprocessConfig, preprocess};
+use crate::preprocess::{PreprocessConfig, preprocess_tiles};
 
 /// What the proxy should do with an image response body.
 #[derive(Debug, Clone, PartialEq)]
@@ -24,18 +24,33 @@ pub enum ImageVerdict {
 
 /// Score at or above which an image is blocked.
 ///
-/// **Provisional, and known to be derived from a different model.** 0.20 is the
-/// 5%-miss-budget operating point recorded in
-/// `docs/decisions/classifier-operating-point.md`, measured on the *unfreeze-3*
-/// checkpoint. The shipped artifact is the full-unfreeze model, whose 5% budget
-/// costs 10.09% over-blocking — but the threshold that achieves it was never
-/// recorded, and that decision doc states plainly that the threshold is
-/// model-specific and must be re-derived.
+/// **Measured**, for the shipped full-unfreeze checkpoint *under the tile-max
+/// geometry*: the threshold achieving the 5% miss budget, at a cost of 10.09%
+/// over-blocking. From
+/// `docs/components/machine-learning/experiments/input-handling.md`, recorded in
+/// `docs/decisions/classifier-operating-point.md`.
 ///
-/// Re-deriving it needs the corpus. Until then this is a starting point, not a
-/// measured operating point, which is why `SandboxConfig` carries it as a field
-/// rather than the code reading the constant directly.
-pub const DEFAULT_EXPLICIT_THRESHOLD: f32 = 0.20;
+/// A threshold belongs to a model **and** a geometry, and both halves have
+/// already caused an error here. The same checkpoint under a centre crop
+/// operates at 0.2717; the superseded unfreeze-3 checkpoint operated at 0.20,
+/// which is what this constant wrongly held before the corpus was available.
+/// Taking a max over overlapping tiles shifts the whole score distribution
+/// upward, so reusing a centre-crop threshold would over-block by roughly half
+/// again (14.73% against 10.09%) with nothing failing to indicate it.
+pub const DEFAULT_EXPLICIT_THRESHOLD: f32 = 0.4650;
+
+/// Collapse per-tile scores into one verdict score.
+///
+/// The maximum, not the mean: "any region explicit → block" is what a blocker
+/// wants, and averaging dilutes a small explicit region into a large safe
+/// background — the exact failure the tiled geometry was adopted to fix.
+///
+/// Empty input scores 0.0. `preprocess_tiles` always returns at least one
+/// window, so that is unreachable today; it is defined rather than panicking
+/// because this runs inside the proxy's request path.
+pub fn reduce_tile_scores(scores: &[f32]) -> f32 {
+    scores.iter().copied().fold(0.0f32, f32::max)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SandboxConfig {
@@ -90,29 +105,38 @@ impl ImageSandbox {
             }
         };
 
-        let tensor = match preprocess(&image, &self.config.preprocess) {
-            Ok(tensor) => tensor,
+        let tiles = match preprocess_tiles(&image, &self.config.preprocess) {
+            Ok(tiles) => tiles,
             Err(reason) => {
                 tracing::debug!("image not classified, allowing: {reason}");
                 return ImageVerdict::Allow;
             }
         };
 
-        match classifier.classify(&tensor) {
-            Ok(ClassifyResult { explicit_score }) => {
-                if explicit_score >= self.config.explicit_threshold {
-                    ImageVerdict::Block { score: explicit_score }
-                } else {
-                    ImageVerdict::Allow
+        let mut scores = Vec::with_capacity(tiles.len());
+        for tile in &tiles {
+            match classifier.classify(tile) {
+                Ok(ClassifyResult { explicit_score }) => scores.push(explicit_score),
+                Err(error) => {
+                    // An inference failure is a fault in us, not evidence about
+                    // the image. Warn, because unlike a decode failure it should
+                    // not happen on healthy traffic.
+                    //
+                    // Abandon the whole image rather than reducing over the
+                    // tiles that did succeed: a max over a subset is a score for
+                    // a different image, and it would silently under-block
+                    // exactly when something is already wrong.
+                    tracing::warn!("image classification failed, allowing: {error}");
+                    return ImageVerdict::Allow;
                 }
             }
-            Err(error) => {
-                // An inference failure is a fault in us, not evidence about the
-                // image. Warn, because unlike a decode failure it should not
-                // happen on healthy traffic.
-                tracing::warn!("image classification failed, allowing: {error}");
-                ImageVerdict::Allow
-            }
+        }
+
+        let explicit_score = reduce_tile_scores(&scores);
+        if explicit_score >= self.config.explicit_threshold {
+            ImageVerdict::Block { score: explicit_score }
+        } else {
+            ImageVerdict::Allow
         }
     }
 }
@@ -137,11 +161,14 @@ mod tests {
     }
 
     #[test]
-    fn the_default_threshold_is_the_recorded_miss_budget_operating_point() {
-        // Guards against someone "fixing" this to 0.5, which the operating
-        // point decision explicitly rejects: 0.5 is argmax's default, not a
-        // measured point, and it misses far more than the budget allows.
-        assert_eq!(SandboxConfig::default().explicit_threshold, 0.20);
+    fn the_default_threshold_is_the_measured_tile_max_operating_point() {
+        // Guards two separate mistakes. 0.5 is argmax's default rather than a
+        // measured point, and the operating-point decision rejects it outright.
+        // 0.20 and 0.2717 are also wrong here but far more plausible-looking:
+        // the first belongs to the superseded unfreeze-3 model, the second to
+        // this model under the *centre-crop* geometry. A threshold is only
+        // valid for one model-and-geometry pairing.
+        assert_eq!(SandboxConfig::default().explicit_threshold, 0.4650);
     }
 
     #[test]
@@ -149,5 +176,41 @@ mod tests {
         let config = SandboxConfig { explicit_threshold: 0.44, ..SandboxConfig::default() };
 
         assert_eq!(config.explicit_threshold, 0.44);
+    }
+
+    // --- reducing tile scores ---------------------------------------------
+
+    #[test]
+    fn the_reduction_is_the_maximum_over_tiles() {
+        // "Any region explicit -> block" is the semantics the geometry was
+        // adopted under.
+        assert_eq!(reduce_tile_scores(&[0.01, 0.92, 0.03]), 0.92);
+    }
+
+    #[test]
+    fn a_mean_reduction_would_dilute_a_single_explicit_tile() {
+        // The failure tiling exists to fix, stated as a test: one explicit tile
+        // in a wide safe banner. The mean is 0.24 and would clear no sensible
+        // threshold; the max is 0.95 and blocks.
+        let scores = [0.02, 0.01, 0.95, 0.03, 0.01];
+        let mean = scores.iter().sum::<f32>() / scores.len() as f32;
+
+        assert!(mean < SandboxConfig::default().explicit_threshold);
+        assert!(reduce_tile_scores(&scores) >= SandboxConfig::default().explicit_threshold);
+    }
+
+    #[test]
+    fn a_single_tile_reduces_to_itself() {
+        // Near-square images take this path, and it must not perturb the score
+        // — the measured plain-image AUC of 0.9806 assumes exactly this.
+        assert_eq!(reduce_tile_scores(&[0.37]), 0.37);
+    }
+
+    #[test]
+    fn no_tiles_scores_zero_rather_than_panicking() {
+        // Unreachable via preprocess_tiles, which always yields at least one
+        // window — but the reduction must not be the thing that panics inside
+        // the proxy's request path if that ever stops being true.
+        assert_eq!(reduce_tile_scores(&[]), 0.0);
     }
 }

@@ -194,13 +194,13 @@ The SQLite database can hold millions of hashes. Lookup by hash column with an i
 
 ### 4.3 ONNX Fallback (Zero-Day)
 
-Unknown images are passed to the local quantized ML vision model (e.g., MobileNetV2 INT8 in ONNX format):
+Unknown images are passed to the local ML vision model — a fine-tuned MobileNetV3-Small in **fp32** ONNX (5.95 MB). Not int8: dynamic quantization applies per-tensor scales, which MobileNet's depthwise convolutions are the worst case for, and the measured result was uncorrelated with the checkpoint (Spearman ρ = −0.20). See the `machine-learning` row in [CLAUDE.md](../../CLAUDE.md).
 
 ```text
 image buffer
-  -> resize and normalize to model input shape
-  -> ONNX Runtime inference (~50 ms on CPU)
-  -> model output: category probabilities
+  -> resize shorter side to 224, tile the longer one, normalize each tile
+  -> ONNX Runtime inference per tile (1 tile for near-square images, at most 15)
+  -> explicit score = max over tiles
 
 result: unholy (above configured confidence threshold)
   -> discard image buffer

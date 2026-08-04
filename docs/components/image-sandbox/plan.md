@@ -50,30 +50,44 @@ a second-order version of the same class of bug: torchvision's `CenterCrop` comp
 integer division truncates. That one-pixel shift moved the tensor mean by 0.0085 — systematic,
 not noise, and invisible to any test that only checks Rust against itself.
 
-### Provisional constants
+### Correction, part two: the centre crop is not what ships either
 
-Both are `SandboxConfig`/`PreprocessConfig` fields rather than hardcoded, because both are
-guesses awaiting measurement by `holy_blocker_ml.inputs`:
+The deployed geometry is **tile-max**, not the centre crop described above. The
+[input-handling experiment](../machine-learning/experiments/input-handling.md) measured four
+candidates against off-centre composites and the centre crop lost badly: it caught **41%** of
+explicit content where tiling caught **62%** at each arm's own calibrated threshold, because it
+discards ~23% of a wide image and explicit content in the side of a banner is simply never seen.
+Tiling costs nothing on ordinary imagery — a near-square image yields exactly one tile, and plain
+validation AUC is unchanged at 0.9806 against 0.9796.
 
-- **Threshold 0.20.** The 5%-miss-budget operating point from
-  [the operating point decision](../../decisions/classifier-operating-point.md) — but derived on
-  the *unfreeze-3* checkpoint, while the shipped artifact is the full-unfreeze model. That
-  document states plainly that the threshold is model-specific and must be re-derived.
-- **32px size floor.** `transforms.Resize` has no lower bound, so a favicon is upscaled to 255px
-  and scored on interpolation. 32 excludes tracking pixels while keeping plausible thumbnails.
-  Note a floor is also a bypass: content served just under it is unfiltered.
+`preprocess_tiles` resizes the shorter side to **224 exactly** — not `224 × 1.14`, since no crop
+follows — then slides 224 windows along the longer axis at a half-window stride, with the final
+window flush against the far edge. The caller takes the **maximum** score: averaging dilutes a
+small explicit region into a large safe background, which is the failure being fixed.
 
-There is also an 8:1 aspect clamp, which is a resource guard rather than a quality one — resizing
-a 1000×10 banner's shorter side to 255 produces a 25500×255 intermediate (~19.5 MB) from which the
-crop keeps a sliver.
+`preprocess` (the centre crop) is kept, because every published figure was measured under it and
+`tests/parity.rs` pins it against torchvision. `tests/tile_parity.rs` does the same for the tiled
+path against `holy_blocker_ml.inputs.tile_geometry`, using a fixture whose green channel ramps
+left-to-right so that tile *position* is visible in each tile's mean.
 
-### Known coverage gap
+### Measured constants
 
-The centre crop discards ~23% of a wide image, so explicit content in the side of a banner is
-never seen. The corpus cannot show this — `[redacted-dataset]` is scraped photos with centred
-subjects filling the frame. `holy_blocker_ml.inputs` measures four candidate geometries
-(centre-crop, squash, letterbox, tile-max) against off-centre composites; tile-max needs no
-retraining because every tile is an ordinary 224 crop.
+Both were guesses on the first pass and both were wrong. They remain
+`SandboxConfig`/`PreprocessConfig` fields rather than hardcoded values.
+
+- **Threshold 0.4650** — the 5%-miss-budget operating point for the full-unfreeze checkpoint
+  *under tile-max*, costing 10.09% over-blocking. It replaces a provisional **0.20**, which was
+  the unfreeze-3 model's operating point. Note the same checkpoint under a centre crop operates
+  at **0.2717**: a threshold belongs to a model *and* a geometry, because the max over tiles
+  shifts the whole score distribution upward. See
+  [the operating point decision](../../decisions/classifier-operating-point.md).
+- **96px size floor** — the smallest measured arm still at or above 0.93 combined ROC-AUC. It
+  replaces a provisional **32px**, which sits at 0.8619. Degradation is smooth rather than
+  cliff-edged (0.9255 at 64px, still 0.7640 at 16px), so this is a chosen point on a curve.
+  A floor is also a bypass: content served just under it is unfiltered.
+
+The 8:1 aspect clamp remains, now bounding *inference count* rather than allocation — the widest
+admissible image resizes to 1792×224 and costs 15 forward passes.
 
 ## Modules to add
 
@@ -280,11 +294,20 @@ The order below is the original plan. What was actually built is recorded under
 4. ~~`onnx.rs` behind the `onnx` feature flag~~ **Done** as `classifier.rs`. Non-default feature; without it the crate compiles and allows everything, so a build without an ONNX Runtime is a functioning build. `tests/inference.rs` exercises the real exported artifact and skips when it is absent, since `data/models/` is gitignored.
 5. ~~Wire `ImageSandbox` into `packages/mitm-proxy` at the Phase 4 hook~~ **Done.** Inference runs under `tokio::task::spawn_blocking` — `image_scanner` is a sync `Fn` invoked inside the async handler, so running a MobileNetV3 forward pass inline would hold a tokio worker and stall every other connection it drives.
 
-Still to do, in the order the measurements unblock them:
+6. ~~Replace the provisional threshold and size floor with measured values from
+   `holy_blocker_ml.inputs`, and adopt whichever geometry that experiment selects.~~
+   **Done.** Threshold 0.20 → **0.4650**, floor 32px → **96px**, and the centre crop replaced by
+   **tile-max**. See [Measured constants](#measured-constants) and the
+   [experiment](../machine-learning/experiments/input-handling.md).
 
-6. Replace the provisional threshold and size floor with measured values from
-   `holy_blocker_ml.inputs`, and adopt whichever geometry that experiment selects.
+Still to do:
+
 7. `hash.rs` + `db.rs` as a short-circuit cache, if and when a hash database exists.
+8. A **fully convolutional** equivalent of tile-max, if the per-image cost of up to 15 forward
+   passes becomes a problem. MobileNetV3's `AdaptiveAvgPool2d(1) → Linear(576,1024) →
+   Linear(1024,2)` head converts mechanically to 1×1 convolutions with identical weights, so one
+   pass over a larger input yields a spatial logit grid whose max equals the tiled max — and, as
+   a side effect, the coarse heatmap the screen-capture path will need for localisation.
 
 ## What this does not cover
 

@@ -45,23 +45,28 @@ pub const IMAGENET_STD: [f32; 3] = [0.229, 0.224, 0.225];
 
 /// Images with either side below this are not classified.
 ///
-/// **Provisional.** `transforms.Resize` has no lower bound, so a 16x16 sprite
-/// is upscaled to 255x255 and scored on evidence that is almost entirely
-/// interpolation — and the corpus contains no such images, so nothing in
-/// results.md says whether the score means anything. The real floor is being
-/// measured by the scale sweep in `holy_blocker_ml.inputs`; until that lands,
-/// 32 is a guess chosen to exclude favicons and tracking pixels while keeping
-/// plausible thumbnails.
+/// **Measured**, by the scale sweep in
+/// `docs/components/machine-learning/experiments/input-handling.md`: the
+/// smallest arm still at or above 0.93 combined ROC-AUC. Degradation is smooth
+/// rather than cliff-edged — 0.9556 at 96px, 0.9255 at 64px, and still 0.7640
+/// at 16px — so this is a chosen point on a curve, not a capability boundary.
+/// Lowering it buys coverage at a steep price: 35.98% over-blocking at 64px
+/// against 22.92% at 96px.
 ///
 /// Note a floor is also a bypass: content served just under it is unfiltered.
-pub const MIN_DIMENSION: u32 = 32;
+pub const MIN_DIMENSION: u32 = 96;
+
+/// Fraction of a tile that each step advances, so consecutive tiles overlap by
+/// half. A subject straddling one boundary is whole in a neighbouring tile.
+/// Mirrors `TILE_STRIDE_FRACTION` in `holy_blocker_ml.inputs`.
+pub const TILE_STRIDE_FRACTION: f32 = 0.5;
 
 /// Longest:shortest side ratio beyond which an image is not classified.
 ///
-/// This is a resource guard, not a quality one. Resizing the shorter side of a
-/// 1000x10 banner to 255 produces a 25500x255 intermediate — about 19.5 MB —
-/// from which the centre crop then keeps a 224-pixel sliver. Bounding the ratio
-/// bounds that intermediate.
+/// This is a resource guard, not a quality one, and under tiling it bounds
+/// *inference count* rather than allocation: an 8:1 image resizes to 1792x224
+/// and costs 15 forward passes. Beyond that the cost of one response grows
+/// without a matching gain, since a strip that thin is rarely the subject.
 pub const MAX_ASPECT_RATIO: f32 = 8.0;
 
 /// Why an image was not turned into a tensor.
@@ -166,7 +171,28 @@ fn centre_offset(extent: u32, crop: u32) -> u32 {
     (f64::from(extent - crop) / 2.0).round() as u32
 }
 
+/// Normalise one already-cropped `size`x`size` view into an NCHW f32 buffer.
+fn to_tensor(view: &DynamicImage) -> Vec<f32> {
+    let rgb = view.to_rgb8();
+    // NCHW: all of R, then all of G, then all of B — the layout the exported
+    // graph declares for its `image` input.
+    let pixel_count = (rgb.width() * rgb.height()) as usize;
+    let mut tensor = vec![0.0f32; 3 * pixel_count];
+    for (index, pixel) in rgb.pixels().enumerate() {
+        for channel in 0..3 {
+            let scaled = pixel.0[channel] as f32 / 255.0;
+            tensor[channel * pixel_count + index] =
+                (scaled - IMAGENET_MEAN[channel]) / IMAGENET_STD[channel];
+        }
+    }
+    tensor
+}
+
 /// Decoded image -> normalised NCHW f32 buffer of `3 * input_size * input_size`.
+///
+/// The **evaluation** transform, not the deployed one. Kept because every
+/// figure in results.md was measured under it and `tests/parity.rs` pins it
+/// against torchvision; `preprocess_tiles` is what ships. See the module docs.
 pub fn preprocess(
     image: &DynamicImage,
     config: &PreprocessConfig,
@@ -179,20 +205,64 @@ pub fn preprocess(
     let size = config.input_size;
     let left = centre_offset(resized.width(), size);
     let top = centre_offset(resized.height(), size);
-    let cropped = resized.crop_imm(left, top, size, size).to_rgb8();
+    Ok(to_tensor(&resized.crop_imm(left, top, size, size)))
+}
 
-    // NCHW: all of R, then all of G, then all of B — the layout the exported
-    // graph declares for its `image` input.
-    let pixel_count = (size * size) as usize;
-    let mut tensor = vec![0.0f32; 3 * pixel_count];
-    for (index, pixel) in cropped.pixels().enumerate() {
-        for channel in 0..3 {
-            let scaled = pixel.0[channel] as f32 / 255.0;
-            tensor[channel * pixel_count + index] =
-                (scaled - IMAGENET_MEAN[channel]) / IMAGENET_STD[channel];
-        }
+/// Window start offsets along one axis, the last flush against the far edge.
+///
+/// A plain stride walk leaves a remainder whenever the extent is not a stride
+/// multiple past the tile, and that remainder is the trailing edge of the image
+/// — precisely where off-centre content the centre crop already missed tends to
+/// sit. Mirrors `tile_windows` in `holy_blocker_ml.inputs`.
+pub fn tile_starts(extent: u32, size: u32, stride: u32) -> Vec<u32> {
+    debug_assert!(stride > 0, "stride must be positive");
+    if extent <= size {
+        return vec![0];
     }
-    Ok(tensor)
+    let last = extent - size;
+    let mut starts: Vec<u32> = (0..=last).step_by(stride.max(1) as usize).collect();
+    if starts.last() != Some(&last) {
+        starts.push(last);
+    }
+    starts
+}
+
+/// Decoded image -> one NCHW tensor per tile. **The deployed geometry.**
+///
+/// Resizes the shorter side to `input_size` exactly — not `input_size *
+/// resize_ratio` as the centre-crop path does — then slides `input_size`
+/// windows along the longer axis at a half-window stride. Every tile is an
+/// ordinary crop at the scale the model was trained on, so no retraining is
+/// needed for the result to mean anything.
+///
+/// The caller takes the **maximum** score over the tiles: "any region explicit
+/// → block" is the right semantics for a blocker, and averaging would dilute a
+/// small explicit region into a large safe background, which is the failure
+/// this geometry exists to fix.
+///
+/// A near-square image yields exactly one tile, so ordinary imagery costs one
+/// inference; `max_aspect_ratio` bounds the worst case at 15.
+pub fn preprocess_tiles(
+    image: &DynamicImage,
+    config: &PreprocessConfig,
+) -> Result<Vec<Vec<f32>>, PreprocessError> {
+    admissible(image.width(), image.height(), config)?;
+
+    let size = config.input_size;
+    let resized = resize_shorter_side(image, size);
+    let stride = ((size as f32 * TILE_STRIDE_FRACTION) as u32).max(1);
+
+    let (width, height) = (resized.width(), resized.height());
+    let boxes: Vec<(u32, u32)> = if width >= height {
+        tile_starts(width, size, stride).into_iter().map(|x| (x, 0)).collect()
+    } else {
+        tile_starts(height, size, stride).into_iter().map(|y| (0, y)).collect()
+    };
+
+    Ok(boxes
+        .into_iter()
+        .map(|(x, y)| to_tensor(&resized.crop_imm(x, y, size, size)))
+        .collect())
 }
 
 #[cfg(test)]
@@ -315,10 +385,11 @@ mod tests {
 
     #[test]
     fn an_extreme_aspect_ratio_is_refused_before_allocating() {
-        // 1000x40 is 25:1. Accepting it would resize to 6375x255 first.
-        let result = preprocess(&solid(1000, 40, [0, 0, 0]), &PreprocessConfig::default());
+        // 1200x100 is 12:1. Both sides clear the 96px floor, so this isolates
+        // the aspect guard rather than tripping the size one first.
+        let result = preprocess(&solid(1200, 100, [0, 0, 0]), &PreprocessConfig::default());
 
-        assert_eq!(result, Err(PreprocessError::ExtremeAspect { width: 1000, height: 40 }));
+        assert_eq!(result, Err(PreprocessError::ExtremeAspect { width: 1200, height: 100 }));
     }
 
     #[test]
@@ -335,9 +406,122 @@ mod tests {
 
     #[test]
     fn the_floor_is_configurable_without_a_rebuild() {
-        // The measured floor is not in yet; a caller must be able to set it.
         let config = PreprocessConfig { min_dimension: 8, ..PreprocessConfig::default() };
 
         assert!(preprocess(&solid(16, 16, [9, 9, 9]), &config).is_ok());
+    }
+
+    // --- tiling -----------------------------------------------------------
+
+    #[test]
+    fn a_square_image_yields_exactly_one_tile() {
+        // The control property from the experiment: a near-square image has
+        // nothing to tile, so tile-max must reduce to an ordinary single crop.
+        // If this ever returns more than one tile, every plain-image score
+        // shifts and the measured 0.9806 stops describing what ships.
+        assert_eq!(tile_starts(224, 224, 112), vec![0]);
+    }
+
+    #[test]
+    fn an_extent_shorter_than_the_tile_still_yields_one_start() {
+        assert_eq!(tile_starts(100, 224, 112), vec![0]);
+    }
+
+    #[test]
+    fn tiles_advance_by_the_stride() {
+        // 672 wide, 224 tiles, 112 stride: 0, 112, 224, 336, 448 — and 448 is
+        // already flush against the far edge, so no extra window is appended.
+        assert_eq!(tile_starts(672, 224, 112), vec![0, 112, 224, 336, 448]);
+    }
+
+    #[test]
+    fn the_last_tile_is_pushed_flush_against_the_far_edge() {
+        // 500 is not a stride multiple past the tile: a plain walk stops at 224
+        // and leaves 500-224=276... the remainder 52px at the trailing edge
+        // would never be covered. That trailing strip is exactly where an
+        // off-centre subject sits, which is the whole point of tiling.
+        let starts = tile_starts(500, 224, 112);
+
+        assert_eq!(starts.last(), Some(&276), "final tile must end at the edge");
+        assert!(starts.windows(2).all(|w| w[0] < w[1]), "starts must be increasing");
+    }
+
+    #[test]
+    fn tiling_covers_every_column_of_a_wide_image() {
+        // Coverage is the property the geometry was adopted for; assert it
+        // directly rather than trusting the arithmetic above.
+        let (extent, size, stride) = (1000u32, 224u32, 112u32);
+        let starts = tile_starts(extent, size, stride);
+
+        let covered = |x: u32| starts.iter().any(|&s| x >= s && x < s + size);
+        assert!((0..extent).all(covered), "some column is not inside any tile");
+    }
+
+    #[test]
+    fn tiles_have_the_shape_the_exported_graph_declares() {
+        let tiles = preprocess_tiles(&solid(900, 300, [128, 128, 128]), &PreprocessConfig::default())
+            .expect("a 3:1 image is admissible");
+
+        assert!(tiles.len() > 1, "a 3:1 image must produce several tiles");
+        assert!(tiles.iter().all(|t| t.len() == 3 * 224 * 224));
+    }
+
+    #[test]
+    fn a_square_image_tiles_to_a_single_view() {
+        let tiles =
+            preprocess_tiles(&solid(300, 300, [128, 128, 128]), &PreprocessConfig::default())
+                .unwrap();
+
+        assert_eq!(tiles.len(), 1);
+    }
+
+    #[test]
+    fn tiling_reaches_content_the_centre_crop_discards() {
+        // The failure the geometry exists to fix. Left third red, middle green,
+        // right blue: the centre crop sees only green, so red and blue are
+        // invisible to it. Some tile must be predominantly red.
+        let mut image = RgbImage::new(900, 300);
+        for (x, _, pixel) in image.enumerate_pixels_mut() {
+            *pixel = match x {
+                0..300 => Rgb([255, 0, 0]),
+                300..600 => Rgb([0, 255, 0]),
+                _ => Rgb([0, 0, 255]),
+            };
+        }
+        let image = DynamicImage::ImageRgb8(image);
+
+        let tiles = preprocess_tiles(&image, &PreprocessConfig::default()).unwrap();
+
+        let pixels = 224 * 224;
+        let red_high = (1.0 - IMAGENET_MEAN[0]) / IMAGENET_STD[0];
+        let mean_red = |t: &Vec<f32>| t[..pixels].iter().sum::<f32>() / pixels as f32;
+        assert!(
+            tiles.iter().any(|t| (mean_red(t) - red_high).abs() < 0.2),
+            "no tile is predominantly red, so the left edge is still unseen"
+        );
+    }
+
+    #[test]
+    fn tiling_resizes_the_shorter_side_to_the_input_not_past_it() {
+        // tile_geometry uses `resize(image_size)`, not `image_size * 1.14`: the
+        // tiles must span the full height of a wide image rather than losing a
+        // strip to a crop that never happens. Resizing to 255 and taking 224
+        // would silently drop 12% of the height.
+        let tiles = preprocess_tiles(&solid(600, 300, [40, 80, 120]), &PreprocessConfig::default())
+            .unwrap();
+
+        // 600x300 -> 448x224 at ratio 1.0, giving starts 0, 112, 224: three
+        // tiles. At ratio 1.14 it would be 510x255 and produce four, each
+        // missing a 31px strip of height the crop would have thrown away.
+        assert_eq!(tiles.len(), 3);
+    }
+
+    #[test]
+    fn the_tile_count_stays_bounded_by_the_aspect_limit() {
+        // The resource guard: aspect is capped at 8:1, so the widest admissible
+        // image is 1792x224 after resize and cannot exceed this many inferences.
+        let widest = tile_starts(224 * 8, 224, 112).len();
+
+        assert!(widest <= 15, "an admissible image should not cost more than 15 inferences");
     }
 }

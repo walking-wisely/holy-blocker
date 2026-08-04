@@ -1,6 +1,4 @@
-use image_sandbox::{
-    DEFAULT_EXPLICIT_THRESHOLD, ImageClassifier, ImageSandbox, ImageVerdict, SandboxConfig,
-};
+use image_sandbox::{ImageClassifier, ImageSandbox, ImageVerdict, SandboxConfig};
 use text_policy::{
     evaluator::Thresholds,
     lexicon::{Category, Dictionary, DictionaryTerm, LexiconBuilder, MatchMode, Severity},
@@ -121,6 +119,9 @@ pub fn build_image_sandbox(model_path: Option<&std::path::Path>, threshold: f32)
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Only the tests pin the default; production code takes the threshold from
+    // the CLI, so importing this at module scope reads as dead in a normal build.
+    use image_sandbox::DEFAULT_EXPLICIT_THRESHOLD;
 
     fn engine() -> PolicyEngine {
         build_default_engine()
