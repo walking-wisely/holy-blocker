@@ -69,7 +69,26 @@ Safari needs no opt-in of any kind.
 `holy-blocker-macd ax-text 5` from a shell. Confirm the page's body text appears, not just the
 title and toolbar. Minutes of work, and it needs a human only because focus does.
 
-### 4. `ProxyConfiguration.restore()` is not atomic per service
+### 4. A lexicon phrase can match across two unrelated AX elements
+
+`AccessibilityText` joins elements with a newline, and that separator is not a boundary — no
+character could be. `packages/text-policy`'s `collapse_whitespace` rewrites a newline to a space and
+its `compact` pipeline strips it, so a sidebar label ending in one word and an unrelated heading
+beginning with the next read to the scorer as the phrase. `AccessibilityScanner` scores the walk as
+one blob and inherits this.
+
+The fix is to evaluate elements separately and take the worst verdict, which means widening
+`AccessibilityText.extract` to return the lines rather than one joined `String`. It was **not** done
+in session 4 because it trades one error direction for another: text legitimately wrapped across two
+AX elements — which is ordinary in a paragraph, a table cell, or a chat bubble — would stop matching,
+turning a false-positive class into a false-negative one. Which is worse depends on how real
+applications actually split their text, and nothing in this repo measures that.
+
+**What closes it:** a corpus of real AX walks (the `ax-text` verb already produces them) scored both
+ways, showing which direction costs more. Until then the per-element split is a guess with a
+plausible story, which is exactly what the joined blob already is.
+
+### 5. `ProxyConfiguration.restore()` is not atomic per service
 
 Carried over from Layer 1. Each service is restored with two `networksetup` calls, so an
 interruption between them can leave a proxy enabled with an empty server — a state that breaks

@@ -1138,7 +1138,7 @@ the Windows version does, so the debounce and cadence rules are unit-testable wi
 clock and no capture at all. This is the module with the most testable logic in Layer 2 and it needs
 tests first.
 
-#### Where the mode→action decision should live — open
+#### Where the mode→action decision should live — **decided: in Rust, over UniFFI**
 
 The mapping from *(score, thresholds, mode)* to an action is policy, and this would be its **third**
 independent implementation: `packages/text-policy` has it in Rust, the Windows daemon plans it in
@@ -1151,9 +1151,21 @@ needed the `apps/mobile/scripts/build-ffi.sh` scaffolding. So the cheap correct 
 the existing Rust policy from Swift rather than reimplement it, and this is the first platform where
 that costs almost nothing.
 
-Not decided here because it affects the Windows daemon too, and because it adds a Rust build step to
-a package that currently has none. Flagging it so the choice is made once, deliberately, rather than
-by default at implementation time.
+**Resolved in module 16 and consumed by `AccessibilityScanner`** (session 4 below). The Rust engine
+scores text and picks an `Action`; Swift does not re-derive it. Two things the decision did *not*
+cover, both worth stating because they look like the same question and are not:
+
+- **`ScanLoop.applyProtectionMode` stays plain Swift.** The `full`/`warn`/`off` downgrade is a
+  product setting this daemon owns — the user's chosen protection level — not the scoring rule the
+  Rust crate owns. Pushing it across the boundary would mean teaching `text-policy` about a mode it
+  has no other reason to know.
+- **The 5→3 action mapping is a real narrowing, and it lives here.** Rust has
+  `Block`/`Blur`/`Warn`/`Log`/`Allow`; `ScanAction` has three. `Blur → .warn` in particular loses
+  information, because this daemon has no partial-cover visual yet — see `PolicyMapping` in
+  `AccessibilityScanner.swift`, which carries its own named test for exactly that reason.
+
+The Windows daemon is unaffected by this and still has the choice in front of it; what changed is
+that one platform has now paid the integration cost and found it small.
 
 #### Where image localization should live — open
 
@@ -1568,9 +1580,14 @@ later:
    `regions: [ImageDetection]` field per
    [content-classification.md](../../architecture/content-classification.md#image-localization), but
    nothing populates it yet — `NullScanner` and every test double return an empty list, per that
-   section's deferral of real image localization. The mode→action mapping is plain Swift, not
-   UniFFI/`text-policy-ffi` — see module 9's "open" note, still undecided. 62 new tests
-   (`ScannerTests.swift`, `ScanLoopTests.swift`).
+   section's deferral of real image localization. 62 new tests (`ScannerTests.swift`,
+   `ScanLoopTests.swift`). **The first real `Scanner` now exists too** —
+   `AccessibilityScanner.swift`, built in session 4 of the e2e split below, which settles module
+   9's mode→action "open" note: the daemon consumes `text-policy-ffi` over UniFFI rather than
+   adding a third implementation. Note the split that leaves behind: `ScanLoop`'s own
+   `applyProtectionMode` is still plain Swift and stays that way, because a `ProtectionMode`
+   downgrade is a *product* setting this daemon owns, not the scoring rule the Rust crate owns.
+   25 more tests (`AccessibilityScannerTests.swift`).
 4. ~~**`Overlay`** (module 10)~~ — **Done**, both halves. The pure part decides one placement per
    screen from a verdict-shaped intent, with `.screenSaver`-equivalent level and
    `.canJoinAllSpaces`/`.fullScreenAuxiliary`-equivalent collection behavior recorded as data.
@@ -1705,7 +1722,7 @@ merged; 6 is human-only, no code):
    `OverlayWindow.swift` has no branches to test. See step 4 of the implementation order above for
    the rest of the findings. The overlay's *visual* is unverified and is one of the things session
    6 should look at.
-4. **`feat/mac-daemon-real-scanner`** (needs 1+2 merged) — module 9 gets its first real
+4. ~~**`feat/mac-daemon-real-scanner`** (needs 1+2 merged) — module 9 gets its first real
    `Scanner`, new file `AccessibilityScanner.swift`. **Interface resolution**:
    `Scanner.scan(_ frame: CapturedFrame)` is frame-driven, AX text isn't —
    `AccessibilityScanner` ignores its `frame` parameter and does its own independent AX read,
@@ -1720,7 +1737,34 @@ merged; 6 is human-only, no code):
    `Warn → .warn`, `Allow`/`Log → .allow`, **`Blur → .warn`** (no dedicated blur visual state
    exists yet), with its own named test since it's a real information-loss decision. Test-first:
    the 5→3 mapping, the rate-limit gate, the empty-tree/no-root → `.allow` fallback, and the
-   `u32` 0–100 → `Double` 0.0–1.0 score normalization, all against fakes.
+   `u32` 0–100 → `Double` 0.0–1.0 score normalization, all against fakes.~~ **Done**, and this
+   bullet held up — every interface prediction in it was right, `Scanner.swift`/`ScanLoop.swift`
+   and their 62 tests are untouched, and the `PolicyEngineHandle` seam keeps them UniFFI-agnostic.
+   25 new tests (`AccessibilityScannerTests.swift`), 308 in the suite. Four things worth carrying
+   forward, none of which the bullet anticipated:
+
+   - **The rate-limit gate must repeat its last verdict, not allow.** The bullet specified the
+     gate but not what a gated tick *returns*, and `.allow` is the wrong answer in a way that only
+     shows up on screen: `ScanLoop.lastVerdict` and the overlay above it are driven by what the
+     scanner returns, so allowing between walks would tear the interstitial down and rebuild it
+     several times a second over content that never stopped being blocked. The cached verdict is
+     load-bearing state, not an optimization.
+   - **A walk that found nothing still closes the gate.** Stamping the gate only on a successful
+     walk would leave a browser with no focused window — the *expected* case, per module 12's
+     finding that a first walk against a browser is legitimately thin — hammered on every 500 ms
+     image tick, which is precisely the load the gate exists to remove.
+   - **The seam carries the generated `Verdict`/`SourceKind` rather than Swift mirrors of them.**
+     `text-policy-ffi`'s API is a cross-platform contract shared with Android; a mirrored enum here
+     would be a second place to update and a second chance for this daemon to disagree with the
+     policy it enforces. `Scanner.swift`/`ScanLoop.swift` still never see a UniFFI type.
+   - **The cross-element phrase problem from module 12 is decided, and deferred deliberately.**
+     `AccessibilityText`'s header flags that no separator can stop a lexicon phrase matching across
+     two unrelated elements, and hands the decision to this session. It is not fixed here:
+     `AccessibilityText.extract` returns one joined `String`, so evaluating elements separately
+     means widening its API *and* accepting a new false-negative class — a phrase legitimately
+     wrapped across two AX elements would stop matching. That is a trade between two error
+     directions and deserves a measurement rather than a guess, which nothing in this repo can
+     supply yet. Recorded in [backlog.md](backlog.md).
 5. **`feat/mac-daemon-agent-render-loop`** (needs 3+4 merged) — rewires `runAgent()` in
    `Sources/holy-blocker-macd/main.swift`: replaces the `Thread.sleep(30s)` poll loop with
    `AppLifecycle.configureAccessoryApp()` + a real `NSApplication` run loop. A main-thread
