@@ -1417,13 +1417,33 @@ later:
    test pattern rather than by eye; a sheared frame looks fine at a glance.~~ **Done**, except the
    live PNG-by-hand check, which is blocked on the same real grant as `PermissionGate` — see the
    module 8 section above.
-3. **`Scanner` + `ScanLoop`** (module 9) with `NullScanner` — the debounce, cadence and mode logic
+3. **`Scanner` + `ScanLoop`** (module 9) with `NullScanner` — ~~the debounce, cadence and mode logic
    are the most testable code in Layer 2 and need no permissions at all. This step can proceed in
-   parallel with steps 1–2 by anyone blocked on grants.
-4. **`Overlay`** (module 10) — verify over native-fullscreen video and on a multi-display setup
-   specifically. Both failure modes are silent.
-5. **`DaemonIPC`** (module 14) — end to end into the Electron app, so verdicts become visible and
-   every later step is debuggable from the UI rather than from logs.
+   parallel with steps 1–2 by anyone blocked on grants.~~ **Done.** `ScanVerdict` carries the
+   `regions: [ImageDetection]` field per
+   [content-classification.md](../../architecture/content-classification.md#image-localization), but
+   nothing populates it yet — `NullScanner` and every test double return an empty list, per that
+   section's deferral of real image localization. The mode→action mapping is plain Swift, not
+   UniFFI/`text-policy-ffi` — see module 9's "open" note, still undecided. 62 new tests
+   (`ScannerTests.swift`, `ScanLoopTests.swift`).
+4. **`Overlay`** (module 10) — the pure part is **done**: `OverlayPlan.plan(intent:screens:)` decides
+   one placement per screen from a verdict-shaped intent, with `.screenSaver`-equivalent level and
+   `.canJoinAllSpaces`/`.fullScreenAuxiliary`-equivalent collection behavior recorded as data for a
+   later AppKit task to consume. Region-level cover is deliberately not implemented — every placement
+   still covers the full screen frame, per the `Overlay` section's note above. Still outstanding and
+   unchanged from before: real `NSWindow`/`NSApplication` construction (needs the run loop this
+   package doesn't have yet), and live verification over native-fullscreen video and on a
+   multi-display setup — both failure modes are silent and neither can be checked without the AppKit
+   half. 16 new tests (`OverlayTests.swift`).
+5. **`DaemonIPC`** (module 14) — the pure part is **done**: length-prefixed JSON framing, an
+   incremental decoder (`.needsMoreData` / `.message` / `.oversized` / `.invalid`, never throwing on
+   a partial read), and validated `scan_event`/`config_update` Codable types, with `regions`
+   (`ImageDetection`, always an array, never omitted) on `scan_event` per the module 14 section above.
+   34 new tests (`DaemonIPCTests.swift`). Still outstanding: the actual Unix domain socket
+   transport, and wiring into `apps/desktop/src/main/daemon-ipc.ts`, whose current shape
+   (`verdict`/`windowTitle`/`at`, camelCase) does not yet match this wire protocol. Also flagged but
+   not resolved: `ts` is encoded here as a Double (Unix epoch seconds), while the Windows daemon plan
+   documents an ISO-8601 string — a cross-platform choice to make once, deliberately, not by default.
 6. **`EventHooks`** (module 11) — measure which permission the scroll monitor actually requires
    before writing onboarding copy.
 7. **`AccessibilityText`** (module 12) — validate against a Chromium-based app early, since that is
