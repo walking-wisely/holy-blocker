@@ -161,3 +161,53 @@ public enum OverlayPlan {
         }
     }
 }
+
+/// The difference between the overlay windows that exist right now and the ones a fresh
+/// `OverlayPlan.plan` call says should exist.
+///
+/// Also pure, and for the same reason: `OverlayController` (in `OverlayWindow.swift`) owns real
+/// `NSWindow`s and cannot be unit-tested without an `NSApplication`, but *deciding* what to create,
+/// keep or tear down is ordinary logic. Splitting it out here leaves the AppKit file as mechanical
+/// glue with no branches worth testing.
+public struct OverlayReconciliation: Equatable, Sendable {
+    /// Screens with no window yet — construct one from each placement.
+    public let create: [OverlayPlacement]
+    /// Screens that already have a window — reapply the placement to it. Reusing the window rather
+    /// than recreating it matters: the scan loop reconciles on every tick, and tearing an
+    /// unchanged overlay down and rebuilding it would flicker it several times a second.
+    public let update: [OverlayPlacement]
+    /// Screen IDs whose window is no longer planned — order it out and drop it. Sorted, so
+    /// teardown does not inherit the unspecified key order of the controller's window dictionary.
+    public let close: [Int]
+
+    public init(create: [OverlayPlacement], update: [OverlayPlacement], close: [Int]) {
+        self.create = create
+        self.update = update
+        self.close = close
+    }
+
+    /// Diffs the live window set (by screen ID) against a freshly planned set of placements.
+    ///
+    /// A screen ID repeated in `planned` yields a single entry: the controller keys its windows by
+    /// screen ID and can only hold one per screen, so a duplicate would otherwise create a second
+    /// window over the first and leak it immediately.
+    public static func diff(existing: [Int], planned: [OverlayPlacement]) -> OverlayReconciliation {
+        let live = Set(existing)
+        var seen = Set<Int>()
+        var create: [OverlayPlacement] = []
+        var update: [OverlayPlacement] = []
+
+        for placement in planned where seen.insert(placement.screenID).inserted {
+            if live.contains(placement.screenID) {
+                update.append(placement)
+            } else {
+                create.append(placement)
+            }
+        }
+
+        return OverlayReconciliation(
+            create: create,
+            update: update,
+            close: live.subtracting(seen).sorted())
+    }
+}

@@ -129,3 +129,113 @@ struct OverlayPlanTests {
         #expect(placements[0].frame == mainScreen.frame)
     }
 }
+
+@Suite("OverlayReconciliation")
+struct OverlayReconciliationTests {
+    private let mainScreen = ScreenConfiguration(id: 1, frame: CGRect(x: 0, y: 0, width: 1920, height: 1080))
+    private let secondScreen = ScreenConfiguration(id: 2, frame: CGRect(x: 1920, y: 0, width: 2560, height: 1440))
+
+    private func placements(_ screens: [ScreenConfiguration]) -> [OverlayPlacement] {
+        OverlayPlan.plan(intent: .interstitial(swallowsMouseEvents: true), screens: screens)
+    }
+
+    // MARK: - the two ends: nothing shown, and everything torn down
+
+    @Test("no existing windows and no plan is a no-op")
+    func emptyToEmpty() {
+        let diff = OverlayReconciliation.diff(existing: [], planned: [])
+        #expect(diff.create.isEmpty)
+        #expect(diff.update.isEmpty)
+        #expect(diff.close.isEmpty)
+    }
+
+    @Test("a plan with no existing windows creates one per placement")
+    func emptyToPlanned() {
+        let diff = OverlayReconciliation.diff(existing: [], planned: placements([mainScreen, secondScreen]))
+        #expect(diff.create.map { $0.screenID } == [1, 2])
+        #expect(diff.update.isEmpty)
+        #expect(diff.close.isEmpty)
+    }
+
+    @Test("an empty plan closes every existing window — this is how .none tears the overlay down")
+    func plannedToEmpty() {
+        let diff = OverlayReconciliation.diff(existing: [1, 2], planned: [])
+        #expect(diff.create.isEmpty)
+        #expect(diff.update.isEmpty)
+        #expect(diff.close == [1, 2])
+    }
+
+    // MARK: - steady state
+
+    @Test("a window that is still planned is updated rather than recreated")
+    func existingIsUpdated() {
+        let diff = OverlayReconciliation.diff(existing: [1], planned: placements([mainScreen]))
+        // Recreating an unchanged window would flicker the overlay on every scan tick, and a scan
+        // tick is ~0.25s.
+        #expect(diff.create.isEmpty)
+        #expect(diff.update.map { $0.screenID } == [1])
+        #expect(diff.close.isEmpty)
+    }
+
+    @Test("update carries the freshly planned placement, not the old one")
+    func updateCarriesNewPlacement() {
+        // A display rearrangement changes the frame while keeping the screen's identity — the
+        // controller has to be handed the new frame, not just the screen ID.
+        let moved = ScreenConfiguration(id: 1, frame: CGRect(x: 0, y: 0, width: 3840, height: 2160))
+        let diff = OverlayReconciliation.diff(existing: [1], planned: placements([moved]))
+        #expect(diff.update.count == 1)
+        #expect(diff.update[0].frame == moved.frame)
+    }
+
+    // MARK: - display connect / disconnect
+
+    @Test("connecting a display creates only the new screen's window")
+    func connectingDisplay() {
+        let diff = OverlayReconciliation.diff(existing: [1], planned: placements([mainScreen, secondScreen]))
+        #expect(diff.create.map { $0.screenID } == [2])
+        #expect(diff.update.map { $0.screenID } == [1])
+        #expect(diff.close.isEmpty)
+    }
+
+    @Test("disconnecting a display closes only that screen's window")
+    func disconnectingDisplay() {
+        let diff = OverlayReconciliation.diff(existing: [1, 2], planned: placements([mainScreen]))
+        #expect(diff.create.isEmpty)
+        #expect(diff.update.map { $0.screenID } == [1])
+        #expect(diff.close == [2])
+    }
+
+    @Test("a wholesale display swap closes the old window and creates the new one")
+    func displaySwap() {
+        let diff = OverlayReconciliation.diff(existing: [1], planned: placements([secondScreen]))
+        #expect(diff.create.map { $0.screenID } == [2])
+        #expect(diff.update.isEmpty)
+        #expect(diff.close == [1])
+    }
+
+    // MARK: - determinism and defensive cases
+
+    @Test("close is ordered even though the live window set is a dictionary")
+    func closeIsOrdered() {
+        // The controller's window set is a dictionary, whose key order is unspecified; sorting
+        // here keeps teardown reproducible rather than incidentally ordered.
+        let diff = OverlayReconciliation.diff(existing: [3, 1, 2], planned: [])
+        #expect(diff.close == [1, 2, 3])
+    }
+
+    @Test("a duplicated screen ID in the plan yields one window, not two")
+    func duplicateScreenIDs() {
+        // `OverlayPlan.plan` maps one placement per element of the screen list, so a caller that
+        // hands it the same screen twice would otherwise get a second window created over the
+        // first and immediately leaked — the dictionary can only hold one per ID.
+        let diff = OverlayReconciliation.diff(existing: [], planned: placements([mainScreen, mainScreen]))
+        #expect(diff.create.count == 1)
+    }
+
+    @Test("a duplicated screen ID does not appear in both create and update")
+    func duplicateScreenIDsWithExistingWindow() {
+        let diff = OverlayReconciliation.diff(existing: [1], planned: placements([mainScreen, mainScreen]))
+        #expect(diff.create.isEmpty)
+        #expect(diff.update.count == 1)
+    }
+}
