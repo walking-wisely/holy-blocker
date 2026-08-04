@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import MacDaemon
 
@@ -24,6 +25,8 @@ let usage = """
       firefox-untrust                   remove it again (requires root)
       permissions [user]                report Layer 2 permission and tamper-surface state
       capture                            grab one frame via ScreenCaptureKit and report on it
+      ax-text [delay] [no-manual]       read the frontmost window's AX text (default delay: 3s;
+                                        no-manual skips Chromium's AXManualAccessibility opt-in)
       bundle <output-dir> [identity] [ffi-lib-dir]
                                         assemble and sign HolyBlockerDaemon.app (default: ad-hoc)
       bundle-status                     report our own bundle and whether its grants will last
@@ -165,6 +168,61 @@ func runCapture() async throws {
     print("all black: \(FrameAnalysis.isAllBlack(frame))")
 }
 
+/// How long to hold the AX client open between the two walks below. Measured against Chrome 151:
+/// its web tree appears about three seconds after a client starts reading, so a shorter pause
+/// reports a browser as having no page content when it is merely still building one.
+let settleSeconds: TimeInterval = 4
+
+/// Reads the frontmost window's accessibility text through the real AX edge — the live counterpart
+/// to `AccessibilityTextTests`, which only exercises the walk behind it.
+///
+/// The delay exists because the frontmost application at the moment this is typed is the terminal.
+/// Bring the window under test forward during it. Chromium-based applications need a second run:
+/// `AXManualAccessibility` is set on the first walk and the tree is built asynchronously after it,
+/// so the first read against Chrome or an Electron app is legitimately thin or empty.
+func runAXText(delay: TimeInterval, manualAccessibility: Bool) {
+    if delay > 0 {
+        print("bring the window to test frontmost — reading in \(Int(delay))s")
+        Thread.sleep(forTimeInterval: delay)
+    }
+
+    let frontmost = NSWorkspace.shared.frontmostApplication
+    print("frontmost: \(frontmost?.bundleIdentifier ?? frontmost?.localizedName ?? "none")")
+
+    let probe = SystemAXProbe(setsManualAccessibility: manualAccessibility)
+
+    // Walked twice from one process, because a one-shot walk cannot tell three different failures
+    // apart: a Chromium tree still being built, an opt-in that does nothing from an external
+    // client, and a client that exits before either could matter. The daemon walks repeatedly
+    // against a probe that stays alive, so the second walk is the one that describes it.
+    for attempt in 1...2 {
+        if attempt == 2 { Thread.sleep(forTimeInterval: settleSeconds) }
+
+        guard let root = probe.focusedRoot() else {
+            print("no focused root — nothing frontmost, or Accessibility is not granted")
+            return
+        }
+
+        let started = Date()
+        let walk = AccessibilityText.extract(from: root, probe: probe)
+        let elapsed = Date().timeIntervalSince(started)
+
+        print(
+            "walk \(attempt): \(walk.nodesVisited) nodes, \(walk.text.count) characters, "
+                + "\(String(format: "%.3f", elapsed))s "
+                + "(depth limit: \(walk.hitDepthLimit), node limit: \(walk.hitNodeLimit))")
+
+        guard attempt == 2 else { continue }
+        if walk.text.isEmpty {
+            // Not an error, and not "there is no text on screen" — see AccessibilityText's header.
+            print("no text — a canvas-drawn UI, or Accessibility is not granted")
+        } else {
+            print("---")
+            print(walk.text)
+        }
+    }
+}
+
 let arguments = Array(CommandLine.arguments.dropFirst())
 guard let command = arguments.first else { print(usage); exit(2) }
 let rest = Array(arguments.dropFirst())
@@ -250,6 +308,11 @@ do {
 
     case "capture":
         try await runCapture()
+
+    case "ax-text":
+        runAXText(
+            delay: rest.first.flatMap(TimeInterval.init) ?? 3,
+            manualAccessibility: !rest.contains("no-manual"))
 
     case "bundle":
         guard let outputDirectory = rest.first else { fail("expected <output-dir> [identity]") }

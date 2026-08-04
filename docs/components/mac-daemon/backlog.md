@@ -54,7 +54,22 @@ TCC store rather than the per-user one, so it plausibly fails for a standard use
 standard user *can* run it, the standard-user configuration is worth much less than the model
 assumes and the plan needs revisiting rather than patching.
 
-### 3. `ProxyConfiguration.restore()` is not atomic per service
+### 3. Safari's page body has not been confirmed through `AccessibilityText`
+
+Module 12 is verified against Chrome 151 — the full page content of a local test page came back,
+including image `alt` text. Safari's *window* reads fine too (45 nodes of real content), but its
+**page body** was never confirmed: every attempt to put the test page in front of Safari lost focus
+back to the terminal, and reading Safari by bundle ID instead returned an empty `AXWindows` because
+its windows were on another Space.
+
+This is a coverage question, not a code one — Chrome already proves the web-content path works, and
+Safari needs no opt-in of any kind.
+
+**What closes it:** open a page with known text in Safari, leave it frontmost, and run
+`holy-blocker-macd ax-text 5` from a shell. Confirm the page's body text appears, not just the
+title and toolbar. Minutes of work, and it needs a human only because focus does.
+
+### 4. `ProxyConfiguration.restore()` is not atomic per service
 
 Carried over from Layer 1. Each service is restored with two `networksetup` calls, so an
 interruption between them can leave a proxy enabled with an empty server — a state that breaks
