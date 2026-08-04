@@ -309,3 +309,133 @@ If only a few items can be started immediately, do them in this order:
 
 That sequence gives the repository a real baseline without waiting for all runtime components to
 be finished.
+
+## Audit findings
+
+Findings from `holy-blocker-security` audit passes, newest package first. Unlike the sections
+above — which are program-level controls — each entry here is a specific defect with a concrete
+attack and a file reference. The gate for a PR is that it introduces no *new* finding; an entry
+marked `accepted-baseline` is known debt scheduled against the owning package's plan, not a pass.
+
+### `packages/net-shield` and `packages/mitm-proxy` — audited 2026-08-04
+
+Audited at commit `fb69d30`. Boundaries matched: untrusted input parsers, TLS interception and CA.
+`dns.rs`, `udp.rs` and `radix.rs` were reviewed and produced no findings — bounds are checked
+through `get()`/`checked_add()` throughout, and the default `FilterAction::Proxy` on an unmatched
+lookup means a parse failure degrades to inspection rather than to allow.
+
+#### [HIGH] net-shield: a 24-byte crafted packet panics the filter loop
+
+- **Boundary:** untrusted input parsers
+- **Attack:** `parse_ipv4_packet` guarantees only `buf.len() >= ihl + 4`, but `process_packet`
+  then indexes `raw[ihl + 12]` directly to read the TCP data offset. A 24-byte IPv4/TCP packet to
+  port 443 passes the parse and panics on the index. On the Wintun loop the panic propagates out
+  of `run_windows`, so any host that can get one packet onto the TUN stops the filter — and a
+  stopped filter is an open network.
+- **Evidence:** `packages/net-shield/src/lib.rs:65`, guarantee at `packages/net-shield/src/tun.rs:63`
+- **Repro:** build an IPv4/TCP packet, `p[0]=0x45`, total length 24, `p[9]=6`, dst port 443, and
+  call `NetShield::process_packet`. Confirmed: `index out of bounds: the len is 24 but the index is 32`.
+- **Status:** open
+
+#### [HIGH] net-shield: IPv6 packets are parsed with IPv4 header arithmetic
+
+- **Boundary:** untrusted input parsers
+- **Attack:** `process_packet` accepts either address family, but the SNI branch unconditionally
+  computes `ihl` from `raw[0] & 0x0f` — the low nibble of an IPv6 packet is part of the traffic
+  class, not a header length. A 60-byte IPv6 packet to port 443 with `p[0] = 0x6f` yields
+  `ihl = 60` and panics on `raw[72]`. Where it does not panic it reads the SNI from the wrong
+  offset, so IPv6 HTTPS is filtered against garbage and falls through to the IP filter.
+- **Evidence:** `packages/net-shield/src/lib.rs:64-66`
+- **Repro:** confirmed — `index out of bounds: the len is 60 but the index is 72`.
+- **Status:** open
+
+#### [MED] net-shield: SNI hostnames are not case-normalised
+
+- **Boundary:** untrusted input parsers
+- **Attack:** `DomainFilter` keys its trie on raw label strings and `extract_sni` returns the
+  hostname exactly as the client sent it. TLS SNI is case-insensitive, so a client offering
+  `EXAMPLE.COM` misses a rule written as `example.com` and downgrades from `Block` to the default
+  `Proxy`. `dns.rs` lowercases (`read_name`, per RFC 4343 §3) and the SNI path does not, so one
+  rule set behaves differently depending on which path sees the name. `insert` does not normalise
+  either, so any rule authored with uppercase is silently dead on both paths.
+- **Evidence:** `packages/net-shield/src/sni.rs:117`, `packages/net-shield/src/radix.rs:35`
+- **Status:** open
+
+#### [MED] net-shield: a ClientHello split across TCP segments is not filtered by name
+
+- **Boundary:** untrusted input parsers
+- **Attack:** `extract_sni` requires the whole ClientHello in one buffer and returns `None`
+  otherwise; `process_packet` then falls back to `ip_filter.lookup(dst_ip)`. Splitting the
+  ClientHello across two segments — a one-line change in a client, and the standard SNI-filter
+  evasion — therefore takes the name out of the decision entirely. The default `Proxy` action
+  contains the damage today, but any rule set carrying an explicit `Allow` CIDR turns this into a
+  silent bypass.
+- **Evidence:** `packages/net-shield/src/lib.rs:67-71`, `packages/net-shield/src/sni.rs:21`
+- **Status:** open
+
+#### [LOW] net-shield: the wire-format parsers have no fuzz or property tests
+
+- **Boundary:** untrusted input parsers
+- **Attack:** no single attack — this is the reason the two panics above reached `master` with 70
+  passing unit tests. Every test feeds a well-formed packet built by a helper; none feeds a
+  truncated or hostile one. `proptest` over `dns::parse_query`, `udp::parse_ipv4_udp`,
+  `sni::extract_sni` and `NetShield::process_packet` asserting only "does not panic" would have
+  caught both.
+- **Evidence:** `packages/net-shield/src/{dns,udp,sni,tun}.rs` test modules
+- **Status:** open
+
+#### [HIGH] mitm-proxy: response bodies are buffered without a cap when Content-Length is absent
+
+- **Boundary:** untrusted input parsers
+- **Attack:** the HTML/image scan path skips buffering when `Content-Length` exceeds
+  `body_limit`, but a chunked or close-delimited response carries no `Content-Length`, so
+  `content_length.is_some_and(..)` is false and `body.collect().await` reads the whole stream into
+  memory. The size check at line 178 runs after the allocation. Any visited site can OOM the proxy
+  by streaming a multi-gigabyte chunked response with an HTML or image content type.
+- **Evidence:** `packages/mitm-proxy/src/tunnel.rs:164-178`
+- **Status:** open
+
+#### [HIGH] mitm-proxy: nothing in the repository owns CA private key generation or its permissions
+
+- **Boundary:** TLS interception and CA
+- **Attack:** `TlsState::load` reads `ca.crt` and `ca.key` from `ca_dir` and no code path in the
+  repository creates them — the key is produced by hand, out of band, with undefined mode bits and
+  undefined ownership. The corresponding root is installed into the macOS System keychain as
+  trusted by `CATrust`, so any local user or process able to read that file can mint a trusted
+  certificate for any host and MITM every TLS connection on the machine, including the ones this
+  project is not intercepting.
+- **Evidence:** `packages/mitm-proxy/src/tls.rs:55-59`; no generator anywhere under `packages/`,
+  `scripts/`, or `native-modules/`
+- **Status:** open — needs an owned generator that creates the key per-install at mode `0600`, plus
+  a startup check that refuses to run if the key is group- or world-readable
+
+#### [MED] mitm-proxy: padding a response past the body limit skips scanning entirely
+
+- **Boundary:** untrusted input parsers
+- **Attack:** a body over `body_limit` (default 1 MiB) is forwarded without a verdict. The
+  fail-open is deliberate and documented in the code, but it is also a one-line evasion: a hostile
+  site pads its HTML or image past 1 MiB and the scanner never runs. The trade-off is real —
+  blocking unscannable content has its own cost — but the current default makes evasion cheaper
+  than detection.
+- **Evidence:** `packages/mitm-proxy/src/tunnel.rs:176-178`, default at
+  `packages/mitm-proxy/src/tunnel.rs:34`
+- **Status:** accepted-baseline — revisit with a streaming or prefix-scan path
+
+#### [MED] mitm-proxy: the plain-HTTP path performs no scanning at all
+
+- **Boundary:** untrusted input parsers
+- **Attack:** `forward::forward_http` takes no `ScanHooks`, so URL, body and image scanning apply
+  only to CONNECT-tunnelled traffic. Any `http://` resource bypasses every phase.
+- **Evidence:** `packages/mitm-proxy/src/forward.rs`
+- **Status:** accepted-baseline — already recorded in the root `CLAUDE.md`; carried here so the
+  gate sees it
+
+#### [LOW] mitm-proxy: the default CA directory is a relative path
+
+- **Boundary:** TLS interception and CA
+- **Attack:** `ca_dir` defaults to `data/ca`, resolved against the proxy's working directory.
+  Under `ProxySupervisor` the working directory is whatever `launchd` supplies, so the CA the
+  proxy signs with depends on where it was started from — and a process that can control the
+  working directory can substitute its own CA.
+- **Evidence:** `packages/mitm-proxy/src/cli.rs:37`
+- **Status:** open
