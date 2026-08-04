@@ -133,7 +133,29 @@ Screen capture, OCR text, AX tree text, URLs, page titles, block events.
 **Authoring mode** — state the boundary, the concrete attack, and the fix. One finding per real
 issue. If the diff is clean, say it's clean; do not pad.
 
-**Audit mode** — append to `docs/engineering/security-backlog.md` using this shape:
+Before writing anything down, decide **where it goes**. Ask one question per finding:
+
+> Does this give a stranger a working attack against someone running a **released** version today?
+
+If **no** — which is every finding while the project is pre-release with no published releases —
+it goes in the public backlog below. A hardening backlog is meant to be readable; publishing "this
+read needs a bound" costs nothing and shows what is known and what is accepted.
+
+If **yes** — it is embargoed. Do **not** write it to the backlog, do not put it in a commit
+message, and do not open a public PR fixing it, because a public diff titled "add bounds check" is
+itself the disclosure. Instead:
+
+1. Tell the user it needs a **draft security advisory** (repo Security tab → Advisories → New
+   draft advisory), private until published.
+2. Develop the fix in the advisory's **temporary private fork**, not on a public branch.
+3. Leave a placeholder in the backlog naming only the package and the advisory, no attack detail.
+
+Check the release state rather than assuming it — `gh release list` and the supported-versions
+table in `SECURITY.md`. If in doubt, treat it as embargoed and ask; the cost of asking is a
+message, the cost of guessing wrong is publishing a live exploit.
+
+**Audit mode** — append non-embargoed findings to `docs/engineering/security-backlog.md` using
+this shape:
 
 ```markdown
 ### [SEV] <package>: <one-line claim>
