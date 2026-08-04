@@ -19,13 +19,19 @@ responsible-process problem. What remains untested is the part that matters most
 `permissionLost` when a held capability is actually taken away. It has only ever run against a fake
 probe, because nothing has ever *held* a real grant.
 
-Two things stand between here and that:
+One thing stood between here and that, and it's now closed:
 
-- **A stable signing identity.** The bundle signs ad-hoc by default, and an ad-hoc identity is
+- ~~**A stable signing identity.** The bundle signs ad-hoc by default, and an ad-hoc identity is
   derived from the `cdhash`, so a grant made against it dies on the next `swift build`. This is a
   decision — Developer ID, or a self-signed code-signing certificate reused consistently — and
   creating one writes to a keychain. `scripts/bundle.sh` already honours
-  `HOLY_BLOCKER_SIGNING_IDENTITY`; nothing else is needed in code.
+  `HOLY_BLOCKER_SIGNING_IDENTITY`; nothing else is needed in code.~~ **Done.** A self-signed
+  `Holy Blocker Dev` identity lives in the development machine's login keychain;
+  `scripts/create-dev-signing-identity.sh` recreates or rotates it. See
+  [signing-identity.md](signing-identity.md).
+
+What's left:
+
 - **A human.** A Screen Recording grant requires clicking the prompt or the System Settings
   toggle. No amount of daemon code can produce one.
 
