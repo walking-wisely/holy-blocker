@@ -75,6 +75,19 @@ The following are generally **not** considered vulnerabilities:
   is a quality issue, not a security vulnerability — please file it as a
   regular issue without sensitive samples).
 
+## Findings we raise ourselves
+
+Issues found by our own review — including the `holy-blocker-security` agent-skill
+audits — are recorded in
+[`docs/engineering/security-backlog.md`](docs/engineering/security-backlog.md)
+rather than filed as issues. That file is public on purpose: it is a hardening
+backlog, and a reader can see what is known and what is accepted.
+
+A finding is moved out of that file and into a **private draft advisory** when it
+would give a stranger a working attack against someone running a released
+version. While the project is pre-release with no published releases, nothing
+meets that bar, so the backlog holds everything.
+
 ## Response expectations
 
 - We aim to **acknowledge** a report within **48 hours**.

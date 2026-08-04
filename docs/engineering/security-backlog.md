@@ -317,6 +317,10 @@ above — which are program-level controls — each entry here is a specific def
 attack and a file reference. The gate for a PR is that it introduces no *new* finding; an entry
 marked `accepted-baseline` is known debt scheduled against the owning package's plan, not a pass.
 
+This section is public deliberately. A finding is held back into a private draft advisory only when
+it would give a stranger a working attack against a **released** version — see
+[`SECURITY.md`](../../SECURITY.md). There are no releases yet, so nothing currently meets that bar.
+
 ### `packages/net-shield` and `packages/mitm-proxy` — audited 2026-08-04
 
 Audited at commit `fb69d30`. Boundaries matched: untrusted input parsers, TLS interception and CA.
