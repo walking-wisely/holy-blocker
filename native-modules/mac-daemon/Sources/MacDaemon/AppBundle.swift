@@ -44,11 +44,19 @@ public struct BundleLayout: Equatable, Sendable {
     public let contents: URL
     public let macOS: URL
     public let resources: URL
+    /// Where embedded dylibs go. Not a free choice: the executable is linked against
+    /// `@rpath/libtext_policy_ffi.dylib` and its only bundle-relative rpath is
+    /// `@executable_path/../Frameworks`, so dyld looks here and nowhere else.
+    public let frameworks: URL
     public let infoPlist: URL
     public let executable: URL
 
     /// In creation order — `Contents` must exist before anything under it.
-    public var directories: [URL] { [contents, macOS, resources] }
+    public var directories: [URL] { [contents, macOS, resources, frameworks] }
+
+    public func embeddedLibrary(named name: String) -> URL {
+        frameworks.appendingPathComponent(name)
+    }
 }
 
 // MARK: - Assembly
@@ -59,6 +67,13 @@ public struct BundleLayout: Equatable, Sendable {
 /// ad-hoc identity derived from its `cdhash` — which changes on every rebuild. A bundle with a
 /// stable signature is the only artifact TCC will hold a lasting grant against.
 public enum AppBundle {
+    /// The dylibs the daemon links and must therefore carry.
+    ///
+    /// Kept here rather than in `scripts/bundle.sh` so the name the linker resolves and the name
+    /// the bundler copies cannot drift apart: a mismatch produces a bundle that builds, signs and
+    /// installs cleanly and then fails at launch with a dyld error.
+    public static let embeddedLibraryNames = ["libtext_policy_ffi.dylib"]
+
     public static func layout(root: URL, identity: BundleIdentity) -> BundleLayout {
         let contents = root.appendingPathComponent("Contents")
         let macOS = contents.appendingPathComponent("MacOS")
@@ -67,8 +82,21 @@ public enum AppBundle {
             contents: contents,
             macOS: macOS,
             resources: contents.appendingPathComponent("Resources"),
+            frameworks: contents.appendingPathComponent("Frameworks"),
             infoPlist: contents.appendingPathComponent("Info.plist"),
             executable: macOS.appendingPathComponent(identity.executableName))
+    }
+
+    /// Everything inside the bundle that carries its own signature, in the order `codesign` has to
+    /// take it: innermost first, because signing the bundle seals whatever is in it at that moment.
+    public static func nestedCode(
+        in layout: BundleLayout, fileManager: FileManager = .default
+    ) throws -> [URL] {
+        guard fileManager.fileExists(atPath: layout.frameworks.path) else { return [] }
+        return try fileManager
+            .contentsOfDirectory(at: layout.frameworks, includingPropertiesForKeys: nil)
+            .filter { $0.pathExtension == "dylib" }
+            .sorted { $0.path < $1.path }
     }
 
     /// Build `root` into a complete, unsigned `.app` around `executable`.
@@ -76,10 +104,14 @@ public enum AppBundle {
     /// Any existing bundle at `root` is removed first rather than written over: a `_CodeSignature`
     /// directory left from the previous build makes `codesign` refuse the new signature, and a
     /// half-replaced bundle is the kind of thing that fails much later and somewhere else.
+    /// `libraries` are copied into `Contents/Frameworks`. It defaults to empty so the bundle verb
+    /// still works before `scripts/build-ffi.sh` has ever run — the resulting bundle launches only
+    /// as far as the first FFI call, which is a better failure than refusing to assemble.
     public static func assemble(
         at root: URL,
         identity: BundleIdentity,
         executable: URL,
+        libraries: [URL] = [],
         fileManager: FileManager = .default
     ) throws {
         let layout = layout(root: root, identity: identity)
@@ -92,6 +124,10 @@ public enum AppBundle {
         }
 
         try fileManager.copyItem(at: executable, to: layout.executable)
+        for library in libraries {
+            try fileManager.copyItem(
+                at: library, to: layout.embeddedLibrary(named: library.lastPathComponent))
+        }
         try infoPlist(for: identity).write(to: layout.infoPlist)
     }
 

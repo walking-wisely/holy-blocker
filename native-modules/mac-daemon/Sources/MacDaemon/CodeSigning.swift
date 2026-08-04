@@ -36,13 +36,26 @@ public struct CodeSigning {
 
     /// Sign the bundle. `identity` is a keychain identity name, or `-` for ad-hoc.
     ///
-    /// The **bundle** is signed, never the executable inside it: signing the inner Mach-O leaves
-    /// the bundle's seal stale, and TCC reads the bundle.
-    public func sign(bundle: URL, identity: String) throws {
+    /// The **bundle** is signed, never the main executable inside it: signing the inner Mach-O
+    /// leaves the bundle's seal stale, and TCC reads the bundle.
+    ///
+    /// `nestedCode` is the exception — embedded dylibs carry their own signatures and must be
+    /// signed **before** the bundle, because signing the bundle seals whatever its contents are at
+    /// that moment. Signed in the other order, the seal describes an unsigned dylib while the
+    /// dylib is signed, and dyld refuses the mismatch at launch rather than at build time.
+    /// `--deep` would do this in one call and is documented by Apple as not to be used: it signs
+    /// whatever it happens to find, which is the opposite of knowing what shipped.
+    public func sign(bundle: URL, identity: String, nestedCode: [URL] = []) throws {
+        for code in nestedCode {
+            try sign(path: code.path, identity: identity)
+        }
+        try sign(path: bundle.path, identity: identity)
+    }
+
+    private func sign(path: String, identity: String) throws {
         // --force replaces an existing signature; without it a re-sign keeps the old seal and
         // codesign exits non-zero.
-        let result = try runner.run(
-            SystemTool.codesign, ["--force", "--sign", identity, bundle.path])
+        let result = try runner.run(SystemTool.codesign, ["--force", "--sign", identity, path])
         guard result.succeeded else {
             throw CodeSigningError.signingFailed(result.standardError)
         }

@@ -24,7 +24,8 @@ let usage = """
       firefox-untrust                   remove it again (requires root)
       permissions [user]                report Layer 2 permission and tamper-surface state
       capture                            grab one frame via ScreenCaptureKit and report on it
-      bundle <output-dir> [identity]    assemble and sign HolyBlockerDaemon.app (default: ad-hoc)
+      bundle <output-dir> [identity] [ffi-lib-dir]
+                                        assemble and sign HolyBlockerDaemon.app (default: ad-hoc)
       bundle-status                     report our own bundle and whether its grants will last
       launchd-plist <daemon|agent>      print the launchd job definition for one half
       run <proxy-binary> <proxy-dir>    supervise the proxy: launch, wait, route, restore on exit
@@ -257,11 +258,30 @@ do {
         let root = URL(fileURLWithPath: outputDirectory)
             .appendingPathComponent("HolyBlockerDaemon.app")
 
-        try AppBundle.assemble(at: root, identity: identity, executable: executable)
+        // The UniFFI dylib the daemon links. `rest[2]` is where scripts/build-ffi.sh staged it;
+        // a missing one is reported rather than skipped silently, since the bundle would assemble
+        // and sign perfectly and then die at the first policy call.
+        let libraryDirectory = rest.count > 2 ? URL(fileURLWithPath: rest[2]) : nil
+        var libraries: [URL] = []
+        for name in AppBundle.embeddedLibraryNames {
+            guard let candidate = libraryDirectory?.appendingPathComponent(name),
+                FileManager.default.fileExists(atPath: candidate.path)
+            else {
+                print("warning: \(name) not found — run scripts/build-ffi.sh before bundling")
+                continue
+            }
+            libraries.append(candidate)
+        }
+
+        try AppBundle.assemble(
+            at: root, identity: identity, executable: executable, libraries: libraries)
         // Ad-hoc by default so the bundle is runnable with no certificate — but ad-hoc is exactly
         // the identity that does not survive a rebuild, so say so rather than leave it implied.
         let signingIdentity = rest.count > 1 ? rest[1] : "-"
-        try CodeSigning(runner: runner).sign(bundle: root, identity: signingIdentity)
+        let layout = AppBundle.layout(root: root, identity: identity)
+        try CodeSigning(runner: runner).sign(
+            bundle: root, identity: signingIdentity,
+            nestedCode: try AppBundle.nestedCode(in: layout))
 
         let applied = try CodeSigning(runner: runner).identity(of: root)
         print("assembled \(root.path)")
