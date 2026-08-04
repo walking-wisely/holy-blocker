@@ -1765,7 +1765,7 @@ merged; 6 is human-only, no code):
      wrapped across two AX elements would stop matching. That is a trade between two error
      directions and deserves a measurement rather than a guess, which nothing in this repo can
      supply yet. Recorded in [backlog.md](backlog.md).
-5. **`feat/mac-daemon-agent-render-loop`** (needs 3+4 merged) — rewires `runAgent()` in
+5. ~~**`feat/mac-daemon-agent-render-loop`** (needs 3+4 merged) — rewires `runAgent()` in
    `Sources/holy-blocker-macd/main.swift`: replaces the `Thread.sleep(30s)` poll loop with
    `AppLifecycle.configureAccessoryApp()` + a real `NSApplication` run loop. A main-thread
    repeating `Timer` (~0.25s, created before `app.run()` — an off-thread timer never added to the
@@ -1777,7 +1777,20 @@ merged; 6 is human-only, no code):
    `ScanLoop.tick` (`ScanLoop.swift:179`) gates on `!frame.isEmpty`, so without a Screen Recording
    grant the AX-text scanner never runs at all even though it doesn't touch frame pixels — since
    Screen Recording is being granted anyway for session 6, `ScanLoop` is left untouched rather than
-   special-cased for a frame-less scanner; revisit once a real image scanner exists.
+   special-cased for a frame-less scanner; revisit once a real image scanner exists.~~ **Done**,
+   with the three timers built as specified and one addition the bullet didn't anticipate. The
+   mapping from `ScanVerdict.action` to `OverlayIntent` — the exact seam
+   `OverlayIntent.OverlayVerdictAction`'s doc comment named this session as the place to resolve —
+   is a new pure function, `overlayIntent(forVerdict:)`, test-first with 5 tests including one that
+   pins reading `.action` rather than `.rawAction` (a warn-mode downgrade must reach the overlay as
+   a warn, not the raw block underneath it). **The three timers could not capture `scanLoop`/`gate`
+   directly**: `Timer.scheduledTimer`'s block is `@Sendable`, and both are plain (correctly
+   non-`Sendable`) library classes, so Swift 6 flags every capture as a potential data race even
+   though all access is main-thread-only. Splitting the async prep (the two real `await`s) from a
+   second, non-`async` function that does the Timer wiring did not fix it either — the same error
+   persisted with `gate`/`capture` as plain parameters. What actually resolved it was giving the
+   timers one `@MainActor` class, `AgentRenderLoop`, to capture instead of two plain ones — the
+   same reason `OverlayController` itself is `@MainActor` and not a plain class. 313 tests.
 6. **Live verification** (needs 5 merged, human-in-the-loop, no code): rebuild bindings and bundle,
    reload the LaunchAgent, grant Accessibility + Screen Recording for real via System Settings
    against `HolyBlockerDaemon.app` specifically (never a shell binary — the responsible-process

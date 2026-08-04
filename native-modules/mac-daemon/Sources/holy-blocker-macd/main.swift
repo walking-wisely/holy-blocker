@@ -109,15 +109,38 @@ func runSupervisor(binary: URL, workingDirectory: URL) throws {
     print("restored network settings")
 }
 
-/// Poll interval for the Layer 2 agent. Permission loss is not urgent to the second, and a tight
-/// loop would spend the day waking the machine for four subprocesses.
+/// Poll interval for the Layer 2 agent's tamper watch. Permission loss is not urgent to the
+/// second, and a tight loop would spend the day waking the machine for four subprocesses.
 let permissionPollSeconds: TimeInterval = 30
 
-/// The Layer 2 entry point: stay alive and notice when a capability is taken away.
+/// Scan/reconcile cadence for the render loop. An explicitly acknowledged stand-in for module 11
+/// (`EventHooks`), not a replacement for it — a real implementation reacts to foreground-change and
+/// scroll events instead of polling a fixed timer. 0.25s keeps the interstitial's appearance within
+/// the ~1-2s the plan's live-verification step checks for, given `AccessibilityScanner`'s own
+/// ~1s rate-limit gate and `ScanLoopConfig`'s ~0.5-2s cadences sit above it.
+let agentScanTickSeconds: TimeInterval = 0.25
+
+/// How often the shutdown watch checks `stopRequested`. `NSApplication.run()` owns the thread once
+/// the render loop starts, so a signal handler can only set the flag — this timer is what actually
+/// asks the app to terminate.
+let agentStopPollSeconds: TimeInterval = 0.25
+
+/// The Layer 2 entry point: stay alive, watch for permission loss, and — as of this session — run
+/// the real render loop: an accessory `NSApplication` whose scan/reconcile timer scores the
+/// frontmost window's on-screen text and keeps a real overlay in sync with the verdict.
 ///
 /// This is the macOS shape of the Android `GuardStatusService` lesson — the still-alive process
-/// that can record a disable the guard itself cannot report. It watches; it does not yet capture.
-func runAgent() throws {
+/// that can record a disable the guard itself cannot report. It now covers, not just watches.
+///
+/// Only the two `await`s below live in this `async` function; everything that schedules a Timer
+/// closure is pushed into the non-`async` `runRenderLoop` instead. That split is deliberate, not
+/// stylistic: SE-0414 region isolation ties a value born inside an `async` function to that call's
+/// task region, and capturing such a value from an escaping Timer closure reads to the compiler as
+/// a potential data race even though everything here only ever touches the main thread. A plain
+/// `@MainActor` function — the same shape `runOverlay` already uses — does not have that region,
+/// so passing `gate`/`capture` across the function boundary as parameters clears it.
+@MainActor
+func runAgent() async throws {
     let gate = PermissionGate(runner: runner)
 
     let signature = try CodeSigning(runner: runner).identity(of: CodeSigning.currentCodePath)
@@ -137,10 +160,91 @@ func runAgent() throws {
         print("watching: \(PermissionGate.assess(snapshot).level.rawValue)")
     }
 
-    while stopRequested == 0 {
-        Thread.sleep(forTimeInterval: permissionPollSeconds)
-        for event in try gate.poll() { print("tamper: \(event)") }
+    let capture = SCShareableContentCapture()
+    try await capture.start()
+
+    try runRenderLoop(gate: gate, capture: capture)
+}
+
+/// Owns the render loop's state and gives its three Timer callbacks one thing to capture.
+///
+/// `ScanLoop` and `PermissionGate` are plain (non-`Sendable`) `MacDaemon` types — correctly so,
+/// since neither is otherwise isolated to any particular thread. But `Timer.scheduledTimer`'s block
+/// is `@Sendable`, so capturing either directly flags as a potential data race under Swift 6's
+/// concurrency checking, even though every access below only ever happens on the main run loop.
+/// Marking `AgentRenderLoop` itself `@MainActor` — the same reason `Overlay.swift`'s
+/// `OverlayController` is `@MainActor` rather than a plain class — makes it, and only it, the thing
+/// the timers need to capture.
+@MainActor
+final class AgentRenderLoop {
+    private let gate: PermissionGate
+    private let capture: SCShareableContentCapture
+    private let scanLoop: ScanLoop
+    private let overlay: OverlayController
+
+    init(gate: PermissionGate, capture: SCShareableContentCapture) {
+        self.gate = gate
+        self.capture = capture
+        self.scanLoop = ScanLoop(
+            capture: capture,
+            scanner: AccessibilityScanner(probe: SystemAXProbe(), policy: RealPolicyEngine()))
+        self.overlay = OverlayController()
     }
+
+    /// Draws windows and needs no Dock icon/menu bar — must run before the first `OverlayController`
+    /// reconcile, since an `NSWindow` created before `NSApplication` exists never appears.
+    func start() {
+        AppLifecycle.configureAccessoryApp()
+        overlay.start()
+    }
+
+    /// Ticks the scan loop, then drives the overlay off whatever it decided.
+    func scanTick() {
+        scanLoop.tick(now: Date())
+        overlay.apply(intent: overlayIntent(forVerdict: scanLoop.lastVerdict))
+    }
+
+    /// Unchanged cadence and behavior from before this session's render loop existed.
+    func tamperTick() {
+        guard let events = try? gate.poll() else { return }
+        for event in events { print("tamper: \(event)") }
+    }
+
+    func shutdown() {
+        overlay.stop()
+        Task { try? await capture.stop() }
+        NSApplication.shared.terminate(nil)
+    }
+}
+
+/// Wires the scan/reconcile, tamper-watch and shutdown timers and hands the thread to
+/// `NSApplication.run()`. See `runAgent`'s doc comment for why this is a separate, non-`async`
+/// function rather than the tail of it.
+@MainActor
+func runRenderLoop(gate: PermissionGate, capture: SCShareableContentCapture) throws {
+    let loop = AgentRenderLoop(gate: gate, capture: capture)
+    loop.start()
+
+    // Created before `app.run()` and on the main thread — a timer added off the main run loop
+    // silently never fires, the same trap `AXObserver` and `runOverlay`'s teardown timer both hit.
+    Timer.scheduledTimer(withTimeInterval: agentScanTickSeconds, repeats: true) { _ in
+        MainActor.assumeIsolated { loop.scanTick() }
+    }
+
+    Timer.scheduledTimer(withTimeInterval: permissionPollSeconds, repeats: true) { _ in
+        MainActor.assumeIsolated { loop.tamperTick() }
+    }
+
+    // Shutdown watch: `app.run()` below owns the thread, so SIGINT/SIGTERM can only set
+    // `stopRequested`; this is what turns that flag into an actual `terminate(nil)`.
+    Timer.scheduledTimer(withTimeInterval: agentStopPollSeconds, repeats: true) { timer in
+        guard stopRequested != 0 else { return }
+        timer.invalidate()
+        MainActor.assumeIsolated { loop.shutdown() }
+    }
+
+    print("agent running — scanning every \(agentScanTickSeconds)s")
+    NSApplication.shared.run()
     print("agent stopped")
 }
 
@@ -416,7 +520,7 @@ do {
         print(String(decoding: try job.plist(), as: UTF8.self))
 
     case "agent":
-        try runAgent()
+        try await runAgent()
 
     case "overlay":
         runOverlay(
