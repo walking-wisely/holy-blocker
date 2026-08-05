@@ -42,12 +42,29 @@ let package = Package(
                 ]),
                 .linkedLibrary("text_policy_ffi"),
             ]),
-        .target(name: "MacDaemon", dependencies: ["TextPolicyFFI"]),
+        // The image classifier, over the same UniFFI mechanism — see module 18. Everything above
+        // about naming, rpaths and where the linker settings must live applies identically here;
+        // the two are separate targets rather than one because they wrap separate crates and
+        // uniffi fixes each module's name from its crate's [lib].name.
+        .systemLibrary(name: "image_sandbox_ffiFFI"),
+        .target(
+            name: "ImageSandboxFFI",
+            dependencies: ["image_sandbox_ffiFFI"],
+            linkerSettings: [
+                .unsafeFlags([
+                    "-L\(ffiLibraryDirectory)",
+                    "-Xlinker", "-rpath", "-Xlinker", "@executable_path/../Frameworks",
+                    "-Xlinker", "-rpath", "-Xlinker", ffiLibraryDirectory,
+                ]),
+                .linkedLibrary("image_sandbox_ffi"),
+            ]),
+        .target(name: "MacDaemon", dependencies: ["TextPolicyFFI", "ImageSandboxFFI"]),
         .executableTarget(name: "holy-blocker-macd", dependencies: ["MacDaemon"]),
         // Do not add `unsafeFlags` to this target. SwiftPM silently stops discovering and running
         // tests when a test target carries them — `swift test` builds, prints nothing, and exits
         // 0. The Command Line Tools paths swift-testing needs, and the DYLD_LIBRARY_PATH the test
         // bundle needs to find libtext_policy_ffi.dylib, are passed by scripts/test.sh.
-        .testTarget(name: "MacDaemonTests", dependencies: ["MacDaemon", "TextPolicyFFI"]),
+        .testTarget(
+            name: "MacDaemonTests", dependencies: ["MacDaemon", "TextPolicyFFI", "ImageSandboxFFI"]),
     ]
 )

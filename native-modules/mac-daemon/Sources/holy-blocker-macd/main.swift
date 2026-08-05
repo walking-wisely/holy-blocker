@@ -28,6 +28,7 @@ let usage = """
       ax-text [delay] [no-manual]       read the frontmost window's AX text (default delay: 3s;
                                         no-manual skips Chromium's AXManualAccessibility opt-in)
       overlay [seconds] [passive]       cover every screen with a real overlay window
+      image-scan <model.onnx> [size]    classify a synthetic frame with the real ONNX model
       bundle <output-dir> [identity] [ffi-lib-dir]
                                         assemble and sign HolyBlockerDaemon.app (default: ad-hoc)
       bundle-status                     report our own bundle and whether its grants will last
@@ -191,6 +192,10 @@ final class AgentRenderLoop {
     private let capture: SCShareableContentCapture
     private let scanLoop: ScanLoop
     private let scanner: AccessibilityScanner
+    private let imageScanner: ImageScanner
+    /// What the image path is actually doing, for the state line. Resolved once at construction:
+    /// "no model on disk" and "a model that scores nothing" look identical from the verdict alone.
+    private let imagePathStatus: String
     private let overlay: OverlayController
     private let suppressor = WindowSuppressor()
 
@@ -206,7 +211,29 @@ final class AgentRenderLoop {
         self.capture = capture
         let scanner = AccessibilityScanner(probe: SystemAXProbe(), policy: RealPolicyEngine())
         self.scanner = scanner
-        self.scanLoop = ScanLoop(capture: capture, scanner: scanner)
+
+        // The model is sealed inside the bundle. A missing or unloadable one degrades the image
+        // path to allow-everything rather than taking the daemon down — the text path is
+        // independent of it and must keep running. Which of the two happened is reported, because
+        // a silently disabled classifier is indistinguishable from a clean screen.
+        let modelURL = Bundle.main.url(
+            forResource: AppBundle.classifierModelName, withExtension: nil)
+        let classifier: ImageClassifying
+        if let modelURL, let loaded = try? RealImageClassifier(modelPath: modelURL.path) {
+            classifier = loaded
+            self.imagePathStatus = "on (threshold \(loaded.threshold))"
+        } else {
+            classifier = RealImageClassifier.disabled()
+            self.imagePathStatus =
+                modelURL == nil
+                ? "off (no \(AppBundle.classifierModelName) in bundle)"
+                : "off (model failed to load)"
+        }
+        let imageScanner = ImageScanner(classifier: classifier)
+        self.imageScanner = imageScanner
+
+        self.scanLoop = ScanLoop(
+            capture: capture, imageScanner: imageScanner, textScanner: scanner)
         self.overlay = OverlayController()
     }
 
@@ -257,6 +284,10 @@ final class AgentRenderLoop {
             "frame: " + (frame.isEmpty ? "empty" : "\(frame.width)x\(frame.height)"),
             "ax grant: \(gate.lastSnapshot.map { "\($0.accessibility)" } ?? "unpolled")",
             "text: \(diagnosticTextLength()) chars",
+            // Status only, never the running count: the count moves on every classification, and
+            // keying on it would print two lines a second. The tally goes in the suffix below,
+            // beside the capture one, for the same reason.
+            "image: \(imagePathStatus)",
             "verdict: "
                 + (verdict.map { "\($0.action) (score \(String(format: "%.2f", $0.score)))" }
                     ?? "none"),
@@ -274,6 +305,7 @@ final class AgentRenderLoop {
                 + "  deliveries: \(tally.deliveries) (\(tally.complete) complete, \(tally.retained) retained)"
                 + "  dropped: \(tally.noImageBuffer) no-buffer / \(tally.noBaseAddress) no-base / \(tally.emptyAfterDepad) depad"
                 + "  geometry: \(tally.lastGeometry)"
+                + "  classified: \(imageScanner.completedClassifications)"
         )
     }
 
@@ -343,6 +375,49 @@ func runRenderLoop(gate: PermissionGate, capture: SCShareableContentCapture) thr
 /// Run from a shell this is still subject to the responsible-process rule `permissions` warns
 /// about: the Screen Recording grant reported (or refused) belongs to the terminal, not to a
 /// future signed bundle.
+/// Classifies a synthetic frame with the real model — module 18's live check.
+///
+/// Deliberately *not* driven by `ScreenCaptureKit`: a binary launched from a shell has no Screen
+/// Recording grant, so a capture-driven verb would fail before reaching the classifier and prove
+/// nothing about it. A frame built in memory exercises the whole path that is actually new here —
+/// the dylib loads, the model loads from disk, Swift hands over a BGRA buffer, ONNX runs, a score
+/// comes back — with no permission involved at all.
+///
+/// What it does not check is what the model *says*: a flat colour is not content, and what the
+/// classifier makes of one is not a claim this repository should be making. The assertion is that a
+/// number comes back in range.
+func runImageScan(modelPath: String, size: Int) {
+    let classifier: RealImageClassifier
+    do {
+        classifier = try RealImageClassifier(modelPath: modelPath)
+    } catch {
+        fail("could not load \(modelPath): \(error)")
+    }
+    print("model: \(modelPath)")
+    print("threshold: \(classifier.threshold)")
+
+    // Mid-grey, opaque, tightly packed BGRA — the layout `PixelBufferCopy.depad` produces.
+    let pixels = [UInt8](repeating: 0x80, count: size * size * 4)
+    let started = Date()
+    let outcome = classifier.classify(pixels: pixels, width: size, height: size)
+    let elapsed = Date().timeIntervalSince(started)
+
+    print("frame: \(size)x\(size) (\(pixels.count) bytes)")
+    print("outcome: \(outcome)")
+    print("elapsed: \(String(format: "%.1f", elapsed * 1000)) ms")
+
+    switch outcome {
+    case .allow(score: nil):
+        // The one genuinely bad answer: the model was loaded but nothing classified. On this path
+        // that means the frame was refused before inference — a geometry or buffer-size mistake.
+        print("warning: no score — the frame never reached the model")
+    case .allow(let score), .block(let score as Float?):
+        if let score, !(0...1).contains(score) {
+            print("warning: score outside 0...1 — the output contract has changed")
+        }
+    }
+}
+
 func runCapture() async throws {
     let capture = SCShareableContentCapture()
     try await capture.start()
@@ -530,6 +605,10 @@ do {
     case "capture":
         try await runCapture()
 
+    case "image-scan":
+        guard let modelPath = rest.first else { fail("expected <model.onnx> [size]") }
+        runImageScan(modelPath: modelPath, size: rest.count > 1 ? Int(rest[1]) ?? 512 : 512)
+
     case "ax-text":
         runAXText(
             delay: rest.first.flatMap(TimeInterval.init) ?? 3,
@@ -557,8 +636,26 @@ do {
             libraries.append(candidate)
         }
 
+        // The classifier model. `rest[3]` overrides where it is taken from; the default is the
+        // repository's gitignored artifact directory, so a developer who has exported one gets it
+        // in the bundle without a flag. Absent, the daemon runs its text path and reports the
+        // image path as disabled — see `RealImageClassifier.disabled()`.
+        let modelSource =
+            rest.count > 3
+            ? URL(fileURLWithPath: rest[3])
+            : URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+                .appendingPathComponent("../../data/models/\(AppBundle.classifierModelName)")
+                .standardizedFileURL
+        var resources: [URL] = []
+        if FileManager.default.fileExists(atPath: modelSource.path) {
+            resources.append(modelSource)
+        } else {
+            print("warning: no classifier model at \(modelSource.path) — image scanning disabled")
+        }
+
         try AppBundle.assemble(
-            at: root, identity: identity, executable: executable, libraries: libraries)
+            at: root, identity: identity, executable: executable, libraries: libraries,
+            resources: resources)
         // Ad-hoc by default so the bundle is runnable with no certificate — but ad-hoc is exactly
         // the identity that does not survive a rebuild, so say so rather than leave it implied.
         let signingIdentity = rest.count > 1 ? rest[1] : "-"

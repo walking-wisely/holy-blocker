@@ -14,6 +14,7 @@
 
 use crate::classifier::{ClassifyResult, ImageClassifier};
 use crate::preprocess::{PreprocessConfig, preprocess_tiles};
+use crate::raw::{PixelLayout, image_from_raw};
 
 /// What the proxy should do with an image response body.
 #[derive(Debug, Clone, PartialEq)]
@@ -50,6 +51,32 @@ pub const DEFAULT_EXPLICIT_THRESHOLD: f32 = 0.4650;
 /// because this runs inside the proxy's request path.
 pub fn reduce_tile_scores(scores: &[f32]) -> f32 {
     scores.iter().copied().fold(0.0f32, f32::max)
+}
+
+/// A verdict together with the score behind it.
+///
+/// The raw-frame path returns this rather than a bare [`ImageVerdict`] because
+/// its caller is a long-running daemon that logs one line per state change, and
+/// "allowed at 0.44 against a 0.4650 threshold" and "allowed at 0.01" are
+/// different facts about how well the operating point fits what is on screen.
+/// The network path has no such caller and keeps the plain verdict.
+// Not `Copy`: `ImageVerdict` is not, and making it so would be a change to the
+// network path's public type for this path's convenience.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScoredVerdict {
+    pub verdict: ImageVerdict,
+    /// `None` when no model ran at all — disabled sandbox, unreadable buffer,
+    /// below the size floor, inference fault. Distinct from `Some(0.0)`, which
+    /// is a real model output; reporting zero for "did not classify" would make
+    /// a broken image path look like a confidently clean screen.
+    pub score: Option<f32>,
+}
+
+impl ScoredVerdict {
+    /// The fail-open result: allow, with no score, because nothing was scored.
+    fn unscored_allow() -> Self {
+        Self { verdict: ImageVerdict::Allow, score: None }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -91,9 +118,9 @@ impl ImageSandbox {
 
     /// Decode `bytes`, classify, and decide.
     pub fn check(&self, bytes: &[u8]) -> ImageVerdict {
-        let Some(classifier) = &self.classifier else {
+        if self.classifier.is_none() {
             return ImageVerdict::Allow;
-        };
+        }
 
         let image = match image::load_from_memory(bytes) {
             Ok(image) => image,
@@ -105,11 +132,62 @@ impl ImageSandbox {
             }
         };
 
-        let tiles = match preprocess_tiles(&image, &self.config.preprocess) {
+        self.check_image(&image).verdict
+    }
+
+    /// Classify a raw framebuffer the caller already holds — the screen path.
+    ///
+    /// Same geometry, same threshold and the same fail-open contract as
+    /// [`Self::check`]; only the decode step differs, because a captured frame
+    /// was never encoded. `pixels` must be tightly packed with no row padding —
+    /// see [`image_from_raw`].
+    ///
+    /// **The threshold's provenance does not extend here.** 0.4650 was measured
+    /// on a corpus of *images* under tile-max. A screen frame is a different
+    /// distribution — a small content region inside application chrome, at a
+    /// display aspect ratio — and no measurement in this repository covers it.
+    /// Tile-max is the right geometry for that shape, which is why this path
+    /// reuses it rather than the centre crop, but the operating point for
+    /// screen content is an open question recorded in
+    /// `docs/decisions/classifier-operating-point.md`.
+    /// Returns the score alongside the verdict — see [`ScoredVerdict`].
+    pub fn check_raw(
+        &self,
+        pixels: &[u8],
+        width: u32,
+        height: u32,
+        layout: PixelLayout,
+    ) -> ScoredVerdict {
+        if self.classifier.is_none() {
+            return ScoredVerdict::unscored_allow();
+        }
+
+        let image = match image_from_raw(pixels, width, height, layout) {
+            Ok(image) => image,
+            Err(error) => {
+                // A zero-dimension frame is the ordinary pre-first-frame state,
+                // not a malfunction, so this stays at debug like a decode
+                // failure rather than warning on every tick before capture
+                // starts.
+                tracing::debug!("raw frame not classified, allowing: {error}");
+                return ScoredVerdict::unscored_allow();
+            }
+        };
+
+        self.check_image(&image)
+    }
+
+    /// The shared half: tile, score every tile, reduce, threshold.
+    fn check_image(&self, image: &image::DynamicImage) -> ScoredVerdict {
+        let Some(classifier) = &self.classifier else {
+            return ScoredVerdict::unscored_allow();
+        };
+
+        let tiles = match preprocess_tiles(image, &self.config.preprocess) {
             Ok(tiles) => tiles,
             Err(reason) => {
                 tracing::debug!("image not classified, allowing: {reason}");
-                return ImageVerdict::Allow;
+                return ScoredVerdict::unscored_allow();
             }
         };
 
@@ -127,17 +205,18 @@ impl ImageSandbox {
                     // a different image, and it would silently under-block
                     // exactly when something is already wrong.
                     tracing::warn!("image classification failed, allowing: {error}");
-                    return ImageVerdict::Allow;
+                    return ScoredVerdict::unscored_allow();
                 }
             }
         }
 
         let explicit_score = reduce_tile_scores(&scores);
-        if explicit_score >= self.config.explicit_threshold {
+        let verdict = if explicit_score >= self.config.explicit_threshold {
             ImageVerdict::Block { score: explicit_score }
         } else {
             ImageVerdict::Allow
-        }
+        };
+        ScoredVerdict { verdict, score: Some(explicit_score) }
     }
 }
 
@@ -158,6 +237,48 @@ mod tests {
         let sandbox = ImageSandbox::disabled();
 
         assert_eq!(sandbox.check(b"<html>not an image</html>"), ImageVerdict::Allow);
+    }
+
+    // --- the raw framebuffer path -----------------------------------------
+
+    #[test]
+    fn a_sandbox_without_a_model_allows_raw_frames_too() {
+        // The screen path must inherit the same disabled-is-allow behaviour as
+        // the network path, or a daemon built without a model would block
+        // everything on screen instead of nothing.
+        let sandbox = ImageSandbox::disabled();
+        let one_pixel = [0u8; 4];
+
+        let scored = sandbox.check_raw(&one_pixel, 1, 1, PixelLayout::Bgra);
+
+        assert_eq!(scored.verdict, ImageVerdict::Allow);
+        // No score, not 0.0: nothing was classified, and a zero would read as a
+        // confident "definitely clean" in the daemon's log line.
+        assert_eq!(scored.score, None);
+    }
+
+    #[test]
+    fn an_empty_raw_frame_is_allowed_rather_than_reaching_the_model() {
+        // `CapturedFrame.empty()` on the macOS side. This is the state on every
+        // tick before the first frame arrives, so it must be quiet and safe.
+        let sandbox = ImageSandbox::disabled();
+
+        assert_eq!(
+            sandbox.check_raw(&[], 0, 0, PixelLayout::Bgra),
+            ScoredVerdict { verdict: ImageVerdict::Allow, score: None }
+        );
+    }
+
+    #[test]
+    fn a_raw_frame_whose_buffer_is_too_short_is_allowed() {
+        // Geometry disagreeing with the buffer is a fault in us, not evidence
+        // about what is on screen — fail open like every other path here.
+        let sandbox = ImageSandbox::disabled();
+
+        assert_eq!(
+            sandbox.check_raw(&[0u8; 8], 640, 480, PixelLayout::Bgra),
+            ScoredVerdict { verdict: ImageVerdict::Allow, score: None }
+        );
     }
 
     #[test]
