@@ -177,8 +177,8 @@ a representative dataset is passed. Both probes above were fp32.
 #### Export contract (decided)
 
 Whatever backbone is chosen, `export_tflite.py` must export the **backbone only**,
-terminating at the embedding, with `forward` returning `(logits, embedding)`.
-Classification stays outside the graph — see the runtime findings recorded in
+terminating at the embedding. Classification stays outside the graph — see the runtime
+findings recorded in
 [../../decisions/learning-from-feedback.md](../../decisions/learning-from-feedback.md#on-device-runtime-and-where-the-head-lives-decided-2026-07-18),
 and [classifier-head/plan.md](../classifier-head/plan.md) for the crate that consumes the
 embedding.
@@ -187,6 +187,41 @@ later, and would break the on-device training design. The quantization recipe mu
 pinned and the embedding dtype/scale treated as a versioned interface: an int8
 backbone's scale and zero-point become part of the head's input contract, so a silent
 re-export would invalidate every fine-tuned head in the field.
+
+**Where "the embedding" is: after the Hardswish.** For `mobilenet_v3_small` the cut is
+`classifier[1]`, so the exported graph emits the **1024-d** penultimate activation and
+the head is the single remaining affine layer, `Linear(1024 → 2)` — 2,050 parameters,
+8.2 KB in f32. (For MobileNetV3-Large, which is **not adopted**, the same cut gives
+1280-d and `Linear(1280 → 2)`.) This is deliberately **not** `BackboneFeatures`, which
+stops at `avgpool` and emits `BACKBONE_FEATURE_DIM = 576`: cutting there would make the
+head the entire `classifier` block, 592,898 parameters and 2.37 MB. The trade-off, the
+rejected option and the consequences for cached 576-d feature artifacts are argued in
+[classifier-head/plan.md § Where the backbone ends and the head begins](../classifier-head/plan.md#where-the-backbone-ends-and-the-head-begins-decided).
+
+**Status: decided, not implemented.** `export_tflite.py` today converts
+`create_classifier(...)` — the whole model, head included — so the artifact it produces
+emits logits, not an embedding, and nothing writes a head-weights file. Two pieces of
+work are outstanding, and they belong together because the second is only valid against
+the first:
+
+1. **`holy_blocker_ml/embedding.py`** — a `PenultimateEmbedding` module (up to and
+   including `classifier[1]`), plus an `--embedding-only` path through
+   `export_tflite.py` producing `data/models/baseline-v0-embedding.tflite` and a sidecar
+   `.json` carrying `backbone_id`, `embedding_dim`, `arch`, `cut` and `sha256`. The
+   `backbone_id` must be **derived from the exported artifact's bytes**, so a silent
+   re-export cannot keep the old identity — that string is what the Rust head compares
+   against before it agrees to score. The existing whole-model export **stays**;
+   `packages/image-sandbox` consumes a logits-emitting ONNX graph and is unaffected.
+2. **`holy_blocker_ml/export_head.py`** with a `holy-blocker-export-head` console script,
+   writing `model.classifier[-1]`'s weight and bias into the versioned binary format
+   specified in
+   [classifier-head/plan.md § `weights`](../classifier-head/plan.md#2-weights--provisioning-and-persistence).
+   `nn.Linear.weight` is `[out_features, in_features]` and the format is row-major
+   `[classes, embedding_dim]`, so the export is `.numpy().astype("<f4").tobytes()` with
+   no transpose. Target artifact `data/models/baseline-v0.head`.
+
+Both artifacts should be produced by a single run computing the identity once; emitting
+them separately is how they get out of sync.
 
 Reference documents:
 

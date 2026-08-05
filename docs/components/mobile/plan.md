@@ -770,10 +770,17 @@ Three pieces, in dependency order:
    model artifact, and is therefore the piece that can be built and tested first. See
    [classifier-head/plan.md](../classifier-head/plan.md).
 2. **The backbone on LiteRT.** `machine-learning`'s `export_tflite.py` already produces a
-   verified 5.90 MB flatbuffer, and its export contract terminates at the embedding on purpose.
-   The Android side is the LiteRT interpreter over that file, emitting the embedding the head
-   consumes. Note the tensor layout question is open: `preprocess.rs` produces NCHW for ONNX,
-   and what `litert-torch` emits has to be read off the actual artifact rather than assumed.
+   verified 5.90 MB flatbuffer, and its export contract terminates at the embedding on purpose
+   — **after the Hardswish**, i.e. `classifier[1]`, so the graph emits the **1024-d**
+   penultimate activation and the head is the single remaining `Linear(1024 → 2)`. But that
+   contract is *decided and not yet implemented*: the export today converts the whole model
+   including its head and emits logits, so an embedding-only export is outstanding work on the
+   `machine-learning` side — see
+   [classifier-head/plan.md](../classifier-head/plan.md) module 6. The Android side is then the
+   LiteRT interpreter over that file, emitting the embedding the head consumes, sized from the
+   artifact's sidecar rather than a constant. Note the tensor layout question is open:
+   `preprocess.rs` produces NCHW for ONNX, and what `litert-torch` emits has to be read off the
+   actual artifact rather than assumed.
 3. **Model provisioning.** `data/models/` is gitignored and **no artifact exists on disk today**,
    so this needs the `BlocklistStore` treatment — read from `filesDir`, and with nothing there
    behave exactly as `ImageSandbox::disabled()` does: allow, and say so.
@@ -963,7 +970,9 @@ scaffolding and will fail at load time if they fall out of sync with the `.so`.
 
     a. `packages/classifier-head` + its FFI wrapper — pure arithmetic, no artifact needed, and
        the reason this sub-order starts here. See [classifier-head/plan.md](../classifier-head/plan.md).
-    b. The LiteRT interpreter on Android over a backbone `.tflite`, emitting the embedding.
+    b. The LiteRT interpreter on Android over a backbone `.tflite`, emitting the embedding —
+       which first needs `machine-learning` to ship an embedding-only export, since the current
+       one emits logits.
     c. Model provisioning from `filesDir`, and `FrameSink` wired to the two.
 
     **Blocked on an artifact for verification, not for building.** `data/models/` is gitignored
