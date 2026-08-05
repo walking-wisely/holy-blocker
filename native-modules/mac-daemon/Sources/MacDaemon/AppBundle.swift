@@ -72,7 +72,17 @@ public enum AppBundle {
     /// Kept here rather than in `scripts/bundle.sh` so the name the linker resolves and the name
     /// the bundler copies cannot drift apart: a mismatch produces a bundle that builds, signs and
     /// installs cleanly and then fails at launch with a dyld error.
-    public static let embeddedLibraryNames = ["libtext_policy_ffi.dylib"]
+    public static let embeddedLibraryNames = [
+        "libtext_policy_ffi.dylib", "libimage_sandbox_ffi.dylib",
+    ]
+
+    /// The classifier model, looked up under `Contents/Resources` at runtime.
+    ///
+    /// A single well-known name rather than a configurable path: the model is sealed by the
+    /// bundle's signature, and a path the daemon reads from somewhere else would be a file anyone
+    /// could swap for one that scores everything zero — the whole point of putting it inside a
+    /// signed bundle. See docs/components/mac-daemon/plan.md, module 18.
+    public static let classifierModelName = "baseline-v0.onnx"
 
     public static func layout(root: URL, identity: BundleIdentity) -> BundleLayout {
         let contents = root.appendingPathComponent("Contents")
@@ -107,11 +117,18 @@ public enum AppBundle {
     /// `libraries` are copied into `Contents/Frameworks`. It defaults to empty so the bundle verb
     /// still works before `scripts/build-ffi.sh` has ever run — the resulting bundle launches only
     /// as far as the first FFI call, which is a better failure than refusing to assemble.
+    ///
+    /// `resources` are copied into `Contents/Resources` — today, the ONNX classifier model. It
+    /// defaults to empty for the same reason: `data/models/` is gitignored, so a fresh checkout has
+    /// no artifact, and a daemon with no model must still assemble and run its text path. Resources
+    /// are *sealed* by the signature but are not code, so unlike `libraries` they need no separate
+    /// `codesign` pass — replacing one after signing invalidates the bundle, which is the point.
     public static func assemble(
         at root: URL,
         identity: BundleIdentity,
         executable: URL,
         libraries: [URL] = [],
+        resources: [URL] = [],
         fileManager: FileManager = .default
     ) throws {
         let layout = layout(root: root, identity: identity)
@@ -127,6 +144,11 @@ public enum AppBundle {
         for library in libraries {
             try fileManager.copyItem(
                 at: library, to: layout.embeddedLibrary(named: library.lastPathComponent))
+        }
+        for resource in resources {
+            try fileManager.copyItem(
+                at: resource, to: layout.resources.appendingPathComponent(resource.lastPathComponent)
+            )
         }
         try infoPlist(for: identity).write(to: layout.infoPlist)
     }

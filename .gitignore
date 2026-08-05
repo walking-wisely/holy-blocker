@@ -42,6 +42,9 @@ native-modules/mac-daemon/.ffi/
 native-modules/mac-daemon/Sources/TextPolicyFFI/generated/
 native-modules/mac-daemon/Sources/text_policy_ffiFFI/module.modulemap
 native-modules/mac-daemon/Sources/text_policy_ffiFFI/text_policy_ffiFFI.h
+native-modules/mac-daemon/Sources/ImageSandboxFFI/generated/
+native-modules/mac-daemon/Sources/image_sandbox_ffiFFI/module.modulemap
+native-modules/mac-daemon/Sources/image_sandbox_ffiFFI/image_sandbox_ffiFFI.h
 
 # Agent worktrees — each is its own checkout, never part of this tree
 .claude/worktrees/

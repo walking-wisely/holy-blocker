@@ -1,0 +1,35 @@
+[package]
+name = "image-sandbox-ffi"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "image_sandbox_ffi"
+crate-type = ["cdylib", "lib"]
+path = "src/lib.rs"
+
+[features]
+# Same reasoning as text-policy-ffi and net-shield-ffi: the bindgen CLI is a
+# build-time tool that drags in cargo_metadata, whose transitive cargo-platform
+# needs a newer rustc than the toolchain CI pins. Off by default so `cargo test`
+# builds the library on the CI toolchain, while scripts/build-ffi.sh opts in.
+bindgen = ["uniffi/cli"]
+
+# ONNX inference, forwarded to image-sandbox. Off by default for the same reason
+# it is off there: `ort` fetches a prebuilt runtime at *build* time, and the
+# crate must still build and test on a machine that cannot.
+#
+# Unlike image-sandbox, a build without this is nearly useless here — this crate
+# exists to give the macOS daemon a working classifier — so `ImageGuard::with_model`
+# is fallible and reports `Unavailable` loudly rather than silently allowing
+# everything.
+onnx = ["image-sandbox/onnx"]
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
+required-features = ["bindgen"]
+
+[dependencies]
+image-sandbox = { path = "../image-sandbox" }
+uniffi = { version = "0.32.0", default-features = false }

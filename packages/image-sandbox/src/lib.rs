@@ -32,12 +32,15 @@
 
 pub mod classifier;
 pub mod preprocess;
+pub mod raw;
 pub mod sandbox;
 
 pub use classifier::{ClassifierError, ClassifyResult, ImageClassifier, explicit_score};
 pub use preprocess::{
     PreprocessConfig, PreprocessError, preprocess, preprocess_tiles, tile_starts,
 };
+pub use raw::{PixelLayout, RawFrameError, image_from_raw};
 pub use sandbox::{
-    DEFAULT_EXPLICIT_THRESHOLD, ImageSandbox, ImageVerdict, SandboxConfig, reduce_tile_scores,
+    DEFAULT_EXPLICIT_THRESHOLD, ImageSandbox, ImageVerdict, SandboxConfig, ScoredVerdict,
+    reduce_tile_scores,
 };

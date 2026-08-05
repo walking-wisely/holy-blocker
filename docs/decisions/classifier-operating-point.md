@@ -123,3 +123,34 @@ FN-averse product.
   [experiments/input-handling.md](../components/machine-learning/experiments/input-handling.md),
   and it is not a threshold: no operating point applies, because the model is
   never consulted. Content served under that size is unfiltered.
+
+## The screen path operates outside this measurement
+
+**Added when `image-sandbox` was wired into the macOS daemon (module 18).** The
+threshold above was derived on a corpus of *images*. The daemon hands the same
+classifier, under the same tile-max geometry, a **screen frame** — and no
+measurement in this repository covers that distribution.
+
+The two differ in ways that plausibly move the operating point in opposite
+directions:
+
+- A screen frame is mostly application chrome. Tile-max was adopted precisely so
+  a small explicit region in a large safe frame still blocks, so the geometry is
+  right for this shape — but "small region, large safe background" is the
+  *typical* case on a screen rather than the tail case it was measured as.
+- Screen content is rendered rather than photographed: browser UI, text, flat
+  colour fields. Nothing in the training corpus looks like a toolbar, and the
+  measured 11% over-block rate is already concentrated in drawn imagery.
+
+Neither effect is estimated, because estimating them needs a corpus of screen
+frames and this project deliberately does not collect one. The daemon therefore
+ships **the image threshold as measured**, and reports the score on every
+verdict — including allows — so the margin under the cut is observable in the
+log line rather than invisible. `ImageOutcome.Allow` carries an *optional* score
+for the same reason: a frame that never reached the model is distinguishable
+from one the model scored at zero.
+
+**What would close this:** an operating point re-derived against screen frames,
+which needs a labelled corpus of them. Until then the number is a transfer from
+a neighbouring distribution, and it is recorded as such rather than presented as
+measured for this path.

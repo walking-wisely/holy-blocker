@@ -104,11 +104,23 @@ Two directions, and they are not alternatives:
   slot in `ScanLoop` reserved for it. **There is no OCR module in this plan at all** — the Layer 2
   module list goes capture → scanner → overlay with nothing between, even though `ScanLoop` splits
   an image cadence from an "OCR" one and the Windows daemon plan has the module. That is the real
-  long-term answer for unfocused content and it is currently unplanned work.
+  long-term answer for unfocused *text* and it is currently unplanned work.
 
-**What closes it:** the AX half is a bounded change and worth doing first, since it needs no new
-module and no model. Closing it *fully* needs the OCR module to exist, which should be specified
-before the image classifier is bound to a frame.
+**Narrowed by module 18, on the half that had nothing at all.** The image classifier
+(`ImageScanner`) reads the captured frame rather than the AX tree, so it is focus-independent by
+construction: a video beside a chat, a second window, anything on a captured display now produces a
+verdict without being frontmost. What it does *not* cover is **text** in an unfocused window, which
+the AX walk still only reads for the frontmost one and which no OCR module exists to catch. So the
+gap has gone from "unfocused content is invisible" to "unfocused *text* is invisible" — smaller, and
+differently shaped.
+
+Two limits on that narrowing, both real: the classifier only sees displays the daemon is capturing,
+and its operating point was measured on images rather than screen frames (see
+[classifier-operating-point.md](../../decisions/classifier-operating-point.md)).
+
+**What closes it:** the AX half is still a bounded change worth doing — it needs no new module and no
+model. Closing it *fully* needs the OCR module, which is now the only unbuilt piece of the
+focus-independence story rather than one of two.
 
 ### 4. Can a *standard* user reset a Screen Recording grant?
 
