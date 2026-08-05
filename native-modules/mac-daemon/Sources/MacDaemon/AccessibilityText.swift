@@ -93,6 +93,14 @@ public protocol AXElementProbing: Sendable {
     /// The readable strings on one node — value, title, description — in that order, with
     /// non-string attribute values already discarded.
     func text(of node: AXNodeID) -> [String]
+    /// Bundle identifier of the application the most recent `focusedRoot()` targeted, or `nil` if
+    /// there was none.
+    ///
+    /// Exists so a block verdict can be attributed to the application that produced it. Reading
+    /// `NSWorkspace.frontmostApplication` again at response time would be a race: the scan cadence
+    /// is ~1s, the user can switch applications inside it, and the cost of losing that race is
+    /// hiding an innocent window.
+    var lastWalkedApplication: String? { get }
 }
 
 /// Test double for `AXElementProbing`, in the library so integration harnesses can use it too.
@@ -114,9 +122,16 @@ public final class FakeAXElementProbe: AXElementProbing, @unchecked Sendable {
     private var _rootRequests = 0
     private var _silenceAfter: Int?
 
-    public init(root: AXNodeID?, nodes: [AXNodeID: Node] = [:]) {
+    /// What `lastWalkedApplication` reports. Settable at construction so a test can drive the
+    /// suppression path without a real workspace.
+    public let lastWalkedApplication: String?
+
+    public init(
+        root: AXNodeID?, nodes: [AXNodeID: Node] = [:], lastWalkedApplication: String? = nil
+    ) {
         self.root = root
         self.nodes = nodes
+        self.lastWalkedApplication = lastWalkedApplication
     }
 
     /// Nodes the walk asked about, in order.
@@ -308,6 +323,13 @@ public final class SystemAXProbe: AXElementProbing, @unchecked Sendable {
     private var identifiers: [ElementKey: AXNodeID] = [:]
     private var nextIdentifier = 1
     private var deadline: Date?
+    private var _lastWalkedApplication: String?
+
+    public var lastWalkedApplication: String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return _lastWalkedApplication
+    }
 
     /// The clock, injectable so the budget can be reasoned about; defaults to the real one.
     private let now: @Sendable () -> Date
@@ -337,7 +359,15 @@ public final class SystemAXProbe: AXElementProbing, @unchecked Sendable {
         deadline = now().addingTimeInterval(Self.walkBudget)
         lock.unlock()
 
-        guard let application = NSWorkspace.shared.frontmostApplication else { return nil }
+        guard let application = NSWorkspace.shared.frontmostApplication else {
+            lock.lock()
+            _lastWalkedApplication = nil
+            lock.unlock()
+            return nil
+        }
+        lock.lock()
+        _lastWalkedApplication = application.bundleIdentifier
+        lock.unlock()
         let applicationElement = AXUIElementCreateApplication(application.processIdentifier)
 
         // Applies to every subsequent message to this application, so it is set once here rather

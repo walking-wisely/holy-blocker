@@ -88,6 +88,28 @@ struct AccessibilityScannerScoreTests {
 
 @Suite("AccessibilityScanner — scanning")
 struct AccessibilityScannerScanTests {
+    /// A block is acted on, not only drawn over (`WindowSuppression`), so the verdict has to carry
+    /// which application produced it. The rate-limit gate is the case that matters: a cached block
+    /// repeated on a gated tick must keep pointing at the application that earned it, or the
+    /// response lands on whatever the user switched to in the meantime.
+    @Test("reports the walked application, and keeps it through a gated tick")
+    func reportsWalkedApplication() {
+        let probe = FakeAXElementProbe(
+            root: AXNodeID(1),
+            nodes: [AXNodeID(1): .init(text: ["some on-screen text"], children: [])],
+            lastWalkedApplication: "com.apple.TextEdit")
+        let scanner = AccessibilityScanner(
+            probe: probe, policy: FakePolicyEngine(verdict: Verdict(action: .block, score: 90)),
+            now: { epoch })
+
+        _ = scanner.scan(anyFrame)
+        #expect(scanner.lastVerdictApplication == "com.apple.TextEdit")
+
+        // Inside the rate-limit window: the verdict is repeated, and so is its attribution.
+        _ = scanner.scan(anyFrame)
+        #expect(scanner.lastVerdictApplication == "com.apple.TextEdit")
+    }
+
     @Test("scores the walked text through the policy engine")
     func scoresWalkedText() {
         let policy = FakePolicyEngine(verdict: Verdict(action: .block, score: 90))

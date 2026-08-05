@@ -190,7 +190,9 @@ final class AgentRenderLoop {
     private let gate: PermissionGate
     private let capture: SCShareableContentCapture
     private let scanLoop: ScanLoop
+    private let scanner: AccessibilityScanner
     private let overlay: OverlayController
+    private let suppressor = WindowSuppressor()
 
     /// Diagnostic state — see `reportStateIfChanged`.
     private let diagnosticProbe = SystemAXProbe()
@@ -202,9 +204,9 @@ final class AgentRenderLoop {
     init(gate: PermissionGate, capture: SCShareableContentCapture) {
         self.gate = gate
         self.capture = capture
-        self.scanLoop = ScanLoop(
-            capture: capture,
-            scanner: AccessibilityScanner(probe: SystemAXProbe(), policy: RealPolicyEngine()))
+        let scanner = AccessibilityScanner(probe: SystemAXProbe(), policy: RealPolicyEngine())
+        self.scanner = scanner
+        self.scanLoop = ScanLoop(capture: capture, scanner: scanner)
         self.overlay = OverlayController()
     }
 
@@ -220,6 +222,17 @@ final class AgentRenderLoop {
         scanLoop.tick(now: Date())
         let intent = overlayIntent(forVerdict: scanLoop.lastVerdict)
         overlay.apply(intent: intent)
+
+        // The overlay is drawn first and the application hidden second, deliberately: the cover is
+        // instant and the hide is a round trip to another process. Covering alone is not enough —
+        // unfocusing every window drops the cover while the content stays put, and Mission Control
+        // composites live previews above it. See `WindowSuppression`.
+        if let verdict = scanLoop.lastVerdict {
+            let command = suppressor.apply(
+                action: verdict.action, target: scanner.lastVerdictApplication)
+            if case .hide(let bundleIdentifier) = command { print("hiding: \(bundleIdentifier)") }
+        }
+
         reportStateIfChanged(intent: intent)
     }
 
