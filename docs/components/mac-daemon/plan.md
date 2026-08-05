@@ -1791,15 +1791,63 @@ merged; 6 is human-only, no code):
    persisted with `gate`/`capture` as plain parameters. What actually resolved it was giving the
    timers one `@MainActor` class, `AgentRenderLoop`, to capture instead of two plain ones — the
    same reason `OverlayController` itself is `@MainActor` and not a plain class. 313 tests.
-6. **Live verification** (needs 5 merged, human-in-the-loop, no code): rebuild bindings and bundle,
+6. ~~**Live verification** (needs 5 merged, human-in-the-loop, no code): rebuild bindings and bundle,
    reload the LaunchAgent, grant Accessibility + Screen Recording for real via System Settings
    against `HolyBlockerDaemon.app` specifically (never a shell binary — the responsible-process
    rule), confirm `holy-blocker-macd permissions` reports both granted, bring text the shipped
    starter dictionary scores `Block` on (e.g. "explicit act", already used in
    `text-policy-ffi`'s own test fixtures) frontmost and confirm an interstitial appears and
    swallows a click within ~1–2s, confirm it tears down over clean text, check native-fullscreen
-   Space interaction, and multi-display connect/disconnect if a second display is available. Strike
-   the completed order items above and update this file's status once done.
+   Space interaction, and multi-display connect/disconnect if a second display is available.~~
+   **Done for the core claim, and it was not "no code" — see below.** The pipeline ran end to end
+   on macOS 26.5: real `SCStream` frame → real AX walk of the frontmost window → `text-policy` over
+   UniFFI scoring `Block` at 0.80 → a real `NSWindow` on screen, and it tears down when the text
+   goes away. The remaining checks (native-fullscreen Space, multi-display) are still outstanding,
+   as is the biggest thing this pass found — see [backlog.md](backlog.md).
+
+#### What the first live pass actually found
+
+The session was specified as human-in-the-loop with no code. That was wrong in both directions: two
+of the three blockers were code defects, and neither was reachable by any test in this repo.
+
+1. **The capture stream delivered YUV, not BGRA, and every frame was dropped.**
+   `SCStreamConfiguration.pixelFormat` was never set, and the default on macOS 26.5 is biplanar
+   `420v` — 2 planes, and `CVPixelBufferGetBytesPerRow` returns the *Y plane's* stride (1536 for a
+   1512-wide frame) against the 6048 a BGRA row needs. `PixelBufferCopy.depad` refused all 608 of
+   them, which is exactly right, and `ScanLoop` then bailed at its `!frame.isEmpty` gate forever.
+   **The symptom is indistinguishable from a missing Screen Recording grant** — a permanently empty
+   frame — which is why this cost the session rather than a minute. Fixed by asking for
+   `kCVPixelFormatType_32BGRA` explicitly; pinned by `planarStrideIsRejected` in
+   `ScreenCaptureTests`. Never trust a default pixel format.
+2. **Module 8's point-vs-pixel fix did not work, because `SCDisplay.width` is itself in points.**
+   The comment claimed pixel dimensions; the stream ran at 1512×982 on a 3024×1964 display, i.e.
+   quarter resolution — the trap the plan recorded, avoided in prose and not in fact. Fixed with
+   `CGDisplayCopyDisplayMode(display.displayID).pixelWidth/.pixelHeight`. Note the live frame's
+   stride is 12160 against a tight 12096, so the row padding module 8 warned about is real and
+   `depad` is load-bearing on every frame.
+3. **A TCC grant added by hand through the Settings pane's `+` button does not necessarily match
+   the running process.** Accessibility read as ON in System Settings while the daemon's own
+   `AXIsProcessTrusted()` returned false, indefinitely. Replacing the bundle on disk (which this
+   session did five times) leaves the row in place but stales the recorded signature. Toggling it
+   off and on does **not** repair it; `tccutil reset Accessibility com.holyblocker.daemon` followed
+   by the process requesting access itself does. **Onboarding must therefore call
+   `requestAccess(to:)` from the daemon and never instruct a user to add the app by hand** — Screen
+   Recording never had this problem precisely because it was registered by the process that asked
+   for it. `runAgent` now requests Accessibility once per launch when it is not held.
+4. **The render loop was unobservable, and that is a defect of its own.** With the overlay as its
+   only output, a failure anywhere in capture → AX → policy → window looks identical from outside.
+   `AgentRenderLoop` now prints one line per *state change* (plus a 10s heartbeat) carrying frame
+   geometry, delivery tallies with per-cause drop counts, the live Accessibility state, AX text
+   **length only — never its content**, verdict, intent and whether the overlay is up. Every finding
+   above came from that line; none was diagnosable without it.
+5. **`tccutil reset` resolved and ran unprivileged** against `com.holyblocker.daemon` once the app
+   was in `/Applications`. The earlier `OSStatus -10814` was only a missing bundle to resolve, not a
+   privilege check — see [backlog.md](backlog.md) item 2, whose *standard-user* half is still open.
+
+What did **not** need fixing: `AccessibilityText`, `AccessibilityScanner`, `ScanLoop`,
+`OverlayPlan`/`OverlayController`, the UniFFI seam, and the signing identity all behaved exactly as
+specified on their first live run. Grants survived four bundle replacements, which is the whole
+point of the stable certificate.
 
 ### Outstanding verification — one item blocks a tamper-resistance claim
 
