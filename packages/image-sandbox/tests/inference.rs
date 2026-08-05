@@ -13,7 +13,7 @@
 
 #![cfg(feature = "onnx")]
 
-use image_sandbox::{ImageClassifier, ImageSandbox, ImageVerdict, SandboxConfig};
+use image_sandbox::{ImageClassifier, ImageSandbox, ImageVerdict, PixelLayout, SandboxConfig};
 use std::path::{Path, PathBuf};
 
 fn model_path() -> PathBuf {
@@ -97,4 +97,75 @@ fn a_threshold_of_zero_blocks_and_of_one_allows() {
 
     assert!(matches!(block_all.check(bytes), ImageVerdict::Block { .. }));
     assert_eq!(allow_all.check(bytes), ImageVerdict::Allow);
+}
+
+// --- the raw framebuffer path ---------------------------------------------
+
+/// Decodes a fixture and re-emits it as the tightly packed BGRA buffer the
+/// macOS daemon's `CapturedFrame` carries, so the two entry points can be
+/// compared on identical pixels.
+fn as_bgra(bytes: &[u8]) -> (Vec<u8>, u32, u32) {
+    let image = image::load_from_memory(bytes).expect("fixture decodes").to_rgb8();
+    let (width, height) = image.dimensions();
+    let mut pixels = Vec::with_capacity((width * height) as usize * 4);
+    for pixel in image.pixels() {
+        pixels.extend_from_slice(&[pixel.0[2], pixel.0[1], pixel.0[0], 0xFF]);
+    }
+    (pixels, width, height)
+}
+
+#[test]
+fn a_raw_frame_scores_identically_to_the_same_image_encoded() {
+    // The claim the whole screen path rests on: `check_raw` is `check` with a
+    // different decoder in front, not a second geometry. If these ever diverge,
+    // every threshold measured through `check` stops describing what the daemon
+    // actually does — and the divergence would be a channel swap or a row-order
+    // mistake, both of which still produce a plausible-looking score.
+    let Some(sandbox) = sandbox_or_skip() else { return };
+    let bytes = include_bytes!("fixtures/gradient.png");
+    let (pixels, width, height) = as_bgra(bytes);
+
+    assert_eq!(
+        sandbox.check_raw(&pixels, width, height, PixelLayout::Bgra).verdict,
+        sandbox.check(bytes)
+    );
+}
+
+#[test]
+fn a_wide_raw_frame_takes_the_same_tiled_path() {
+    // The wide fixture is what exercises multi-tile geometry, which is the case
+    // a screen frame is always in.
+    let Some(sandbox) = sandbox_or_skip() else { return };
+    let bytes = include_bytes!("fixtures/wide.png");
+    let (pixels, width, height) = as_bgra(bytes);
+
+    assert_eq!(
+        sandbox.check_raw(&pixels, width, height, PixelLayout::Bgra).verdict,
+        sandbox.check(bytes)
+    );
+}
+
+#[test]
+fn reading_a_bgra_frame_as_rgba_changes_the_score() {
+    // Proves the channel order is load-bearing rather than cosmetic: if this
+    // ever stops holding, the equivalence test above would pass with a broken
+    // layout parameter.
+    let path = model_path();
+    if !path.is_file() {
+        eprintln!("skipping: no model at {}", path.display());
+        return;
+    }
+    let bytes = include_bytes!("fixtures/gradient.png");
+    let (pixels, width, height) = as_bgra(bytes);
+    // Threshold 0.0 blocks everything, so both verdicts carry their score and
+    // can be compared numerically rather than only as allow/block.
+    let sandbox = ImageSandbox::new(
+        ImageClassifier::load(&path, 224).unwrap(),
+        SandboxConfig { explicit_threshold: 0.0, ..SandboxConfig::default() },
+    );
+
+    let correct = sandbox.check_raw(&pixels, width, height, PixelLayout::Bgra);
+    let swapped = sandbox.check_raw(&pixels, width, height, PixelLayout::Rgba);
+
+    assert_ne!(correct.score, swapped.score);
 }
