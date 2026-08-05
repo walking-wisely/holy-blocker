@@ -1844,6 +1844,47 @@ of the three blockers were code defects, and neither was reachable by any test i
    was in `/Applications`. The earlier `OSStatus -10814` was only a missing bundle to resolve, not a
    privilege check — see [backlog.md](backlog.md) item 2, whose *standard-user* half is still open.
 
+#### The response is no longer only an overlay — module 17, `WindowSuppression`
+
+The live pass killed the assumption underneath module 10. **Covering the screen is not covering
+content**: the overlay is a picture drawn on top of windows the window server is still compositing,
+and anything that re-arranges them goes around it. Two routes were found within a minute of the
+first successful block, both by the user rather than by design review:
+
+- **Click the desktop.** Every window unfocuses at once, the frontmost-window scan finds nothing,
+  the verdict flips to `allow`, and the cover tears down over content that never moved.
+- **Four-finger swipe up.** Mission Control is composited by the Dock above `.screenSaver` — the
+  highest level `OverlayPlan` has — and its previews are live. Filed as backlog item 2.
+
+So a block now draws the interstitial **and** removes the offending application from the screen.
+`WindowSuppression.swift` is the pure decision (`SuppressionDecision.command`) plus an
+`ApplicationHiding` edge over `NSRunningApplication.hide()`, which needs **no TCC grant** — it is
+application-level window management, not accessibility control of another process. Verified live:
+blocking text in TextEdit produces `hiding: com.apple.TextEdit` and the application goes to
+`visible: false`.
+
+Four decisions worth keeping:
+
+- **Hide, never close.** Closing a window discards unsaved work, and a blocker that loses a
+  half-written document gets uninstalled. Hiding removes it from the screen *and* from Mission
+  Control's previews, and is one Dock click from recovery.
+- **Block only.** A warn is an interstitial the user is meant to be able to think past; taking their
+  window away is not a weaker response than asking them a question.
+- **A protected set that must never be hidden** — ourselves (hiding this process takes the overlay
+  with it), Finder (takes the desktop), Dock/SystemUIServer/loginwindow. They are the shell, not
+  content.
+- **The verdict has to carry its target.** `AXElementProbing` gained `lastWalkedApplication` and
+  `AccessibilityScanner` a `lastVerdictApplication`, retained across rate-limited ticks. Re-reading
+  `NSWorkspace.frontmostApplication` at response time is a race the scan cadence loses, and the cost
+  of losing it is hiding an innocent window.
+- **A refused hide must not stamp the cooldown**, or one refusal buys the application five quiet
+  seconds on screen — the exact window the response exists to close.
+
+This does **not** close the coverage gap, and the plan should not pretend it does: it acts on
+content the daemon has *seen*. Content that is never scanned — a second window beside the focused
+one, another display — produces no verdict at all and is neither covered nor hidden. That is backlog
+item 3, and it is still the largest gap on this platform.
+
 What did **not** need fixing: `AccessibilityText`, `AccessibilityScanner`, `ScanLoop`,
 `OverlayPlan`/`OverlayController`, the UniFFI seam, and the signing identity all behaved exactly as
 specified on their first live run. Grants survived four bundle replacements, which is the whole

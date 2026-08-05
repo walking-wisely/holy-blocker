@@ -40,12 +40,50 @@ One thing stood between here and the grant half, and it is closed:
 of watching outcomes rather than routes is that one poll catches both, and that claim is still
 untested.
 
-### 2. Only the focused window is ever scanned, so on-screen content escapes by losing focus
+### 2. Mission Control composites live window previews above the overlay
+
+**Found in the first live e2e pass; filed rather than fixed, by decision.** A four-finger swipe up
+puts Mission Control in front, and it is composited by the Dock above ordinary window levels —
+including `.screenSaver`, which is the highest level `OverlayPlan` has. Its previews are live, so
+the content is legible in the thumbnails with the interstitial pushed underneath. App Exposé, the
+Command-Tab switcher's window previews, and Stage Manager's strip are the same family.
+
+Nothing in the daemon knows the gesture exists: `EventHooks` (module 11) is not built, so there is
+no monitor to notice it either.
+
+Partly mitigated as of the live pass: a block now hides the offending application
+(`WindowSuppression`), and a hidden application has no windows for Mission Control to preview. That
+covers content the daemon has *seen* — it does nothing for content it never scanned, which is
+backlog item 3 below.
+
+Two directions when this is picked up, both explicitly not chosen yet:
+
+- **Detect and report**, treating an activation while blocking content is on screen as a tamper
+  event, consistent with the "watch outcomes, not routes" rule the permission gate already follows.
+  Needs a measurement first: whether `NSWorkspace.activeSpaceDidChangeNotification` or a
+  `CGWindowList` level scan actually fires for Mission Control, neither of which is documented for
+  this purpose.
+- **Disable the gesture**, via the `mcx-expose-disabled` managed preference in `com.apple.dock`.
+  Prevention rather than detection, but it is a system-wide change to someone's machine and would
+  need the same snapshot/restore discipline as `ProxyConfiguration`.
+
+**What closes it:** re-measure what Mission Control still exposes *after* per-window scanning and
+suppression are in place, then decide. It may turn out there is nothing left to reveal.
+
+### 3. Only the focused window is ever scanned, so on-screen content escapes by losing focus
 
 **Found in the first live e2e pass, and it is the largest coverage gap on this platform.**
 Confirmed on macOS 26.5: with blocking text in a TextEdit window the interstitial goes up; click
-another application and the verdict flips to `allow` and **the overlay tears down while the text is
-still fully visible on screen**. That is worse than a miss — it reads to the user as "cleared".
+another application — or just click the desktop, which unfocuses everything at once — and the
+verdict flips to `allow` and **the overlay tears down while the text is still fully visible on
+screen**. That is worse than a miss — it reads to the user as "cleared".
+
+**Partly mitigated, and the remaining half is the dangerous one.** A block now hides the offending
+application rather than only covering it (`WindowSuppression`), so content that has been *seen*
+cannot be revealed by unfocusing, by clicking the desktop, or through Mission Control — there is no
+window left. What is untouched is content that is never scanned in the first place: a second window
+beside the focused one, a video playing next to a chat, anything on a second display. That content
+never produces a verdict at all, so nothing is ever covered *or* hidden.
 
 The cause is structural rather than a bug. `SystemAXProbe.focusedRoot()` reads
 `NSWorkspace.frontmostApplication` and then that application's `kAXFocusedWindowAttribute`; nothing
@@ -72,7 +110,7 @@ Two directions, and they are not alternatives:
 module and no model. Closing it *fully* needs the OCR module to exist, which should be specified
 before the image classifier is bound to a frame.
 
-### 3. Can a *standard* user reset a Screen Recording grant?
+### 4. Can a *standard* user reset a Screen Recording grant?
 
 **This blocks any tamper-resistance claim, and it is minutes of work on the right machine.**
 
@@ -86,7 +124,7 @@ TCC store rather than the per-user one, so it plausibly fails for a standard use
 standard user *can* run it, the standard-user configuration is worth much less than the model
 assumes and the plan needs revisiting rather than patching.
 
-### 4. Safari's page body has not been confirmed through `AccessibilityText`
+### 5. Safari's page body has not been confirmed through `AccessibilityText`
 
 Module 12 is verified against Chrome 151 — the full page content of a local test page came back,
 including image `alt` text. Safari's *window* reads fine too (45 nodes of real content), but its
@@ -101,7 +139,7 @@ Safari needs no opt-in of any kind.
 `holy-blocker-macd ax-text 5` from a shell. Confirm the page's body text appears, not just the
 title and toolbar. Minutes of work, and it needs a human only because focus does.
 
-### 5. A lexicon phrase can match across two unrelated AX elements
+### 6. A lexicon phrase can match across two unrelated AX elements
 
 `AccessibilityText` joins elements with a newline, and that separator is not a boundary — no
 character could be. `packages/text-policy`'s `collapse_whitespace` rewrites a newline to a space and
@@ -120,7 +158,7 @@ applications actually split their text, and nothing in this repo measures that.
 ways, showing which direction costs more. Until then the per-element split is a guess with a
 plausible story, which is exactly what the joined blob already is.
 
-### 6. `ProxyConfiguration.restore()` is not atomic per service
+### 7. `ProxyConfiguration.restore()` is not atomic per service
 
 Carried over from Layer 1. Each service is restored with two `networksetup` calls, so an
 interruption between them can leave a proxy enabled with an empty server — a state that breaks
