@@ -158,6 +158,16 @@ func runAgent() async throws {
     _ = initial
     if let snapshot = gate.lastSnapshot {
         print("watching: \(PermissionGate.assess(snapshot).level.rawValue)")
+
+        // Ask for Accessibility from *this* process rather than leaving it to be added by hand.
+        // Adding an app through the Settings pane's + button resolves an entry the daemon's own
+        // `AXIsProcessTrusted` may not match; the prompting API registers the running process's
+        // real identity, which is how Screen Recording came to be granted correctly. Once per
+        // launch, and only when it is not already held — the prompt is a no-op when it is.
+        if snapshot.accessibility != .granted {
+            print("requesting accessibility — approve the prompt, then this agent restarts itself")
+            SystemPermissionProbe().requestAccess(to: .accessibility)
+        }
     }
 
     let capture = SCShareableContentCapture()
@@ -182,6 +192,13 @@ final class AgentRenderLoop {
     private let scanLoop: ScanLoop
     private let overlay: OverlayController
 
+    /// Diagnostic state — see `reportStateIfChanged`.
+    private let diagnosticProbe = SystemAXProbe()
+    private var lastReportedState: String?
+    private var lastReportedAt: Date?
+    private var lastTextProbeAt: Date?
+    private var lastTextLength = 0
+
     init(gate: PermissionGate, capture: SCShareableContentCapture) {
         self.gate = gate
         self.capture = capture
@@ -201,7 +218,66 @@ final class AgentRenderLoop {
     /// Ticks the scan loop, then drives the overlay off whatever it decided.
     func scanTick() {
         scanLoop.tick(now: Date())
-        overlay.apply(intent: overlayIntent(forVerdict: scanLoop.lastVerdict))
+        let intent = overlayIntent(forVerdict: scanLoop.lastVerdict)
+        overlay.apply(intent: intent)
+        reportStateIfChanged(intent: intent)
+    }
+
+    /// Session 6 diagnostic. The render loop is otherwise completely silent — the overlay is its
+    /// only observable — so a live pass that sees nothing on screen cannot tell which of four
+    /// stages failed. This prints one line whenever the pipeline's state *changes*, which is
+    /// quiet when nothing is happening and self-explanatory when something is.
+    ///
+    /// Deliberately reports the frame's dimensions rather than a bare "have one": the
+    /// `!frame.isEmpty` gate in `ScanLoop.tick` is the known coupling this pass is most likely to
+    /// trip on, and "empty" is the difference between a starved `SCStream` and a scanner that ran
+    /// and allowed. Text is reported as a **character count only** — never its content, which is
+    /// the screen of the person being protected, not debugging material.
+    private func reportStateIfChanged(intent: OverlayIntent) {
+        let frame = capture.currentFrame()
+        let verdict = scanLoop.lastVerdict
+        let tally = capture.diagnostics
+        // The delivery tally is excluded from the change key on purpose — it moves every tick, and
+        // keying on it would turn this into a 4-line-per-second log. The heartbeat below is what
+        // makes it observable.
+        let key = [
+            "frame: " + (frame.isEmpty ? "empty" : "\(frame.width)x\(frame.height)"),
+            "ax grant: \(gate.lastSnapshot.map { "\($0.accessibility)" } ?? "unpolled")",
+            "text: \(diagnosticTextLength()) chars",
+            "verdict: "
+                + (verdict.map { "\($0.action) (score \(String(format: "%.2f", $0.score)))" }
+                    ?? "none"),
+            "intent: \(intent)",
+            "overlay: " + (overlay.isShowing ? "up" : "down"),
+        ].joined(separator: "  ")
+
+        let instant = Date()
+        let heartbeatDue = lastReportedAt.map { instant.timeIntervalSince($0) >= 10 } ?? true
+        guard key != lastReportedState || heartbeatDue else { return }
+        lastReportedState = key
+        lastReportedAt = instant
+        print(
+            key
+                + "  deliveries: \(tally.deliveries) (\(tally.complete) complete, \(tally.retained) retained)"
+                + "  dropped: \(tally.noImageBuffer) no-buffer / \(tally.noBaseAddress) no-base / \(tally.emptyAfterDepad) depad"
+                + "  geometry: \(tally.lastGeometry)"
+        )
+    }
+
+    /// An independent AX read for the diagnostic above, rate-limited to once a second so it costs
+    /// about what the scanner's own walk does. This is the one signal that cannot be inferred from
+    /// the others: a zero here with a granted Accessibility toggle means the grant is not live for
+    /// *this* process, which is a different problem from a policy that scored the text `allow`.
+    private func diagnosticTextLength() -> Int {
+        let instant = Date()
+        if let last = lastTextProbeAt, instant.timeIntervalSince(last) < 1.0 {
+            return lastTextLength
+        }
+        lastTextProbeAt = instant
+        lastTextLength = AccessibilityText.extractFocusedText(
+            probe: diagnosticProbe, limits: .standard
+        ).count
+        return lastTextLength
     }
 
     /// Unchanged cadence and behavior from before this session's render loop existed.
