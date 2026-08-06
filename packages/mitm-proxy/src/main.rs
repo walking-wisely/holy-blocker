@@ -43,7 +43,13 @@ async fn main() -> Result<()> {
     let tls = Arc::new(tls::TlsState::load(&options.ca_dir)?);
 
     let engine = Arc::new(scan::build_default_engine());
-    let sandbox = Arc::new(scan::build_image_sandbox(options.image_model.as_deref(), options.image_threshold));
+    // `unwrap_or(0.0)` never actually falls back: `Options::from_args` rejects
+    // an `image_model` with no `image_threshold` before this runs, so the
+    // fallback is only reachable when there is no model to apply it to.
+    let sandbox = Arc::new(scan::build_image_sandbox(
+        options.image_model.as_deref(),
+        options.image_threshold.unwrap_or(0.0),
+    ));
     // mode_cell can be swapped at runtime (e.g. from a desktop config_update IPC message,
     // via ProtectionMode::store) without rebuilding ScanHooks; default to Full protection.
     // Image scanning is not yet gated by mode — it predates ProtectionMode and runs

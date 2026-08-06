@@ -7,44 +7,34 @@ are the price**. The deployed threshold is chosen by fixing an acceptable miss
 rate and accepting whatever over-blocking that costs — not by maximising
 accuracy.
 
-Concretely, for the **deployed full-unfreeze model under the tile-max geometry**,
-on the validation split:
+The miss rate is fixed as a budget and the threshold that achieves it is
+derived from a miss-budget sweep against a held-out evaluation set, not chosen
+by eye. **0.5 is not the threshold** and never was — it is an artefact of
+`argmax` over two logits.
 
-| max miss rate | threshold | resulting over-block rate |
-|---|---|---|
-| 10% | 0.7523 | 4.94% |
-| **5%** | **0.4650** | **10.09%** |
-| 2% | 0.1634 | 19.67% |
-
-The 5% row is the current default. **0.5 is not the threshold** and never was —
-it is an artefact of `argmax` over two logits.
-
-### A threshold belongs to a model *and* a geometry
+### A threshold belongs to a model *and* a geometry, and there is no built-in default
 
 Both halves of that are load-bearing, and getting it wrong has already happened
-here. `packages/image-sandbox` shipped a provisional **0.20**, which was the
-5%-miss threshold of the superseded *unfreeze-3* model — a different checkpoint
-whose scores were never comparable. The deployed checkpoint's centre-crop
-threshold is **0.2717**, and under tile-max it is **0.4650**, because taking a
-max over overlapping tiles shifts the whole score distribution upward. Applying
-any of those three numbers to the wrong pairing silently changes the operating
-point, in the direction of either missing content or over-blocking, with no
-error anywhere.
+here: an earlier constant baked into `packages/image-sandbox` had been carried
+over from a superseded checkpoint whose scores were never comparable to the one
+actually shipped, and the same checkpoint's threshold moves substantially
+between a centre-crop and a tile-max geometry, because taking a max over
+overlapping tiles shifts the whole score distribution upward. Applying a
+threshold measured under one pairing to a different model or a different
+geometry silently changes the operating point, in the direction of either
+missing content or over-blocking, with no error anywhere.
 
-How little this transfers is measurable: the full-unfreeze run was
-[replicated](../components/machine-learning/experiments/full-unfreeze.md#replicated)
-from scratch under an identical recipe and seed, and the two checkpoints agree on
-ranking to within 0.0005 AUC while their 5%-miss thresholds differ by 27% (0.2717
-against 0.1980). Two equally good models can need very different cuts.
+How little this transfers is measurable: two checkpoints from an identical
+training recipe and seed, differing only in run-to-run noise, agreed on ranking
+to within 0.0005 AUC while their 5%-miss thresholds differed by over 25%. Two
+equally good models can need very different cuts.
 
-Superseded values, kept so an old number found in code can be identified rather
-than guessed at:
-
-| model | geometry | 5%-miss threshold |
-|---|---|---|
-| unfreeze-3 | centre crop | 0.20 |
-| full-unfreeze | centre crop | 0.2717 |
-| **full-unfreeze** | **tile-max** | **0.4650** |
+**The threshold is therefore a required runtime configuration value, not a
+constant recorded in code or in this document.** `SandboxConfig` and every
+caller across it (the `mitm-proxy` CLI, the `image-sandbox-ffi` UniFFI surface,
+the macOS daemon's `HOLY_BLOCKER_IMAGE_THRESHOLD`) require it explicitly and
+supply no fallback; a caller that omits it gets no image scanning at all rather
+than a silently wrong cut.
 
 ## Why the miss rate is the budget
 
@@ -83,13 +73,12 @@ Accuracy is still reported. It is not what anything is chosen by.
 
 - **ROC-AUC / PR-AUC** for comparing models. Ranking metrics are invariant to
   where the cut sits, so two models are comparable without arguing about
-  thresholds. The current model's 0.9766 AUC against ~92% accuracy is the whole
-  point: separation is strong, 0.5 is simply a bad operating point.
-- **`fpr_at_fnr`** for choosing the deployed threshold — the table above.
+  thresholds — strong separation with a high AUC against a middling
+  fixed-threshold accuracy figure is the whole point: 0.5 is simply a bad
+  operating point.
+- A miss-budget sweep for choosing the deployed threshold, described above.
 - **Error confidence** as a label-noise diagnostic: a model that is confidently
   wrong is being contradicted by its labels, not running out of capacity.
-
-Implemented in [`metrics.py`](../../machine-learning/src/holy_blocker_ml/metrics.py).
 
 ## What was rejected
 
@@ -108,28 +97,25 @@ FN-averse product.
 
 ## Consequences
 
-- Roughly **11% of safe content is over-blocked** at the default. Most of it is
-  illustrated artwork — `drawings` is 62% of all false positives. That is a real
-  product cost and the motivation for the
-  [anime subsampling experiment](../components/machine-learning/experiments/anime-subsampling.md).
+- A meaningful share of safe content is over-blocked at any usable miss budget,
+  concentrated in illustrated artwork. That is a real product cost.
 - The `warn` mode matters more under this decision than it would under a
-  balanced one. At an 11% over-block rate, a pass-through path for ambiguous
-  verdicts is doing real work.
-- The threshold is model- **and geometry-** specific. It must be re-derived from
-  the miss-budget table after any retraining *or* any change to how images are
-  fitted into the 224×224 input, because scores are not calibrated across either.
-- **Below 96px on the shorter side, nothing is classified at all** — the verdict
-  is `Allow` without inference. That is a coverage decision made in
-  [experiments/input-handling.md](../components/machine-learning/experiments/input-handling.md),
-  and it is not a threshold: no operating point applies, because the model is
-  never consulted. Content served under that size is unfiltered.
+  balanced one: at a non-trivial over-block rate, a pass-through path for
+  ambiguous verdicts is doing real work.
+- The threshold is model- **and geometry-** specific. It must be re-derived
+  after any retraining *or* any change to how images are fitted into the
+  model's input, because scores are not calibrated across either.
+- **Below the shorter-side size floor, nothing is classified at all** — the
+  verdict is `Allow` without inference. That is a deliberate coverage decision,
+  not a threshold: no operating point applies, because the model is never
+  consulted. Content served under that size is unfiltered.
 
 ## The screen path operates outside this measurement
 
-**Added when `image-sandbox` was wired into the macOS daemon (module 18).** The
-threshold above was derived on a corpus of *images*. The daemon hands the same
-classifier, under the same tile-max geometry, a **screen frame** — and no
-measurement in this repository covers that distribution.
+**Added when `image-sandbox` was wired into the macOS daemon (module 18).**
+Whatever threshold is configured is calibrated on a corpus of *images*. The
+daemon hands the same classifier, under the same tile-max geometry, a **screen
+frame** — and no measurement in this repository covers that distribution.
 
 The two differ in ways that plausibly move the operating point in opposite
 directions:
@@ -140,17 +126,18 @@ directions:
   *typical* case on a screen rather than the tail case it was measured as.
 - Screen content is rendered rather than photographed: browser UI, text, flat
   colour fields. Nothing in the training corpus looks like a toolbar, and the
-  measured 11% over-block rate is already concentrated in drawn imagery.
+  over-block rate at any usable image threshold is already concentrated in
+  drawn imagery.
 
 Neither effect is estimated, because estimating them needs a corpus of screen
 frames and this project deliberately does not collect one. The daemon therefore
-ships **the image threshold as measured**, and reports the score on every
-verdict — including allows — so the margin under the cut is observable in the
-log line rather than invisible. `ImageOutcome.Allow` carries an *optional* score
-for the same reason: a frame that never reached the model is distinguishable
-from one the model scored at zero.
+reports the score on every verdict — including allows — so the margin under
+the configured cut is observable in the log line rather than invisible.
+`ImageOutcome.Allow` carries an *optional* score for the same reason: a frame
+that never reached the model is distinguishable from one the model scored at
+zero.
 
-**What would close this:** an operating point re-derived against screen frames,
-which needs a labelled corpus of them. Until then the number is a transfer from
-a neighbouring distribution, and it is recorded as such rather than presented as
-measured for this path.
+**What would close this:** an operating point re-derived against screen
+frames, which needs a labelled corpus of them. Until then, whatever threshold
+is configured is a transfer from a neighbouring distribution, not one measured
+for this path.

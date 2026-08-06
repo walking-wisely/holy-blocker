@@ -51,7 +51,10 @@ public final class RealImageClassifier: ImageClassifying, @unchecked Sendable {
     /// Loads a model from disk. Throws rather than degrading silently: a daemon that reports image
     /// scanning as on while classifying nothing is the failure this constructor exists to prevent.
     /// Callers that want the degraded mode ask for it explicitly with `disabled()`.
-    public convenience init(modelPath: String, threshold: Float? = nil) throws {
+    ///
+    /// `threshold` is required and has no built-in fallback: a threshold belongs to a model *and*
+    /// a geometry, and the caller is responsible for supplying one calibrated for `modelPath`.
+    public convenience init(modelPath: String, threshold: Float) throws {
         self.init(guardHandle: try ImageGuard.withModel(modelPath: modelPath, threshold: threshold))
     }
 
