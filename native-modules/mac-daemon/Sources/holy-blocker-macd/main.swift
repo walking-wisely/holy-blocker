@@ -28,7 +28,8 @@ let usage = """
       ax-text [delay] [no-manual]       read the frontmost window's AX text (default delay: 3s;
                                         no-manual skips Chromium's AXManualAccessibility opt-in)
       overlay [seconds] [passive]       cover every screen with a real overlay window
-      image-scan <model.onnx> [size]    classify a synthetic frame with the real ONNX model
+      image-scan <model.onnx> <threshold> [size]
+                                        classify a synthetic frame with the real ONNX model
       bundle <output-dir> [identity] [ffi-lib-dir]
                                         assemble and sign HolyBlockerDaemon.app (default: ad-hoc)
       bundle-status                     report our own bundle and whether its grants will last
@@ -43,12 +44,22 @@ let usage = """
                                         (default: /Library/Application Support/HolyBlocker)
       HOLY_BLOCKER_PROXY_HOST           proxy listen host for `run` (default: 127.0.0.1)
       HOLY_BLOCKER_PROXY_PORT           proxy listen port for `run` (default: 8080)
+      HOLY_BLOCKER_IMAGE_THRESHOLD      explicit score at or above which an image is blocked;
+                                        required to enable image scanning, no built-in default —
+                                        unset or unparseable degrades to allow-everything, the
+                                        same as a missing model
     """
 
 let stateDirectory = URL(
     fileURLWithPath: ProcessInfo.processInfo.environment["HOLY_BLOCKER_STATE_DIR"]
         ?? "/Library/Application Support/HolyBlocker")
 let snapshotPath = stateDirectory.appendingPathComponent("proxy-snapshot.json")
+
+/// A threshold belongs to a model *and* a geometry, so there is no value this binary can supply
+/// on its own — the operator must calibrate one for the bundled model and configure it here.
+/// `nil` (unset or unparseable) degrades image scanning off, the same path a missing model takes.
+let imageThreshold: Float? =
+    ProcessInfo.processInfo.environment["HOLY_BLOCKER_IMAGE_THRESHOLD"].flatMap(Float.init)
 
 let runner = SystemCommandRunner()
 
@@ -212,14 +223,17 @@ final class AgentRenderLoop {
         let scanner = AccessibilityScanner(probe: SystemAXProbe(), policy: RealPolicyEngine())
         self.scanner = scanner
 
-        // The model is sealed inside the bundle. A missing or unloadable one degrades the image
-        // path to allow-everything rather than taking the daemon down — the text path is
-        // independent of it and must keep running. Which of the two happened is reported, because
-        // a silently disabled classifier is indistinguishable from a clean screen.
+        // The model is sealed inside the bundle. A missing or unloadable model, or a missing
+        // threshold, degrades the image path to allow-everything rather than taking the daemon
+        // down — the text path is independent of it and must keep running. Which of the three
+        // happened is reported, because a silently disabled classifier is indistinguishable from a
+        // clean screen.
         let modelURL = Bundle.main.url(
             forResource: AppBundle.classifierModelName, withExtension: nil)
         let classifier: ImageClassifying
-        if let modelURL, let loaded = try? RealImageClassifier(modelPath: modelURL.path) {
+        if let modelURL, let threshold = imageThreshold,
+            let loaded = try? RealImageClassifier(modelPath: modelURL.path, threshold: threshold)
+        {
             classifier = loaded
             self.imagePathStatus = "on (threshold \(loaded.threshold))"
         } else {
@@ -227,7 +241,9 @@ final class AgentRenderLoop {
             self.imagePathStatus =
                 modelURL == nil
                 ? "off (no \(AppBundle.classifierModelName) in bundle)"
-                : "off (model failed to load)"
+                : imageThreshold == nil
+                    ? "off (HOLY_BLOCKER_IMAGE_THRESHOLD not set)"
+                    : "off (model failed to load)"
         }
         let imageScanner = ImageScanner(classifier: classifier)
         self.imageScanner = imageScanner
@@ -386,10 +402,10 @@ func runRenderLoop(gate: PermissionGate, capture: SCShareableContentCapture) thr
 /// What it does not check is what the model *says*: a flat colour is not content, and what the
 /// classifier makes of one is not a claim this repository should be making. The assertion is that a
 /// number comes back in range.
-func runImageScan(modelPath: String, size: Int) {
+func runImageScan(modelPath: String, threshold: Float, size: Int) {
     let classifier: RealImageClassifier
     do {
-        classifier = try RealImageClassifier(modelPath: modelPath)
+        classifier = try RealImageClassifier(modelPath: modelPath, threshold: threshold)
     } catch {
         fail("could not load \(modelPath): \(error)")
     }
@@ -606,8 +622,12 @@ do {
         try await runCapture()
 
     case "image-scan":
-        guard let modelPath = rest.first else { fail("expected <model.onnx> [size]") }
-        runImageScan(modelPath: modelPath, size: rest.count > 1 ? Int(rest[1]) ?? 512 : 512)
+        guard rest.count >= 2, let threshold = Float(rest[1]) else {
+            fail("expected <model.onnx> <threshold> [size]")
+        }
+        runImageScan(
+            modelPath: rest[0], threshold: threshold,
+            size: rest.count > 2 ? Int(rest[2]) ?? 512 : 512)
 
     case "ax-text":
         runAXText(

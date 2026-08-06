@@ -1584,11 +1584,12 @@ half, LiteRT is the Android half. `apps/mobile` must not be wired to this crate.
    image path indistinguishable from a clean screen, which is exactly the failure the first live
    pass spent a session on with `SCStreamConfiguration.pixelFormat`. This is why `check_raw` returns
    `ScoredVerdict`: the network path has no long-running caller and keeps the plain verdict.
-4. **The threshold's provenance does not extend to screen frames.** 0.4650 was measured on a corpus
-   of images. A screen frame is a different distribution and nothing here covers it — recorded in
+4. **Whatever threshold is configured, its provenance does not extend to screen frames.** It is
+   calibrated on a corpus of images. A screen frame is a different distribution and nothing here
+   covers it — recorded in
    [classifier-operating-point.md](../../decisions/classifier-operating-point.md) rather than
-   patched over. The daemon ships the measured number and logs the score on every verdict so the
-   margin is observable.
+   patched over. The daemon logs the score on every verdict so the margin is observable, and
+   requires the threshold to be configured explicitly rather than shipping a default.
 5. **There is no `warn` band on this path.** A probability has no warn range, and inventing one
    would be this daemon making up an operating point the measurement never established.
    `ProtectionMode` in `ScanLoop` is where a block legitimately becomes a warn.

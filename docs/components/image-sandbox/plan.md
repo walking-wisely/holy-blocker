@@ -72,19 +72,17 @@ left-to-right so that tile *position* is visible in each tile's mean.
 
 ### Measured constants
 
-Both were guesses on the first pass and both were wrong. They remain
-`SandboxConfig`/`PreprocessConfig` fields rather than hardcoded values.
+Both were guesses on the first pass and both were wrong.
 
-- **Threshold 0.4650** — the 5%-miss-budget operating point for the full-unfreeze checkpoint
-  *under tile-max*, costing 10.09% over-blocking. It replaces a provisional **0.20**, which was
-  the unfreeze-3 model's operating point. Note the same checkpoint under a centre crop operates
-  at **0.2717**: a threshold belongs to a model *and* a geometry, because the max over tiles
-  shifts the whole score distribution upward. See
+- **Threshold** — has no shipped default at all: `SandboxConfig`, the FFI surface, and the
+  daemon's `HOLY_BLOCKER_IMAGE_THRESHOLD` all require the caller to supply one explicitly. A
+  threshold belongs to a model *and* a geometry, because the max over tiles shifts the whole
+  score distribution relative to a centre crop, and this project has already shipped the wrong
+  pairing more than once with nothing failing to indicate it. See
   [the operating point decision](../../decisions/classifier-operating-point.md).
 - **96px size floor** — the smallest measured arm still at or above 0.93 combined ROC-AUC. It
-  replaces a provisional **32px**, which sits at 0.8619. Degradation is smooth rather than
-  cliff-edged (0.9255 at 64px, still 0.7640 at 16px), so this is a chosen point on a curve.
-  A floor is also a bypass: content served just under it is unfiltered.
+  replaces a provisional **32px**. Degradation is smooth rather than cliff-edged, so this is a
+  chosen point on a curve. A floor is also a bypass: content served just under it is unfiltered.
 
 The 8:1 aspect clamp remains, now bounding *inference count* rather than allocation — the widest
 admissible image resizes to 1792×224 and costs 15 forward passes.
@@ -294,11 +292,11 @@ The order below is the original plan. What was actually built is recorded under
 4. ~~`onnx.rs` behind the `onnx` feature flag~~ **Done** as `classifier.rs`. Non-default feature; without it the crate compiles and allows everything, so a build without an ONNX Runtime is a functioning build. `tests/inference.rs` exercises the real exported artifact and skips when it is absent, since `data/models/` is gitignored.
 5. ~~Wire `ImageSandbox` into `packages/mitm-proxy` at the Phase 4 hook~~ **Done.** Inference runs under `tokio::task::spawn_blocking` — `image_scanner` is a sync `Fn` invoked inside the async handler, so running a MobileNetV3 forward pass inline would hold a tokio worker and stall every other connection it drives.
 
-6. ~~Replace the provisional threshold and size floor with measured values from
-   `holy_blocker_ml.inputs`, and adopt whichever geometry that experiment selects.~~
-   **Done.** Threshold 0.20 → **0.4650**, floor 32px → **96px**, and the centre crop replaced by
-   **tile-max**. See [Measured constants](#measured-constants) and the
-   [experiment](../machine-learning/experiments/input-handling.md).
+6. ~~Replace the provisional threshold and size floor with measured values, and adopt whichever
+   geometry the input-handling measurement selects.~~
+   **Done.** The size floor is now **96px**, the geometry is **tile-max**, and the threshold has
+   no shipped default at all — the caller supplies it explicitly. See
+   [Measured constants](#measured-constants).
 
 Still to do:
 

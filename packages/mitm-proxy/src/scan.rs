@@ -161,7 +161,10 @@ pub fn build_image_sandbox(model_path: Option<&std::path::Path>, threshold: f32)
                 "image classifier loaded from {} (threshold {threshold})",
                 path.display()
             );
-            let config = SandboxConfig { explicit_threshold: threshold, ..SandboxConfig::default() };
+            let config = SandboxConfig {
+                explicit_threshold: threshold,
+                preprocess: image_sandbox::PreprocessConfig::default(),
+            };
             ImageSandbox::new(classifier, config)
         }
         Err(e) => {
@@ -174,9 +177,6 @@ pub fn build_image_sandbox(model_path: Option<&std::path::Path>, threshold: f32)
 #[cfg(test)]
 mod tests {
     use super::*;
-    // Only the tests pin the default; production code takes the threshold from
-    // the CLI, so importing this at module scope reads as dead in a normal build.
-    use image_sandbox::DEFAULT_EXPLICIT_THRESHOLD;
 
     fn engine() -> PolicyEngine {
         build_default_engine()
@@ -213,15 +213,19 @@ mod tests {
         assert!(matches!(result, ScanResult::Block { .. }));
     }
 
+    // A placeholder, not a measured value: every case below has model_path
+    // as None, or a missing file, so the threshold is never read.
+    const UNUSED_THRESHOLD: f32 = 0.0;
+
     #[test]
     fn scan_image_allows_truncated_jpeg_bytes() {
-        let sandbox = build_image_sandbox(None, DEFAULT_EXPLICIT_THRESHOLD);
+        let sandbox = build_image_sandbox(None, UNUSED_THRESHOLD);
         assert!(matches!(scan_image(&sandbox, &[0xFF, 0xD8, 0xFF]), ScanResult::Allow));
     }
 
     #[test]
     fn scan_image_allows_empty_input() {
-        let sandbox = build_image_sandbox(None, DEFAULT_EXPLICIT_THRESHOLD);
+        let sandbox = build_image_sandbox(None, UNUSED_THRESHOLD);
         assert!(matches!(scan_image(&sandbox, &[]), ScanResult::Allow));
     }
 
@@ -230,7 +234,7 @@ mod tests {
         // The no-`--image-model` case must behave exactly as the proxy did
         // before this phase existed, so an operator who does not configure a
         // model sees no change at all.
-        let sandbox = build_image_sandbox(None, DEFAULT_EXPLICIT_THRESHOLD);
+        let sandbox = build_image_sandbox(None, UNUSED_THRESHOLD);
         assert!(matches!(scan_image(&sandbox, b"anything at all"), ScanResult::Allow));
     }
 
@@ -238,7 +242,10 @@ mod tests {
     fn a_missing_model_file_degrades_to_allow_rather_than_panicking() {
         // A wrong path is an operator mistake. Taking down URL and body
         // filtering as well would turn it into an outage.
-        let sandbox = build_image_sandbox(Some(std::path::Path::new("/nonexistent/model.onnx")), DEFAULT_EXPLICIT_THRESHOLD);
+        let sandbox = build_image_sandbox(
+            Some(std::path::Path::new("/nonexistent/model.onnx")),
+            UNUSED_THRESHOLD,
+        );
         assert!(matches!(scan_image(&sandbox, &[0xFF, 0xD8, 0xFF]), ScanResult::Allow));
     }
 

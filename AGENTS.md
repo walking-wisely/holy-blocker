@@ -22,6 +22,7 @@ The packages below are **planned but not yet created** — do not assume they ex
 - `packages/net-shield` — TUN adapter + domain/IP radix filter
 - `packages/image-sandbox` — perceptual hashing + ONNX image classifier
 - `packages/video-watchdog` — async HLS/DASH segment sampler
+- `machine-learning` — MobileNetV3 fine-tuning, eval, and export pipeline; see `docs/components/machine-learning/plan.md`
 
 Each active package has a step-by-step implementation plan in `docs/<package>/PLAN.md`. Read the relevant plan before starting work on a package — it lists the next modules to add, their types, and the correct implementation order.
 
@@ -45,9 +46,9 @@ For Rust policy code:
 
 For Python ML code:
 
-- The package lives under `machine-learning/src/holy_blocker_ml`.
+- Not yet built. See `docs/components/machine-learning/plan.md` for the intended package layout under `machine-learning/src/holy_blocker_ml`.
 - Prefer small, importable functions over script-only code so behavior can be unit tested.
-- If you add Python tests, place them under `machine-learning/tests` and wire a standard runner such as `pytest` before relying on it.
+- Place tests under `machine-learning/tests` and wire a standard runner such as `pytest` before relying on it.
 
 For the Windows daemon:
 

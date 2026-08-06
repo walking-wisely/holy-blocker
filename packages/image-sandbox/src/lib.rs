@@ -40,7 +40,4 @@ pub use preprocess::{
     PreprocessConfig, PreprocessError, preprocess, preprocess_tiles, tile_starts,
 };
 pub use raw::{PixelLayout, RawFrameError, image_from_raw};
-pub use sandbox::{
-    DEFAULT_EXPLICIT_THRESHOLD, ImageSandbox, ImageVerdict, SandboxConfig, ScoredVerdict,
-    reduce_tile_scores,
-};
+pub use sandbox::{ImageSandbox, ImageVerdict, SandboxConfig, ScoredVerdict, reduce_tile_scores};

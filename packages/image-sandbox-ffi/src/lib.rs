@@ -31,8 +31,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use image_sandbox::{
-    DEFAULT_EXPLICIT_THRESHOLD, ImageClassifier, ImageSandbox, ImageVerdict, PixelLayout,
-    PreprocessConfig, SandboxConfig, ScoredVerdict,
+    ImageClassifier, ImageSandbox, ImageVerdict, PixelLayout, PreprocessConfig, SandboxConfig,
+    ScoredVerdict,
 };
 
 uniffi::setup_scaffolding!();
@@ -123,26 +123,20 @@ pub struct ImageGuard {
 impl ImageGuard {
     /// Loads `model_path` and classifies against it.
     ///
-    /// `threshold` of `None` uses the measured operating point for the shipped
-    /// checkpoint under the tile-max geometry. Pass a value only to re-derive
-    /// it: a threshold belongs to a model **and** a geometry, and reusing one
-    /// across either change has already caused an error in this project twice.
-    /// See `docs/decisions/classifier-operating-point.md`.
+    /// `threshold` is required and has no built-in fallback: a threshold
+    /// belongs to a model **and** a geometry, and reusing one across either
+    /// change has already caused an error in this project twice. The caller
+    /// is responsible for supplying a value calibrated for the model at
+    /// `model_path` under this crate's tile-max geometry.
     #[uniffi::constructor]
-    pub fn with_model(
-        model_path: String,
-        threshold: Option<f32>,
-    ) -> Result<Arc<Self>, ImageGuardError> {
+    pub fn with_model(model_path: String, threshold: f32) -> Result<Arc<Self>, ImageGuardError> {
         let preprocess = PreprocessConfig::default();
         let classifier = ImageClassifier::load(&PathBuf::from(&model_path), preprocess.input_size)
             .map_err(|error| ImageGuardError::Unavailable {
             reason: format!("{model_path}: {error}"),
         })?;
 
-        let config = SandboxConfig {
-            explicit_threshold: threshold.unwrap_or(DEFAULT_EXPLICIT_THRESHOLD),
-            preprocess,
-        };
+        let config = SandboxConfig { explicit_threshold: threshold, preprocess };
         Ok(Arc::new(Self {
             sandbox: ImageSandbox::new(classifier, config),
         }))
@@ -187,17 +181,10 @@ impl ImageGuard {
     }
 
     /// The threshold this guard is operating at, so the caller can log the
-    /// operating point beside a score instead of assuming the default.
+    /// operating point beside a score rather than assuming one.
     pub fn threshold(&self) -> f32 {
         self.sandbox.config().explicit_threshold
     }
-}
-
-/// The measured operating point, exposed so a caller can report it without
-/// constructing a guard.
-#[uniffi::export]
-pub fn default_explicit_threshold() -> f32 {
-    DEFAULT_EXPLICIT_THRESHOLD
 }
 
 #[cfg(test)]
@@ -224,7 +211,7 @@ mod tests {
         // The failure mode this constructor is fallible to prevent: a daemon
         // that reports "image scanning on" while classifying nothing.
         let Err(ImageGuardError::Unavailable { reason }) =
-            ImageGuard::with_model("/nonexistent/model.onnx".into(), None)
+            ImageGuard::with_model("/nonexistent/model.onnx".into(), 0.5)
         else {
             panic!("a missing model must not construct");
         };
@@ -244,17 +231,11 @@ mod tests {
     }
 
     #[test]
-    fn a_disabled_guard_still_reports_the_measured_threshold() {
-        // So a log line reads the same whether or not a model was provisioned.
-        assert_eq!(ImageGuard::disabled().threshold(), DEFAULT_EXPLICIT_THRESHOLD);
-    }
-
-    #[test]
-    fn the_exported_default_threshold_is_the_measured_tile_max_operating_point() {
-        // Guards the same three wrong-but-plausible values as image-sandbox's
-        // own test: 0.5 is argmax's default, 0.20 belongs to the superseded
-        // unfreeze-3 checkpoint, 0.2717 to this checkpoint under a centre crop.
-        assert_eq!(default_explicit_threshold(), 0.4650);
+    fn a_disabled_guard_reports_its_placeholder_threshold_without_reading_it() {
+        // `disabled()` never consults its threshold — every classify call
+        // returns before it is read — so this pins the placeholder rather
+        // than claiming it is a measured value.
+        assert_eq!(ImageGuard::disabled().threshold(), 0.0);
     }
 
     #[test]
@@ -282,9 +263,9 @@ mod tests {
 
     #[test]
     fn an_allow_the_model_produced_keeps_its_score() {
-        // The distinction the daemon logs: the model ran and saw 0.44, which is
-        // just under the 0.4650 operating point. That margin is the only signal
-        // that would show a threshold miscalibrated for screen content.
+        // The distinction the daemon logs: the model ran and saw 0.44. Whether
+        // that is close to the configured threshold is the only signal that
+        // would show a threshold miscalibrated for screen content.
         assert_eq!(
             ImageOutcome::from(ScoredVerdict {
                 verdict: ImageVerdict::Allow,

@@ -16,7 +16,8 @@ usage: mitm-proxy [options]
   --listen <addr>        address to bind (default 127.0.0.1:8080)
   --ca-dir <path>        certificate authority directory (default data/ca)
   --image-model <path>   ONNX image classifier; images are not scanned without it
-  --image-threshold <f>  block at or above this explicit score (default 0.4650)
+  --image-threshold <f>  block at or above this explicit score; required with
+                          --image-model, no built-in default
   -h, --help             print this message";
 
 #[derive(Debug, Clone, PartialEq)]
@@ -25,9 +26,12 @@ pub struct Options {
     pub ca_dir: PathBuf,
     /// `None` means images pass through unscanned — the pre-Phase-4 behaviour.
     pub image_model: Option<PathBuf>,
-    /// Explicit score at or above which an image is blocked. See
-    /// `image_sandbox::DEFAULT_EXPLICIT_THRESHOLD` for why this is provisional.
-    pub image_threshold: f32,
+    /// Explicit score at or above which an image is blocked. Has no built-in
+    /// default — a threshold belongs to a model **and** a geometry, and there
+    /// is no value this crate can supply that is correct for every deployed
+    /// checkpoint. Required whenever `image_model` is set; meaningless (and
+    /// unread) otherwise.
+    pub image_threshold: Option<f32>,
 }
 
 impl Default for Options {
@@ -36,7 +40,7 @@ impl Default for Options {
             listen: "127.0.0.1:8080".parse().expect("literal address is valid"),
             ca_dir: PathBuf::from("data/ca"),
             image_model: None,
-            image_threshold: image_sandbox::DEFAULT_EXPLICIT_THRESHOLD,
+            image_threshold: None,
         }
     }
 }
@@ -68,7 +72,7 @@ impl Options {
                             "--image-threshold must be in [0, 1], got {parsed}"
                         ));
                     }
-                    options.image_threshold = parsed;
+                    options.image_threshold = Some(parsed);
                 }
                 "-h" | "--help" => {
                     println!("{USAGE}");
@@ -76,6 +80,13 @@ impl Options {
                 }
                 other => return Err(format!("unknown option {other:?}")),
             }
+        }
+        if options.image_model.is_some() && options.image_threshold.is_none() {
+            return Err(
+                "--image-threshold is required when --image-model is set; there is no built-in \
+                 default"
+                    .to_string(),
+            );
         }
         Ok(options)
     }
@@ -99,7 +110,7 @@ mod tests {
         assert_eq!(options.listen.to_string(), "127.0.0.1:8080");
         assert_eq!(options.ca_dir, PathBuf::from("data/ca"));
         assert_eq!(options.image_model, None);
-        assert_eq!(options.image_threshold, image_sandbox::DEFAULT_EXPLICIT_THRESHOLD);
+        assert_eq!(options.image_threshold, None);
     }
 
     #[test]
@@ -112,7 +123,20 @@ mod tests {
 
     #[test]
     fn a_threshold_is_parsed_when_valid() {
-        assert_eq!(parse(&["--image-threshold", "0.44"]).unwrap().image_threshold, 0.44);
+        // Paired with --image-model: a bare --image-threshold with no model is
+        // accepted by the parser (and simply unread), which this covers by
+        // itself rather than through the full validation path.
+        assert_eq!(
+            parse(&["--image-threshold", "0.44"]).unwrap().image_threshold,
+            Some(0.44)
+        );
+    }
+
+    #[test]
+    fn a_model_without_a_threshold_is_rejected() {
+        // There is no built-in default to fall back to, and silently picking
+        // one would bake a specific model's calibration into every deployment.
+        assert!(parse(&["--image-model", "/tmp/model.onnx"]).is_err());
     }
 
     #[test]
@@ -129,12 +153,15 @@ mod tests {
             "/tmp/ca",
             "--image-model",
             "/tmp/model.onnx",
+            "--image-threshold",
+            "0.5",
         ])
         .unwrap();
 
         assert_eq!(options.listen.to_string(), "127.0.0.1:9999");
         assert_eq!(options.ca_dir, PathBuf::from("/tmp/ca"));
         assert_eq!(options.image_model, Some(PathBuf::from("/tmp/model.onnx")));
+        assert_eq!(options.image_threshold, Some(0.5));
     }
 
     #[test]

@@ -23,23 +23,6 @@ pub enum ImageVerdict {
     Block { score: f32 },
 }
 
-/// Score at or above which an image is blocked.
-///
-/// **Measured**, for the shipped full-unfreeze checkpoint *under the tile-max
-/// geometry*: the threshold achieving the 5% miss budget, at a cost of 10.09%
-/// over-blocking. From
-/// `docs/components/machine-learning/experiments/input-handling.md`, recorded in
-/// `docs/decisions/classifier-operating-point.md`.
-///
-/// A threshold belongs to a model **and** a geometry, and both halves have
-/// already caused an error here. The same checkpoint under a centre crop
-/// operates at 0.2717; the superseded unfreeze-3 checkpoint operated at 0.20,
-/// which is what this constant wrongly held before the corpus was available.
-/// Taking a max over overlapping tiles shifts the whole score distribution
-/// upward, so reusing a centre-crop threshold would over-block by roughly half
-/// again (14.73% against 10.09%) with nothing failing to indicate it.
-pub const DEFAULT_EXPLICIT_THRESHOLD: f32 = 0.4650;
-
 /// Collapse per-tile scores into one verdict score.
 ///
 /// The maximum, not the mean: "any region explicit → block" is what a blocker
@@ -57,7 +40,7 @@ pub fn reduce_tile_scores(scores: &[f32]) -> f32 {
 ///
 /// The raw-frame path returns this rather than a bare [`ImageVerdict`] because
 /// its caller is a long-running daemon that logs one line per state change, and
-/// "allowed at 0.44 against a 0.4650 threshold" and "allowed at 0.01" are
+/// "allowed at 0.44 against the configured threshold" and "allowed at 0.01" are
 /// different facts about how well the operating point fits what is on screen.
 /// The network path has no such caller and keeps the plain verdict.
 // Not `Copy`: `ImageVerdict` is not, and making it so would be a change to the
@@ -79,19 +62,15 @@ impl ScoredVerdict {
     }
 }
 
+/// There is no built-in default: a threshold belongs to a model **and** a
+/// geometry, and reusing one across either change has already caused an error
+/// in this project twice. The caller must supply one explicitly for its own
+/// deployed checkpoint — see the deployment's own configuration, not a value
+/// recorded here.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SandboxConfig {
     pub explicit_threshold: f32,
     pub preprocess: PreprocessConfig,
-}
-
-impl Default for SandboxConfig {
-    fn default() -> Self {
-        Self {
-            explicit_threshold: DEFAULT_EXPLICIT_THRESHOLD,
-            preprocess: PreprocessConfig::default(),
-        }
-    }
 }
 
 pub struct ImageSandbox {
@@ -104,8 +83,13 @@ impl ImageSandbox {
     ///
     /// Not a placeholder to be removed: it is what runs when no model path is
     /// configured, and it keeps the proxy's behaviour identical to today's.
+    /// The threshold is inert here — `check`/`check_raw` return `Allow` before
+    /// it is ever read — so `0.0` is a placeholder, not a claim about a value.
     pub fn disabled() -> Self {
-        Self { classifier: None, config: SandboxConfig::default() }
+        Self {
+            classifier: None,
+            config: SandboxConfig { explicit_threshold: 0.0, preprocess: PreprocessConfig::default() },
+        }
     }
 
     pub fn new(classifier: ImageClassifier, config: SandboxConfig) -> Self {
@@ -142,14 +126,13 @@ impl ImageSandbox {
     /// was never encoded. `pixels` must be tightly packed with no row padding —
     /// see [`image_from_raw`].
     ///
-    /// **The threshold's provenance does not extend here.** 0.4650 was measured
-    /// on a corpus of *images* under tile-max. A screen frame is a different
-    /// distribution — a small content region inside application chrome, at a
-    /// display aspect ratio — and no measurement in this repository covers it.
-    /// Tile-max is the right geometry for that shape, which is why this path
-    /// reuses it rather than the centre crop, but the operating point for
-    /// screen content is an open question recorded in
-    /// `docs/decisions/classifier-operating-point.md`.
+    /// **The configured threshold's provenance does not extend here.** Whatever
+    /// value the caller supplies is calibrated against a corpus of *images*
+    /// under tile-max. A screen frame is a different distribution — a small
+    /// content region inside application chrome, at a display aspect ratio —
+    /// and re-deriving an operating point for it is an open question. Tile-max
+    /// is still the right geometry for that shape, which is why this path
+    /// reuses it rather than the centre crop.
     /// Returns the score alongside the verdict — see [`ScoredVerdict`].
     pub fn check_raw(
         &self,
@@ -282,19 +265,17 @@ mod tests {
     }
 
     #[test]
-    fn the_default_threshold_is_the_measured_tile_max_operating_point() {
-        // Guards two separate mistakes. 0.5 is argmax's default rather than a
-        // measured point, and the operating-point decision rejects it outright.
-        // 0.20 and 0.2717 are also wrong here but far more plausible-looking:
-        // the first belongs to the superseded unfreeze-3 model, the second to
-        // this model under the *centre-crop* geometry. A threshold is only
-        // valid for one model-and-geometry pairing.
-        assert_eq!(SandboxConfig::default().explicit_threshold, 0.4650);
+    fn a_disabled_sandbox_never_reads_its_placeholder_threshold() {
+        // `disabled()` carries an inert 0.0 — every check path returns before
+        // the classifier or the threshold is consulted, so this is a
+        // regression guard on that ordering, not a claim about the value.
+        let sandbox = ImageSandbox::disabled();
+        assert_eq!(sandbox.check(&[]), ImageVerdict::Allow);
     }
 
     #[test]
-    fn the_threshold_is_configurable_so_it_can_be_re_derived() {
-        let config = SandboxConfig { explicit_threshold: 0.44, ..SandboxConfig::default() };
+    fn the_threshold_is_configurable_by_the_caller() {
+        let config = SandboxConfig { explicit_threshold: 0.44, preprocess: PreprocessConfig::default() };
 
         assert_eq!(config.explicit_threshold, 0.44);
     }
@@ -312,12 +293,14 @@ mod tests {
     fn a_mean_reduction_would_dilute_a_single_explicit_tile() {
         // The failure tiling exists to fix, stated as a test: one explicit tile
         // in a wide safe banner. The mean is 0.24 and would clear no sensible
-        // threshold; the max is 0.95 and blocks.
+        // threshold; the max is 0.95 and blocks. 0.5 stands in for "a sensible
+        // threshold" here — the point is the mean/max gap, not a specific cut.
         let scores = [0.02, 0.01, 0.95, 0.03, 0.01];
         let mean = scores.iter().sum::<f32>() / scores.len() as f32;
+        let plausible_threshold = 0.5;
 
-        assert!(mean < SandboxConfig::default().explicit_threshold);
-        assert!(reduce_tile_scores(&scores) >= SandboxConfig::default().explicit_threshold);
+        assert!(mean < plausible_threshold);
+        assert!(reduce_tile_scores(&scores) >= plausible_threshold);
     }
 
     #[test]
