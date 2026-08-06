@@ -44,6 +44,16 @@ pub enum FilterAction {
 
 - Both filters are constructable from a flat slice of rule strings and expose a single query method. There is no file I/O in either type — callers load rules and pass them in.
 
+**Domain normalization is not defined here.** `DomainFilter` consumes `normalize()` from the shared
+`packages/domain-normalize` crate, which is the same function `packages/domain-blocklist` applies at
+build time when it produces the signed FST artifact. Reimplementing it on the query side would leave
+two copies that each pass their own tests and disagree in production — the drift
+`packages/text-policy-ffi` exists to prevent ("one implementation, no drift"). The cost is one small
+pure dependency with no I/O. See [domain-blocklist's plan](../domain-blocklist/plan.md) module 0 for
+the normalization contract and module 6 for the precedence model that places FST-sourced `Block`
+rules **below** this crate's existing explicit `Allow`/`Proxy` rules, so loading a blocklist artifact
+cannot change the behavior of an existing rule.
+
 Key signatures:
 
 ```rust
