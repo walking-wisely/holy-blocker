@@ -13,3 +13,4 @@ changing it.
 | [learning-from-feedback.md](learning-from-feedback.md) | Why text scoring is demoted, domains as the floor, local personalization, and the federated design for false-positive reduction under a temptation-biased labeler |
 | [classifier-operating-point.md](classifier-operating-point.md) | Why false negatives are the budget and false positives the price, why accuracy is not the headline metric, and how the deployed threshold is derived |
 | [content-interception.md](content-interception.md) | Cross-platform content interception: two-layer model (network proxy + capture/ML render path), per-platform instantiation (Windows/Linux/macOS/Android/iOS), why injection is deferred, tamper resistance |
+| [domain-blocklist-sourcing.md](domain-blocklist-sourcing.md) | The CSAM legal boundary, the three upstream sources, the merge/provenance/liveness pipeline, and the mmap'd FST on-device format |

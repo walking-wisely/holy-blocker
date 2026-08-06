@@ -28,6 +28,7 @@ The packages below are **planned but not yet created** — do not assume they ex
 - `packages/classifier-head` — the classifier head (embedding → score → verdict) in Rust behind UniFFI, plus a later gradient path. Planned in `docs/components/classifier-head/plan.md`. **It exists because the runtime split is per-platform**: LiteRT runs the frozen backbone on Android, ONNX Runtime on Windows, and only the head is shared — see `docs/decisions/learning-from-feedback.md`. Do not wire `apps/mobile` to `packages/image-sandbox`, which is the ONNX half
 - `native-modules/win-network` — Windows Service: Wintun driver install, routing rules, named-pipe IPC for net-shield
 - `packages/video-watchdog` — async HLS/DASH segment sampler
+- `packages/domain-blocklist` — offline pipeline that fetches, normalizes, merges (with provenance), DNS-liveness-prunes, and signs the domain blocklist `net-shield`'s `DomainFilter` loads. Sourcing/legal boundary/format decided in `docs/decisions/domain-blocklist-sourcing.md`; build order in `docs/components/domain-blocklist/plan.md`. Runs as a periodic offline job, never on an end-user device
 
 `native-modules/android-service` was planned but never created — the Android work shipped as `apps/mobile/` instead, and it targets plain Device Admin rather than the Device Owner model the old plan assumed. `docs/components/android-service/plan.md` is a superseded stub pointing at `docs/components/mobile/plan.md`; do not build against it.
 

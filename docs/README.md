@@ -40,6 +40,7 @@ One folder per component. Each contains a `plan.md` (implementation phases, curr
 | `net-shield` | Rust | [plan.md](components/net-shield/plan.md) |
 | `image-sandbox` | Rust | [plan.md](components/image-sandbox/plan.md) |
 | `video-watchdog` | Rust | [plan.md](components/video-watchdog/plan.md) |
+| `domain-blocklist` | Rust | [plan.md](components/domain-blocklist/plan.md) |
 | `win-daemon` | C++20 | [plan.md](components/win-daemon/plan.md) |
 | `win-network` | C++ / Windows Service | [plan.md](components/win-network/plan.md) |
 | `mobile` | Kotlin / Android | [plan.md](components/mobile/plan.md) |
