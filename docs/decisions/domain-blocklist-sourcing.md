@@ -17,9 +17,13 @@ device, where storage and RAM are tighter) — and each one has a wrong-but-temp
 
 Holding a plain list of domain names that host legal adult content is not restricted in the EU or
 US. A domain name is directory metadata, not content — no different in kind from a phone book or a
-firewall deny-list. GDPR does not reach it either, because a domain list is not personal data about
-an identifiable person; the place GDPR does bite is logging which domains *a specific user*
-visited, which this project already avoids by not phoning home at all.
+firewall deny-list. The one specific, defensible claim this document makes about GDPR is narrower
+than "it doesn't apply": **this system does not collect, log, or transmit which domains a specific
+user visited** — that's the category of processing GDPR actually concerns itself with, and this
+project already avoids it by not phoning home at all. Whether a static blocklist artifact itself
+constitutes processing of personal data in some jurisdiction-specific edge case is a question for
+counsel, not an engineering decision doc, and this document does not assert a broader legal
+conclusion than the one fact above.
 
 **Hard boundary: this project never builds, holds, or infers a CSAM domain list.** Lists that
 identify illegal child-exploitation material are a different legal category, maintained under
@@ -28,12 +32,18 @@ under contract. Holy Blocker's scope is legal-but-unwanted adult content, never 
 detection, and the pipeline must never attempt to compile or supplement anything resembling that
 list itself.
 
-If a source list ever turns out to contain a domain that is actually CSAM rather than legal adult
-content, the correct action is the same as for any operator: block it (already the intended
-outcome) and report it through NCMEC's CyberTipline or IWF's portal — never fetch, render, cache,
-or manually inspect the content to "confirm" it first. This is why the liveness check below is
-DNS-only: it must never perform an application-layer request against a listed domain, so the
-pipeline can never accidentally retrieve or display a page body for anything on the list.
+A blocklist match is **not**, by itself, a reportable incident — the sources here classify legal
+adult content, so the overwhelming majority of matches are exactly that and require no action
+beyond blocking. The exceptional case this section is about is a *credible, specific* suspicion
+that a particular entry is CSAM rather than legal content (for example, a domain a human reviewer
+has independent reason to flag) — that case is a quarantine-and-escalate path, not an automatic
+pipeline action: hold the entry, restrict who can see it (an authorized reviewer, not a public build
+log), retain the minimum metadata needed to identify it (the domain string and why it was flagged,
+nothing captured from the site itself), and report through NCMEC's CyberTipline or IWF's portal —
+never fetch, render, cache, or manually inspect the content to "confirm" it first. This is why the
+liveness check below is DNS-only: it must never perform an application-layer request against a
+listed domain, so the pipeline can never accidentally retrieve or display a page body for anything
+on the list.
 
 ## Decision
 
@@ -50,11 +60,17 @@ one of them:
   `adult` category) — a 15+ year academic project purpose-built for institutional content
   filtering, the most rigorously documented of the three.
 
-Verify each source's current license text at build time and record it in the provenance metadata
-(see below) rather than assuming a license never changes. Some blocklist projects (e.g. oisd.nl)
-restrict redistribution/commercial bundling even though the underlying list is legal to hold —
-that is a distribution-license question, separate from the legality question above, and it is
-checked per source before anything is vendored into a shipped artifact.
+Verify each source's current license text at build time and record it, per source, in the signed
+manifest's provenance table — each of the three sources individually, not collapsed into one
+aggregator-level note — rather than assuming a license never changes. Some blocklist projects
+(e.g. oisd.nl) restrict redistribution/commercial bundling even though the underlying list is
+legal to hold — that is a distribution-license question, separate from the legality question
+above, and it is checked per source before anything is vendored into a shipped artifact.
+Provenance is tracked one level deep, at the source actually being pulled from — StevenBlack's
+`porn` extension is itself an aggregation of smaller lists, and this decision does not require
+unwinding that further; if StevenBlack's own aggregation is later found to embed something
+improperly licensed, the fix is dropping the StevenBlack source entirely, not attributing
+individual entries within it.
 
 ### Combining sources
 
@@ -69,19 +85,37 @@ checked per source before anything is vendored into a shipped artifact.
    still useless bulk that should be diffed out over time to keep updates small.
 4. **User-level allowlist override sits on top, unconditionally** — false positives are inevitable
    with any aggregated list, and there needs to be a local, no-appeal-required way to unblock a
-   domain the household actually trusts.
+   domain the household actually trusts. This decision fixes the *precedence* (allowlist checked
+   before the shipped list, always wins) and the *ownership* (local to the device, never uploaded
+   or reconciled against anything this pipeline produces); it deliberately leaves the exact
+   matching semantics (exact domain vs. also its subdomains) and persistence mechanics to
+   `net-shield`'s own plan, since that's the crate that actually evaluates a query against both.
 5. **Don't blend categories silently** — a source's "adult" category and its "gambling" or
    "dating" category are different products; only merge the categories actually shipped as one
    filter.
 
 ### Liveness revalidation: DNS-only, centralized, cached with a TTL
 
-Liveness is checked by **DNS resolution only** (does the domain resolve to any A/AAAA record, or
-NXDOMAIN) — never a full HTTP fetch, and never ICMP. ICMP is the wrong signal regardless of cost:
-most hosting today sits behind a CDN or load balancer that either doesn't route ICMP to the origin
-or answers ping from an edge node unrelated to whether the site is actually up. DNS-only also
-satisfies the legal boundary above, since it never performs an application-layer request that
-could retrieve a page body.
+Liveness is checked by **DNS resolution only** — never a full HTTP fetch, and never ICMP. ICMP is
+the wrong signal regardless of cost: most hosting today sits behind a CDN or load balancer that
+either doesn't route ICMP to the origin or answers ping from an edge node unrelated to whether the
+site is actually up. DNS-only also satisfies the legal boundary above, since it never performs an
+application-layer request that could retrieve a page body.
+
+The verdict is a three-way match, not a boolean, because DNS has more failure modes than "up" or
+"down":
+
+| Response | Verdict | Effect on next build |
+|---|---|---|
+| A/AAAA record, or a CNAME chain resolving to one | Alive | kept |
+| NXDOMAIN | Dead | pruned |
+| NODATA, SERVFAIL, REFUSED, timeout, or a malformed/unparseable response | Unknown | **kept, unchanged** |
+
+Only `NXDOMAIN` prunes an entry. Everything else that isn't a clean positive answer is `Unknown`,
+not `Dead` — a resolver having a bad moment, a transient SERVFAIL, or a timeout must never be able
+to silently shrink the blocklist. An entry that stays `Unknown` across repeated monthly checks is
+worth surfacing in the pipeline's own build metrics as a thing to look at, not a reason to change
+its inclusion.
 
 **This runs centrally, in the list-build pipeline, on a monthly cadence — never on an end-user
 device.** Client daemons only ever consume an already-pruned, signed list; they do not run their
@@ -137,8 +171,14 @@ labels** (Rust's `fst` crate — pure Rust, no native C/C++ cross-compilation bu
   same bytes cannot be reclaimed without killing the process — a real risk under Android's
   OOM-killer behavior for backgrounded processes.
   - Hold the mapping behind a reference-counted handle (`Arc<Mmap>` via the `memmap2` crate in
-    Rust) so an update swaps to a new `Arc` without ever holding two full resident copies at once;
-    the old mapping's pages are reclaimed once the last in-flight lookup releases it.
+    Rust). During a swap, the old and new mappings *can* briefly coexist — any lookup already
+    holding a clone of the old `Arc` keeps it alive until it finishes — so this is not a claim that
+    only one copy is ever resident. The property that actually holds is narrower and still the
+    important one: neither mapping is ever force-retained beyond what's in use, both are
+    file-backed and therefore reclaimable by the OS under memory pressure the moment nothing
+    references them, and the swap itself needs no bulk copy — just publishing a new `Arc` and
+    letting the old one's refcount drain to zero. The `Arc` itself adds a per-lookup
+    atomic-refcount cost, not a memory cost.
   - Updates are atomic at the file level: write the new signed file to a temp path and `rename()`
     over the old one (atomic on POSIX filesystems, including Android's) — never overwrite the
     mapped file in place.
@@ -149,10 +189,30 @@ labels** (Rust's `fst` crate — pure Rust, no native C/C++ cross-compilation bu
 
 The FST file *is* the signed, distributed artifact — no separate transform happens on the client.
 The pipeline that does normalize → merge → dedupe → liveness-TTL-prune also emits the final `.fst`
-file and a manifest, signs the bundle with an Ed25519 key (public half shipped in the binary), and
-publishes it (e.g. GitHub Releases — no login required, CDN-cached, cheap conditional `ETag` GETs
-for clients that are already current). Client updates are opt-in, never silent background polling,
-consistent with the project's local-first default.
+file and a manifest (source versions/licenses, build time, entry count, and the provenance table —
+see [its plan](../components/domain-blocklist/plan.md) module 4), and publishes it (e.g. GitHub
+Releases — no login required, CDN-cached, cheap conditional `ETag` GETs for clients that are
+already current). Client updates are opt-in, never silent background polling, consistent with the
+project's local-first default.
+
+**The trust contract, precisely:**
+
+- The manifest embeds the SHA-256 digest of the `.fst` file, binding the two together — a client
+  can't be handed a manifest that describes one artifact while a different one is loaded.
+- The Ed25519 signature (public half shipped in the binary) covers `fst_digest || manifest_bytes`
+  — i.e. it authenticates the manifest, and transitively the `.fst` file through its digest, in one
+  signature rather than two independently-checkable ones that could be mixed and matched.
+- A client rejects and falls back to the last-known-good bundle on: a signature that doesn't
+  verify, a manifest whose `fst_digest` doesn't match the `.fst` file actually present, a manifest
+  that fails to parse, or a manifest version that is **not strictly greater** than the currently
+  loaded one — that last check is what stops a compromised distribution point from serving a
+  validly-signed but older, previously-revoked bundle back to a client (a rollback attack).
+- **Key rotation**: the binary ships a small list of trusted public keys, not a single hardcoded
+  one. Introducing a new key means shipping an app update that adds it to the trusted set *before*
+  the pipeline starts signing with it; retiring an old key means leaving it in the trusted set for
+  one full release cycle after the new key is introduced (so clients that haven't updated yet can
+  still verify a bundle signed with either), then dropping it. A key is never removed from the
+  trusted set in the same release that introduces its replacement.
 
 ## Rejected alternatives
 

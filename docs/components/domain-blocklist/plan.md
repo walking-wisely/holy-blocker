@@ -29,7 +29,7 @@ never needs network access itself to answer a filter query — it stays a pure c
 
 ### 1. `sources` — per-source fetch and parse
 
-```
+```text
 src/sources/stevenblack.rs
 src/sources/hagezi.rs
 src/sources/ut1.rs
@@ -40,18 +40,24 @@ Responsibilities:
 
 - One module per source, each parsing that source's native format (hosts-file syntax for
   StevenBlack, plain domain-per-line for hagezi, UT1's category directory structure) into a
-  common `RawEntry { domain: String, source: SourceId }`.
+  common `RawEntry { domain: String, source: SourceId, category: Category }`. `category` is
+  populated here, not inferred later — it's the one thing only the source-specific parser knows
+  (UT1 hands it out per directory, hagezi's NSFW list and StevenBlack's `porn` extension are each a
+  single fixed category), and module 2's merge step needs it on every `RawEntry` it consumes.
+- Every fetch also produces one `SourceSnapshot { source: SourceId, version: String, license: String, fetched_at: Timestamp }`, independent of the entries themselves — this is the provenance module 2 attaches to the merged output and what module 4's manifest ends up carrying (see below). Provenance is recorded per top-level source pulled directly (StevenBlack/hagezi/UT1); it does not attempt to unwind a source's own further upstream aggregation (StevenBlack's `porn` extension is itself built from smaller lists) — if a source is later found to embed something improperly licensed, the fix is dropping that whole source, not attributing individual entries within it.
+- Parsers must have a defined, tested answer for the malformed-input cases every one of these
+  formats actually contains: comment lines, bare IP-literal entries (no domain to normalize),
+  wildcard entries (`*.example.com`), empty labels, and domains that fail IDN/punycode conversion.
+  The default for anything a parser can't turn into a valid domain is to drop the line and count
+  it, not to panic or silently mis-normalize it.
 - No normalization here — that is a separate, shared step (module 2) so every source is normalized
   identically rather than each parser re-implementing it slightly differently.
 - Fetching is behind a trait (`SourceFetcher`) so tests can supply fixture bytes instead of hitting
   the network; the pipeline binary wires in a real HTTP client.
-- Record each source's license text/version at fetch time alongside the raw entries — this feeds
-  the provenance metadata in module 2 and is how a license change gets noticed rather than
-  assumed away.
 
 ### 2. `merge` — normalize, union, provenance, category separation
 
-```
+```text
 src/merge.rs
 ```
 
@@ -70,7 +76,7 @@ Responsibilities:
 
 ### 3. `liveness` — DNS-only revalidation with a persistent TTL cache
 
-```
+```text
 src/liveness.rs
 ```
 
@@ -78,9 +84,22 @@ Responsibilities:
 
 - `LivenessCache` — a persistent `domain → { last_checked, verdict, sources }` table (a flat file
   or embedded key-value store; no server, this runs inside the pipeline's own storage).
-- `check(domain: &str) -> Verdict` — a single DNS A/AAAA lookup, `Alive` or `Dead` (NXDOMAIN). No
-  HTTP fetch, no TCP connection to the domain's own server, no ICMP — see the decision doc's legal
-  boundary for why an application-layer request against a listed domain is never made here.
+- `check(domain: &str) -> Verdict` — a single DNS A/AAAA lookup. `Verdict` is **not** a boolean:
+
+  ```rust
+  enum Verdict {
+      Alive,                 // A or AAAA record, or a CNAME chain resolving to one
+      Dead,                  // NXDOMAIN
+      Unknown(UnknownReason), // NODATA, SERVFAIL, REFUSED, timeout, or a malformed response
+  }
+  ```
+
+  Only `Dead` prunes a domain from the next build. `Unknown` is left exactly as it was in the
+  previous build — a resolver hiccup or a transient SERVFAIL must never be able to silently shrink
+  the blocklist. A domain stuck in `Unknown` across repeated checks is a signal worth surfacing in
+  the build's own logs/metrics, not a reason to change its inclusion.
+  No HTTP fetch, no TCP connection to the domain's own server, no ICMP — see the decision doc's
+  legal boundary for why an application-layer request against a listed domain is never made here.
 - `due_for_check(cache_entry, now, ttl) -> bool` — pure function deciding whether a cached verdict
   is still trusted or needs a fresh lookup. Default TTL: one month. This is the piece that stops a
   source's own re-published stale entry from forcing an unbounded recheck every cycle while still
@@ -92,9 +111,12 @@ Responsibilities:
   cache, so a later revival is still detected once its TTL expires rather than being permanently
   invisible.
 
+(See [Reference documents](#reference-documents) below for the DNS response codes this matrix is
+built from.)
+
 ### 4. `fst_build` — the on-device artifact
 
-```
+```text
 src/fst_build.rs
 ```
 
@@ -105,15 +127,31 @@ Responsibilities:
 - Sorts the reversed, deduplicated key set (an `fst::MapBuilder` requirement — the merge/dedupe
   step upstream already produces this property, so this is not new work, just an ordering
   constraint on output).
-- Builds the FST, mapping each key to a small value carrying a category/provenance ID rather than
-  building a bare set, so a future "why is this blocked" surface doesn't need a second lookup
-  structure.
-- Writes the `.fst` file plus a manifest (source versions, build timestamp, entry count) and signs
-  the bundle with the pipeline's Ed25519 key.
+- Builds the FST, mapping each key to a small **provenance ID** (`u32`) rather than building a bare
+  set. The provenance ID is only meaningful alongside the manifest entry that decodes it — see
+  below — so a future "why is this blocked" surface never needs a second on-device lookup
+  structure, just this one plus the small manifest.
+- Writes the `.fst` file plus a manifest:
+
+  ```rust
+  struct Manifest {
+      build_time: Timestamp,
+      sources: Vec<SourceSnapshot>,          // one per constituent source, from module 1
+      provenance_table: Vec<ProvenanceEntry>, // provenance_id -> { sources: Vec<SourceId>, category: Category }
+      fst_digest: [u8; 32],                  // SHA-256 of the .fst file, binding manifest to artifact
+  }
+  ```
+
+  and signs `(fst_digest || manifest_bytes)` with the pipeline's Ed25519 key — see the decision
+  doc's "Distribution" section for the exact trust contract this produces. Round-trip tests cover
+  building a small provenance table, encoding it into the manifest, and decoding it back to the
+  same `{sources, category}` per ID.
+
+(See [Reference documents](#reference-documents) below for the FST/mmap references this module builds on.)
 
 ### 5. `cli` — the pipeline entry point
 
-```
+```text
 src/main.rs
 ```
 
@@ -178,7 +216,15 @@ Responsibilities:
   ([its plan](../net-shield/plan.md)); this crate only produces the artifact `DomainFilter` loads.
 - **UI for category selection or the allowlist override** — the allowlist is a local, per-device
   concern layered on top of whatever this pipeline ships, not something the pipeline itself
-  renders or stores per-user.
+  renders or stores per-user. The exact mechanics (does an allowlist entry match subdomains, how
+  it's persisted, that it's checked *before* the FST lookup so it always wins) belong in
+  `net-shield`'s own plan, since that's the crate that actually evaluates a query — this plan only
+  guarantees the pipeline never bakes an unconditional block past what a consumer's allowlist can
+  override.
 - **Windows/Android-specific packaging of the artifact** — how the signed `.fst` file reaches an
-  installed device (bundled at build time vs. fetched at runtime, per platform) is a distribution
-  concern for each daemon/app, not for this crate.
+  installed device (bundled at build time vs. fetched at runtime, per platform), including the
+  Android storage path, loader ownership, initial-install behavior, and last-known-good rollback,
+  is a distribution concern for each daemon/app, not for this crate. It needs a home in
+  `apps/mobile`'s and the mac-daemon's own plans before implementation — tracked as a gap here
+  rather than designed here, since packaging decisions for one platform don't belong in a
+  cross-platform pipeline's plan.
