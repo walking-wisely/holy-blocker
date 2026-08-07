@@ -18,10 +18,11 @@ elsewhere.
 
 ## Baseline evaluation (v0)
 
-**Done**, on `machine-learning/` as it exists on this branch. Ships
+**Done**, on `machine-learning/` as it exists on this branch. Uses
 [`Falconsai/nsfw_image_detection`](https://huggingface.co/Falconsai/nsfw_image_detection)
-(ViT-base, Apache-2.0, `id2label = {0: "normal", 1: "nsfw"}`) exactly as published — no
-fine-tuning — and measures its false-positive behavior on **rendered UI / text-heavy
+(ViT-base, Apache-2.0, `id2label = {0: "normal", 1: "nsfw"}`), downloaded from Hugging Face
+on the first evaluation run rather than shipped as weights in this package, exactly as
+published — no fine-tuning — and measures its false-positive behavior on **rendered UI / text-heavy
 screenshots**, closing a small piece of the gap [classifier-operating-point.md](../../decisions/classifier-operating-point.md#the-screen-path-operates-outside-this-measurement)
 flags ("the screen path operates outside this measurement"): that decision was recorded
 against a *different* model and geometry, but the underlying problem — no measurement
@@ -39,7 +40,9 @@ exists for rendered UI at all — is the same regardless of which backbone.
 - `eval.py` — pure: score distribution (mean/median/p90/p95/p99) plus a threshold sweep.
   No single threshold is picked — this model has no measured operating point yet.
 - `scripts/run_baseline_eval.py` — generates the corpus if needed and runs the eval.
-- 23 tests, all pure-logic (no torch/transformers, no network, no real corpus needed to run).
+- 27 tests, all deterministic (no torch/transformers, no network, no model download, no real
+  corpus needed to run) — most are pure-logic, and the synthetic UI tests additionally use
+  Pillow and write to a temp directory on disk.
 
 **Measured** (300 synthetic images, seed 0; reproduced at seed 1 within ~1.5pp per
 threshold): mean score 0.052, median 0.002 — most rendered UI scores very low — but the

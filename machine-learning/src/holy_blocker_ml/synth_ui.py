@@ -17,12 +17,19 @@ missing corpus.
 
 from __future__ import annotations
 
+import json
 import random
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
 from PIL import Image, ImageDraw, ImageFont
+
+# Written alongside the generated PNGs so a caller can tell whether a corpus
+# directory already holds the exact (seed, count) it's about to ask for,
+# rather than a stale run left over from an earlier invocation. Named so it
+# never collides with `output_dir.glob("*.png")`.
+MANIFEST_NAME = "manifest.json"
 
 # Realistic screen/window resolutions this project's daemons actually see:
 # common desktop resolutions, a MacBook's native logical resolution, and two
@@ -245,6 +252,23 @@ _SCENE_RENDERERS: dict[SceneKind, Callable] = {
 }
 
 
+def corpus_matches(output_dir: Path, count: int, seed: int) -> bool:
+    """Whether `output_dir` already holds a complete corpus for this exact
+    (count, seed), per its manifest. False for a missing directory, a
+    missing/unreadable manifest, or a manifest from a different (count,
+    seed) — a caller should regenerate in all of those cases rather than
+    reuse whatever PNGs happen to be sitting there.
+    """
+    manifest_path = output_dir / MANIFEST_NAME
+    if not manifest_path.is_file():
+        return False
+    try:
+        manifest = json.loads(manifest_path.read_text())
+    except (OSError, ValueError):
+        return False
+    return manifest.get("count") == count and manifest.get("seed") == seed
+
+
 def generate_corpus(output_dir: Path, count: int, seed: int) -> list[Path]:
     """Generate `count` synthetic UI/text images into `output_dir`.
 
@@ -254,12 +278,21 @@ def generate_corpus(output_dir: Path, count: int, seed: int) -> list[Path]:
     `packages/image-sandbox`'s parity tests pin against torchvision — exact
     pixel reproduction across environments is not a goal here, only a
     diverse, reproducible-in-composition benign corpus.
+
+    Always regenerates from scratch: any PNGs already in `output_dir` (e.g.
+    left over from a prior run with a different seed or count) are removed
+    first, so a reused directory never ends up scored as a mix of two
+    corpora. A manifest recording (count, seed) is written alongside the
+    images for `corpus_matches` to check on a later run.
     """
     output_dir.mkdir(parents=True, exist_ok=True)
+    for stale in output_dir.glob("*.png"):
+        stale.unlink()
     paths = []
     for i, spec in enumerate(plan_corpus(count, seed)):
         image = render_image(spec)
         path = output_dir / f"{i:05d}_{spec.scene}.png"
         image.save(path)
         paths.append(path)
+    (output_dir / MANIFEST_NAME).write_text(json.dumps({"count": count, "seed": seed}))
     return paths

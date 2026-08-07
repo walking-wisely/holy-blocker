@@ -37,12 +37,11 @@ def main() -> None:
     parser.add_argument("--model", default=model_mod.DEFAULT_MODEL_ID)
     args = parser.parse_args()
 
-    existing = sorted(args.data_dir.glob("*.png")) if args.data_dir.is_dir() else []
-    if len(existing) < args.count:
+    if synth_ui.corpus_matches(args.data_dir, args.count, args.seed):
+        print(f"reusing existing corpus in {args.data_dir} (count={args.count}, seed={args.seed})")
+    else:
         print(f"generating {args.count} synthetic UI images into {args.data_dir} ...")
         synth_ui.generate_corpus(args.data_dir, args.count, args.seed)
-    else:
-        print(f"reusing {len(existing)} existing images in {args.data_dir}")
 
     print(f"loading {args.model} ...")
     classifier = model_mod.load_classifier(args.model)

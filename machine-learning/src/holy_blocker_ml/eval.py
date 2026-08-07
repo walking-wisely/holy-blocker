@@ -13,6 +13,7 @@ cut to be chosen later against a real miss-budget decision.
 
 from __future__ import annotations
 
+import math
 import statistics
 from dataclasses import dataclass
 from pathlib import Path
@@ -55,10 +56,15 @@ class EvalResult:
 def _percentile(sorted_scores: Sequence[float], p: float) -> float:
     if len(sorted_scores) == 1:
         return sorted_scores[0]
-    # Nearest-rank on a 0..1 fraction, clamped at the ends. Not
+    # Nearest-rank: the smallest value at or beyond the p-th fraction of
+    # the ordered set (ceil(p * n), 1-indexed), clamped into range. Not
     # interpolated — simple and matches what a reader expects from "p95" on
     # a small eval set without importing numpy just for this.
-    index = min(len(sorted_scores) - 1, max(0, round(p * (len(sorted_scores) - 1))))
+    #
+    # round(p * (n - 1)) was tried first and is wrong: for n=6, p90 rounds
+    # to index 4 (the 5th of 6 values) instead of index 5 (the actual
+    # highest-ranked value at or above the 90th percentile).
+    index = min(len(sorted_scores) - 1, max(0, math.ceil(p * len(sorted_scores)) - 1))
     return sorted_scores[index]
 
 

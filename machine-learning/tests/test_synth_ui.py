@@ -2,6 +2,7 @@ from pathlib import Path
 
 from holy_blocker_ml.synth_ui import (
     SCENE_KINDS,
+    corpus_matches,
     generate_corpus,
     plan_corpus,
     render_image,
@@ -60,3 +61,24 @@ def test_generate_corpus_is_reproducible_in_composition(tmp_path: Path) -> None:
     # Same plan -> same filenames (scene names embedded), even though these
     # are two separate directories.
     assert [p.name for p in paths_a] == [p.name for p in paths_b]
+
+
+def test_generate_corpus_regenerating_with_new_plan_leaves_no_stale_files(
+    tmp_path: Path,
+) -> None:
+    generate_corpus(tmp_path, count=8, seed=1)
+    new_paths = generate_corpus(tmp_path, count=3, seed=2)
+    on_disk = sorted(tmp_path.glob("*.png"))
+    assert [p.name for p in on_disk] == [p.name for p in new_paths]
+    assert len(on_disk) == 3
+
+
+def test_corpus_matches_false_for_missing_directory(tmp_path: Path) -> None:
+    assert corpus_matches(tmp_path / "nope", count=5, seed=0) is False
+
+
+def test_corpus_matches_true_only_for_exact_count_and_seed(tmp_path: Path) -> None:
+    generate_corpus(tmp_path, count=5, seed=7)
+    assert corpus_matches(tmp_path, count=5, seed=7) is True
+    assert corpus_matches(tmp_path, count=5, seed=8) is False
+    assert corpus_matches(tmp_path, count=6, seed=7) is False

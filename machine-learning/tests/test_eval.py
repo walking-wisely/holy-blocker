@@ -23,6 +23,16 @@ def test_summarize_scores_rejects_empty() -> None:
         summarize_scores([])
 
 
+def test_summarize_scores_percentiles_use_nearest_rank() -> None:
+    # Six ordered scores: round(p * (n - 1)) would pick index 4 (value 4.0)
+    # for p90 instead of the correct nearest-rank index 5 (value 5.0) — see
+    # _percentile's docstring for why ceil(p * n) - 1 is used instead.
+    dist = summarize_scores([0.0, 1.0, 2.0, 3.0, 4.0, 5.0])
+    assert dist.p90 == pytest.approx(5.0)
+    assert dist.p95 == pytest.approx(5.0)
+    assert dist.p99 == pytest.approx(5.0)
+
+
 def test_threshold_sweep_counts_positive_rate() -> None:
     scores = [0.0, 0.1, 0.4, 0.6, 0.9]
     results = threshold_sweep(scores, thresholds=[0.5])

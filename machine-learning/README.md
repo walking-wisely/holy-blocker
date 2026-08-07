@@ -9,8 +9,10 @@ output here.
 ## What exists today
 
 A **baseline evaluation harness only** — no fine-tuning, no custom weights.
-It ships [`Falconsai/nsfw_image_detection`](https://huggingface.co/Falconsai/nsfw_image_detection)
-(a ViT-base classifier, Apache-2.0, `{0: "normal", 1: "nsfw"}`) exactly as
+It uses [`Falconsai/nsfw_image_detection`](https://huggingface.co/Falconsai/nsfw_image_detection)
+(a ViT-base classifier, Apache-2.0, `{0: "normal", 1: "nsfw"}`), downloaded
+from Hugging Face on the first evaluation run — this package ships the
+harness and a default model identifier, not the weights — exactly as
 published, and measures how it behaves on **rendered UI / text-heavy
 screenshots** — the distribution `docs/decisions/classifier-operating-point.md`
 flags as untested ("the screen path operates outside this measurement").
@@ -75,10 +77,11 @@ Reproduced with a second seed (`--seed 1`, separate `--data-dir`): FPR@0.5 =
 .venv/bin/python -m pytest
 ```
 
-All 23 tests are pure-logic (corpus loading, score summarization, threshold
-sweep, synthetic-corpus planning, NSFW-index resolution) and run without
-torch/transformers or network access — no test downloads the real model or
-depends on a real corpus existing on disk.
+All 27 tests are deterministic (corpus loading, score summarization, threshold
+sweep, synthetic-corpus planning and regeneration, NSFW-index resolution) and
+run without torch/transformers, network access, a model download, or a real
+corpus existing on disk. Most are pure-logic; the synthetic-UI tests also use
+Pillow and write to a temp directory.
 
 ## What this does not cover yet
 
