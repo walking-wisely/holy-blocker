@@ -52,10 +52,14 @@ public final class RealImageClassifier: ImageClassifying, @unchecked Sendable {
     /// scanning as on while classifying nothing is the failure this constructor exists to prevent.
     /// Callers that want the degraded mode ask for it explicitly with `disabled()`.
     ///
-    /// `threshold` is required and has no built-in fallback: a threshold belongs to a model *and*
-    /// a geometry, and the caller is responsible for supplying one calibrated for `modelPath`.
-    public convenience init(modelPath: String, threshold: Float) throws {
-        self.init(guardHandle: try ImageGuard.withModel(modelPath: modelPath, threshold: threshold))
+    /// Both thresholds are required and have no built-in fallback: a threshold belongs to a model
+    /// *and* a geometry, and the caller is responsible for supplying values calibrated for
+    /// `modelPath`.
+    public convenience init(modelPath: String, sexyThreshold: Float, explicitThreshold: Float) throws {
+        self.init(
+            guardHandle: try ImageGuard.withModel(
+                modelPath: modelPath, sexyThreshold: sexyThreshold,
+                explicitThreshold: explicitThreshold))
     }
 
     /// No model: allows every frame. What runs when no artifact has been provisioned.
@@ -68,6 +72,13 @@ public final class RealImageClassifier: ImageClassifying, @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return guardHandle.threshold()
+    }
+
+    /// The score at or above which this classifier warns.
+    public var sexyThreshold: Float {
+        lock.lock()
+        defer { lock.unlock() }
+        return guardHandle.sexyThreshold()
     }
 
     public func classify(pixels: [UInt8], width: Int, height: Int) -> ImageOutcome {
@@ -165,11 +176,13 @@ public struct InlineClassificationDispatcher: ClassificationDispatching {
 enum ImageMapping {
     /// `ImageOutcome` onto a `ScanVerdict`.
     ///
-    /// Unlike the text path there is no five-to-three narrowing: the image sandbox decides block or
-    /// allow and nothing else, because a probability has no `warn` band. Introducing one here would
-    /// be this daemon inventing an operating point the measurement never established — and the
-    /// crate's single threshold is already the measured one. `ProtectionMode` still applies on top,
-    /// in `ScanLoop`, which is where a block legitimately becomes a warn.
+    /// **This used to say a probability has no warn band — that was wrong in the direction that
+    /// mattered.** It was true of the two-class model this daemon shipped with, which could only
+    /// ever say safe-vs-explicit; it stopped being true once the classifier gained a `sexy` class
+    /// with its own measured-or-not threshold to compare against (`image-sandbox`'s `sandbox.rs`).
+    /// `ImageOutcome.warn` now maps onto `.warn` directly, the same as the text path's `Blur`
+    /// narrowing does, and `ProtectionMode` still applies on top in `ScanLoop` — a warn can still
+    /// be downgraded to allow, the same as a block can.
     ///
     /// **`regions` is always empty.** The tiled geometry knows which tile scored highest and could
     /// in principle report it, but a tile is a 224-wide band of the frame rather than a located
@@ -185,6 +198,9 @@ enum ImageMapping {
             return ScanVerdict(
                 action: .allow, rawAction: .allow, score: Double(score ?? 0), source: .image,
                 regions: [])
+        case .warn(let score):
+            return ScanVerdict(
+                action: .warn, rawAction: .warn, score: Double(score), source: .image, regions: [])
         case .block(let score):
             return ScanVerdict(
                 action: .block, rawAction: .block, score: Double(score), source: .image, regions: [])

@@ -17,17 +17,28 @@ use crate::preprocess::{PreprocessConfig, preprocess_tiles};
 use crate::raw::{PixelLayout, image_from_raw};
 
 /// What the proxy should do with an image response body.
+///
+/// Three tiers, not two: `Warn` is the `sexy` band the classifier contract
+/// added (`classifier.rs`) — content the model reads as suggestive but not
+/// explicit. A probability *can* carry a warn band once the model itself has
+/// three classes to draw the line between; a two-class model genuinely
+/// couldn't.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ImageVerdict {
     Allow,
+    Warn { score: f32 },
     Block { score: f32 },
 }
 
-/// Collapse per-tile scores into one verdict score.
+/// Collapse per-tile scores into one verdict score for a single class.
 ///
 /// The maximum, not the mean: "any region explicit → block" is what a blocker
 /// wants, and averaging dilutes a small explicit region into a large safe
-/// background — the exact failure the tiled geometry was adopted to fix.
+/// background — the exact failure the tiled geometry was adopted to fix. This
+/// reduction is applied independently per class (see `ImageSandbox::
+/// check_image`): a tile that reads mostly `sexy` and a different tile that
+/// reads mostly `explicit` are separate pieces of evidence and must not be
+/// averaged into each other.
 ///
 /// Empty input scores 0.0. `preprocess_tiles` always returns at least one
 /// window, so that is unreachable today; it is defined rather than panicking
@@ -43,6 +54,11 @@ pub fn reduce_tile_scores(scores: &[f32]) -> f32 {
 /// "allowed at 0.44 against the configured threshold" and "allowed at 0.01" are
 /// different facts about how well the operating point fits what is on screen.
 /// The network path has no such caller and keeps the plain verdict.
+///
+/// With two thresholds now in play, `score` is whichever class's score
+/// produced the verdict: `explicit_score` for `Block`, `sexy_score` for
+/// `Warn`, and the larger of the two for `Allow` — a model that ran and saw
+/// nothing still reports how close it came, on either axis.
 // Not `Copy`: `ImageVerdict` is not, and making it so would be a change to the
 // network path's public type for this path's convenience.
 #[derive(Debug, Clone, PartialEq)]
@@ -64,12 +80,18 @@ impl ScoredVerdict {
 
 /// There is no built-in default: a threshold belongs to a model **and** a
 /// geometry, and reusing one across either change has already caused an error
-/// in this project twice. The caller must supply one explicitly for its own
+/// in this project twice. The caller must supply both explicitly for its own
 /// deployed checkpoint — see the deployment's own configuration, not a value
 /// recorded here.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SandboxConfig {
     pub explicit_threshold: f32,
+    /// Score at or above which the `sexy` class produces `Warn` rather than
+    /// `Allow`. Same no-default rule as `explicit_threshold`, and the two are
+    /// only meaningfully ordered relative to each other for a given model —
+    /// nothing here enforces `sexy_threshold < explicit_threshold`, since a
+    /// model's own calibration is what should decide that, not this crate.
+    pub sexy_threshold: f32,
     pub preprocess: PreprocessConfig,
 }
 
@@ -83,12 +105,17 @@ impl ImageSandbox {
     ///
     /// Not a placeholder to be removed: it is what runs when no model path is
     /// configured, and it keeps the proxy's behaviour identical to today's.
-    /// The threshold is inert here — `check`/`check_raw` return `Allow` before
-    /// it is ever read — so `0.0` is a placeholder, not a claim about a value.
+    /// Both thresholds are inert here — `check`/`check_raw` return `Allow`
+    /// before either is ever read — so `0.0` is a placeholder, not a claim
+    /// about a value.
     pub fn disabled() -> Self {
         Self {
             classifier: None,
-            config: SandboxConfig { explicit_threshold: 0.0, preprocess: PreprocessConfig::default() },
+            config: SandboxConfig {
+                explicit_threshold: 0.0,
+                sexy_threshold: 0.0,
+                preprocess: PreprocessConfig::default(),
+            },
         }
     }
 
@@ -121,13 +148,13 @@ impl ImageSandbox {
 
     /// Classify a raw framebuffer the caller already holds — the screen path.
     ///
-    /// Same geometry, same threshold and the same fail-open contract as
+    /// Same geometry, same thresholds and the same fail-open contract as
     /// [`Self::check`]; only the decode step differs, because a captured frame
     /// was never encoded. `pixels` must be tightly packed with no row padding —
     /// see [`image_from_raw`].
     ///
-    /// **The configured threshold's provenance does not extend here.** Whatever
-    /// value the caller supplies is calibrated against a corpus of *images*
+    /// **The configured thresholds' provenance does not extend here.** Whatever
+    /// values the caller supplies are calibrated against a corpus of *images*
     /// under tile-max. A screen frame is a different distribution — a small
     /// content region inside application chrome, at a display aspect ratio —
     /// and re-deriving an operating point for it is an open question. Tile-max
@@ -160,7 +187,7 @@ impl ImageSandbox {
         self.check_image(&image)
     }
 
-    /// The shared half: tile, score every tile, reduce, threshold.
+    /// The shared half: tile, score every tile, reduce per class, threshold.
     fn check_image(&self, image: &image::DynamicImage) -> ScoredVerdict {
         let Some(classifier) = &self.classifier else {
             return ScoredVerdict::unscored_allow();
@@ -174,10 +201,14 @@ impl ImageSandbox {
             }
         };
 
-        let mut scores = Vec::with_capacity(tiles.len());
+        let mut sexy_scores = Vec::with_capacity(tiles.len());
+        let mut explicit_scores = Vec::with_capacity(tiles.len());
         for tile in &tiles {
             match classifier.classify(tile) {
-                Ok(ClassifyResult { explicit_score }) => scores.push(explicit_score),
+                Ok(ClassifyResult { sexy_score, explicit_score, .. }) => {
+                    sexy_scores.push(sexy_score);
+                    explicit_scores.push(explicit_score);
+                }
                 Err(error) => {
                     // An inference failure is a fault in us, not evidence about
                     // the image. Warn, because unlike a decode failure it should
@@ -193,19 +224,40 @@ impl ImageSandbox {
             }
         }
 
-        let explicit_score = reduce_tile_scores(&scores);
-        let verdict = if explicit_score >= self.config.explicit_threshold {
-            ImageVerdict::Block { score: explicit_score }
+        let explicit_score = reduce_tile_scores(&explicit_scores);
+        let sexy_score = reduce_tile_scores(&sexy_scores);
+
+        // `explicit` is checked first: the highest-`sexy` tile need not be the
+        // highest-`explicit` tile once each class is reduced independently, so
+        // an image can clear both bars at once, and block must win whenever it
+        // applies — warning on content that already clears the block bar would
+        // under-react to it.
+        if explicit_score >= self.config.explicit_threshold {
+            ScoredVerdict {
+                verdict: ImageVerdict::Block { score: explicit_score },
+                score: Some(explicit_score),
+            }
+        } else if sexy_score >= self.config.sexy_threshold {
+            ScoredVerdict {
+                verdict: ImageVerdict::Warn { score: sexy_score },
+                score: Some(sexy_score),
+            }
         } else {
-            ImageVerdict::Allow
-        };
-        ScoredVerdict { verdict, score: Some(explicit_score) }
+            ScoredVerdict {
+                verdict: ImageVerdict::Allow,
+                score: Some(explicit_score.max(sexy_score)),
+            }
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn config(sexy_threshold: f32, explicit_threshold: f32) -> SandboxConfig {
+        SandboxConfig { explicit_threshold, sexy_threshold, preprocess: PreprocessConfig::default() }
+    }
 
     #[test]
     fn a_sandbox_without_a_model_allows_everything() {
@@ -265,19 +317,20 @@ mod tests {
     }
 
     #[test]
-    fn a_disabled_sandbox_never_reads_its_placeholder_threshold() {
-        // `disabled()` carries an inert 0.0 — every check path returns before
-        // the classifier or the threshold is consulted, so this is a
-        // regression guard on that ordering, not a claim about the value.
+    fn a_disabled_sandbox_never_reads_its_placeholder_thresholds() {
+        // `disabled()` carries inert 0.0s — every check path returns before the
+        // classifier or either threshold is consulted, so this is a regression
+        // guard on that ordering, not a claim about the values.
         let sandbox = ImageSandbox::disabled();
         assert_eq!(sandbox.check(&[]), ImageVerdict::Allow);
     }
 
     #[test]
-    fn the_threshold_is_configurable_by_the_caller() {
-        let config = SandboxConfig { explicit_threshold: 0.44, preprocess: PreprocessConfig::default() };
+    fn both_thresholds_are_configurable_by_the_caller() {
+        let cfg = config(0.3, 0.44);
 
-        assert_eq!(config.explicit_threshold, 0.44);
+        assert_eq!(cfg.explicit_threshold, 0.44);
+        assert_eq!(cfg.sexy_threshold, 0.3);
     }
 
     // --- reducing tile scores ---------------------------------------------

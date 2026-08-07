@@ -18,6 +18,9 @@ usage: mitm-proxy [options]
   --image-model <path>   ONNX image classifier; images are not scanned without it
   --image-threshold <f>  block at or above this explicit score; required with
                           --image-model, no built-in default
+  --image-sexy-threshold <f>
+                          warn at or above this sexy score; required with
+                          --image-model, no built-in default
   -h, --help             print this message";
 
 #[derive(Debug, Clone, PartialEq)]
@@ -32,6 +35,10 @@ pub struct Options {
     /// checkpoint. Required whenever `image_model` is set; meaningless (and
     /// unread) otherwise.
     pub image_threshold: Option<f32>,
+    /// Sexy score at or above which an image warns. Same no-built-in-default
+    /// rule as `image_threshold`, and required alongside it whenever
+    /// `image_model` is set.
+    pub image_sexy_threshold: Option<f32>,
 }
 
 impl Default for Options {
@@ -41,6 +48,7 @@ impl Default for Options {
             ca_dir: PathBuf::from("data/ca"),
             image_model: None,
             image_threshold: None,
+            image_sexy_threshold: None,
         }
     }
 }
@@ -74,6 +82,18 @@ impl Options {
                     }
                     options.image_threshold = Some(parsed);
                 }
+                "--image-sexy-threshold" => {
+                    let raw = value()?;
+                    let parsed: f32 = raw
+                        .parse()
+                        .map_err(|e| format!("invalid --image-sexy-threshold {raw:?}: {e}"))?;
+                    if !(0.0..=1.0).contains(&parsed) {
+                        return Err(format!(
+                            "--image-sexy-threshold must be in [0, 1], got {parsed}"
+                        ));
+                    }
+                    options.image_sexy_threshold = Some(parsed);
+                }
                 "-h" | "--help" => {
                     println!("{USAGE}");
                     std::process::exit(0);
@@ -85,6 +105,13 @@ impl Options {
             return Err(
                 "--image-threshold is required when --image-model is set; there is no built-in \
                  default"
+                    .to_string(),
+            );
+        }
+        if options.image_model.is_some() && options.image_sexy_threshold.is_none() {
+            return Err(
+                "--image-sexy-threshold is required when --image-model is set; there is no \
+                 built-in default"
                     .to_string(),
             );
         }
@@ -111,6 +138,7 @@ mod tests {
         assert_eq!(options.ca_dir, PathBuf::from("data/ca"));
         assert_eq!(options.image_model, None);
         assert_eq!(options.image_threshold, None);
+        assert_eq!(options.image_sexy_threshold, None);
     }
 
     #[test]
@@ -119,6 +147,12 @@ mod tests {
         // disable blocking, since no score can ever reach it.
         assert!(parse(&["--image-threshold", "20"]).is_err());
         assert!(parse(&["--image-threshold", "-0.1"]).is_err());
+    }
+
+    #[test]
+    fn a_sexy_threshold_outside_the_unit_interval_is_rejected() {
+        assert!(parse(&["--image-sexy-threshold", "20"]).is_err());
+        assert!(parse(&["--image-sexy-threshold", "-0.1"]).is_err());
     }
 
     #[test]
@@ -133,10 +167,25 @@ mod tests {
     }
 
     #[test]
+    fn a_sexy_threshold_is_parsed_when_valid() {
+        assert_eq!(
+            parse(&["--image-sexy-threshold", "0.3"]).unwrap().image_sexy_threshold,
+            Some(0.3)
+        );
+    }
+
+    #[test]
     fn a_model_without_a_threshold_is_rejected() {
         // There is no built-in default to fall back to, and silently picking
         // one would bake a specific model's calibration into every deployment.
         assert!(parse(&["--image-model", "/tmp/model.onnx"]).is_err());
+    }
+
+    #[test]
+    fn a_model_with_an_explicit_threshold_but_no_sexy_threshold_is_rejected() {
+        assert!(
+            parse(&["--image-model", "/tmp/model.onnx", "--image-threshold", "0.5"]).is_err()
+        );
     }
 
     #[test]
@@ -155,6 +204,8 @@ mod tests {
             "/tmp/model.onnx",
             "--image-threshold",
             "0.5",
+            "--image-sexy-threshold",
+            "0.3",
         ])
         .unwrap();
 
@@ -162,6 +213,7 @@ mod tests {
         assert_eq!(options.ca_dir, PathBuf::from("/tmp/ca"));
         assert_eq!(options.image_model, Some(PathBuf::from("/tmp/model.onnx")));
         assert_eq!(options.image_threshold, Some(0.5));
+        assert_eq!(options.image_sexy_threshold, Some(0.3));
     }
 
     #[test]

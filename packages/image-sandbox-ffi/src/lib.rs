@@ -62,7 +62,7 @@ impl From<FramePixelLayout> for PixelLayout {
 /// What the caller should do with the frame it just handed over.
 ///
 /// An enum with fields rather than a record with a boolean, so the generated
-/// Swift is an enum with associated values and the two cases cannot be confused
+/// Swift is an enum with associated values and the cases cannot be confused
 /// at a call site.
 ///
 /// **`Allow` carries an optional score, and the option is load-bearing.**
@@ -72,9 +72,15 @@ impl From<FramePixelLayout> for PixelLayout {
 /// silently broken image path indistinguishable from a clean screen, which is
 /// exactly the failure the macOS daemon's first live pass spent a session on
 /// with its capture path.
+///
+/// **`Warn` is the `sexy` tier** — content the model reads as suggestive but
+/// not explicit. Unlike `Allow` its score is never optional: `Warn` is only
+/// ever produced after a real classification, so there is no "did this even
+/// run" ambiguity to preserve.
 #[derive(Clone, Copy, Debug, PartialEq, uniffi::Enum)]
 pub enum ImageOutcome {
     Allow { score: Option<f32> },
+    Warn { score: f32 },
     Block { score: f32 },
 }
 
@@ -82,6 +88,7 @@ impl From<ScoredVerdict> for ImageOutcome {
     fn from(value: ScoredVerdict) -> Self {
         match value.verdict {
             ImageVerdict::Allow => Self::Allow { score: value.score },
+            ImageVerdict::Warn { score } => Self::Warn { score },
             ImageVerdict::Block { score } => Self::Block { score },
         }
     }
@@ -123,20 +130,24 @@ pub struct ImageGuard {
 impl ImageGuard {
     /// Loads `model_path` and classifies against it.
     ///
-    /// `threshold` is required and has no built-in fallback: a threshold
-    /// belongs to a model **and** a geometry, and reusing one across either
-    /// change has already caused an error in this project twice. The caller
-    /// is responsible for supplying a value calibrated for the model at
-    /// `model_path` under this crate's tile-max geometry.
+    /// Both thresholds are required and have no built-in fallback: a
+    /// threshold belongs to a model **and** a geometry, and reusing one
+    /// across either change has already caused an error in this project
+    /// twice. The caller is responsible for supplying values calibrated for
+    /// the model at `model_path` under this crate's tile-max geometry.
     #[uniffi::constructor]
-    pub fn with_model(model_path: String, threshold: f32) -> Result<Arc<Self>, ImageGuardError> {
+    pub fn with_model(
+        model_path: String,
+        sexy_threshold: f32,
+        explicit_threshold: f32,
+    ) -> Result<Arc<Self>, ImageGuardError> {
         let preprocess = PreprocessConfig::default();
         let classifier = ImageClassifier::load(&PathBuf::from(&model_path), preprocess.input_size)
             .map_err(|error| ImageGuardError::Unavailable {
             reason: format!("{model_path}: {error}"),
         })?;
 
-        let config = SandboxConfig { explicit_threshold: threshold, preprocess };
+        let config = SandboxConfig { explicit_threshold, sexy_threshold, preprocess };
         Ok(Arc::new(Self {
             sandbox: ImageSandbox::new(classifier, config),
         }))
@@ -180,10 +191,15 @@ impl ImageGuard {
             .into()
     }
 
-    /// The threshold this guard is operating at, so the caller can log the
-    /// operating point beside a score rather than assuming one.
+    /// The explicit-tier threshold this guard is operating at, so the caller
+    /// can log the operating point beside a score rather than assuming one.
     pub fn threshold(&self) -> f32 {
         self.sandbox.config().explicit_threshold
+    }
+
+    /// The sexy-tier threshold this guard is operating at.
+    pub fn sexy_threshold(&self) -> f32 {
+        self.sandbox.config().sexy_threshold
     }
 }
 
@@ -211,7 +227,7 @@ mod tests {
         // The failure mode this constructor is fallible to prevent: a daemon
         // that reports "image scanning on" while classifying nothing.
         let Err(ImageGuardError::Unavailable { reason }) =
-            ImageGuard::with_model("/nonexistent/model.onnx".into(), 0.5)
+            ImageGuard::with_model("/nonexistent/model.onnx".into(), 0.3, 0.5)
         else {
             panic!("a missing model must not construct");
         };
@@ -231,11 +247,12 @@ mod tests {
     }
 
     #[test]
-    fn a_disabled_guard_reports_its_placeholder_threshold_without_reading_it() {
-        // `disabled()` never consults its threshold — every classify call
-        // returns before it is read — so this pins the placeholder rather
-        // than claiming it is a measured value.
+    fn a_disabled_guard_reports_its_placeholder_thresholds_without_reading_them() {
+        // `disabled()` never consults either threshold — every classify call
+        // returns before they are read — so this pins the placeholders rather
+        // than claiming they are measured values.
         assert_eq!(ImageGuard::disabled().threshold(), 0.0);
+        assert_eq!(ImageGuard::disabled().sexy_threshold(), 0.0);
     }
 
     #[test]
@@ -258,6 +275,13 @@ mod tests {
                 score: Some(0.77)
             }),
             ImageOutcome::Block { score: 0.77 }
+        );
+        assert_eq!(
+            ImageOutcome::from(ScoredVerdict {
+                verdict: ImageVerdict::Warn { score: 0.35 },
+                score: Some(0.35)
+            }),
+            ImageOutcome::Warn { score: 0.35 }
         );
     }
 

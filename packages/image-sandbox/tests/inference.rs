@@ -13,12 +13,22 @@
 
 #![cfg(feature = "onnx")]
 
-use image_sandbox::{ImageClassifier, ImageSandbox, ImageVerdict, PixelLayout, SandboxConfig};
+use image_sandbox::{
+    ImageClassifier, ImageSandbox, ImageVerdict, PixelLayout, PreprocessConfig, SandboxConfig,
+};
 use std::path::{Path, PathBuf};
 
 fn model_path() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../data/models/baseline-v0.onnx")
+}
+
+/// A placeholder pair, not a measured operating point — `SandboxConfig` has no
+/// built-in default on purpose (a threshold belongs to a model *and* a
+/// geometry), so these tests supply explicit values rather than reaching for
+/// one that does not exist.
+fn placeholder_config() -> SandboxConfig {
+    SandboxConfig { explicit_threshold: 0.5, sexy_threshold: 0.3, preprocess: PreprocessConfig::default() }
 }
 
 fn sandbox_or_skip() -> Option<ImageSandbox> {
@@ -28,7 +38,7 @@ fn sandbox_or_skip() -> Option<ImageSandbox> {
         return None;
     }
     let classifier = ImageClassifier::load(&path, 224).expect("model loads");
-    Some(ImageSandbox::new(classifier, SandboxConfig::default()))
+    Some(ImageSandbox::new(classifier, placeholder_config()))
 }
 
 #[test]
@@ -44,7 +54,7 @@ fn the_exported_model_loads_and_scores_a_real_image() {
 
     match verdict {
         ImageVerdict::Allow => {}
-        ImageVerdict::Block { score } => {
+        ImageVerdict::Warn { score } | ImageVerdict::Block { score } => {
             assert!((0.0..=1.0).contains(&score), "score out of range: {score}");
         }
     }
@@ -88,11 +98,11 @@ fn a_threshold_of_zero_blocks_and_of_one_allows() {
 
     let block_all = ImageSandbox::new(
         ImageClassifier::load(&path, 224).unwrap(),
-        SandboxConfig { explicit_threshold: 0.0, ..SandboxConfig::default() },
+        SandboxConfig { explicit_threshold: 0.0, sexy_threshold: 0.0, preprocess: PreprocessConfig::default() },
     );
     let allow_all = ImageSandbox::new(
         ImageClassifier::load(&path, 224).unwrap(),
-        SandboxConfig { explicit_threshold: 1.1, ..SandboxConfig::default() },
+        SandboxConfig { explicit_threshold: 1.1, sexy_threshold: 1.1, preprocess: PreprocessConfig::default() },
     );
 
     assert!(matches!(block_all.check(bytes), ImageVerdict::Block { .. }));
@@ -161,7 +171,7 @@ fn reading_a_bgra_frame_as_rgba_changes_the_score() {
     // can be compared numerically rather than only as allow/block.
     let sandbox = ImageSandbox::new(
         ImageClassifier::load(&path, 224).unwrap(),
-        SandboxConfig { explicit_threshold: 0.0, ..SandboxConfig::default() },
+        SandboxConfig { explicit_threshold: 0.0, sexy_threshold: 0.0, preprocess: PreprocessConfig::default() },
     );
 
     let correct = sandbox.check_raw(&pixels, width, height, PixelLayout::Bgra);
