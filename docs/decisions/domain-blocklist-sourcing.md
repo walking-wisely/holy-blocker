@@ -1,0 +1,774 @@
+# Decision: Domain Blocklist Sourcing, Merging, and Distribution
+
+## Status
+
+Accepted. No code exists yet — this records the design so `packages/domain-blocklist` (planned,
+see [its plan](../components/domain-blocklist/plan.md)) and `net-shield`'s placeholder blocklist
+loading path have something concrete to build against.
+
+## Context
+
+Reliable domain blocking depends on a reliable domain list. That list has three separate problems
+bundled together — where the domains come from, how multiple sources get combined into one list
+without amplifying each other's noise, and how the result gets onto a device (including a mobile
+device, where storage and RAM are tighter) — and each one has a wrong-but-tempting shortcut.
+
+Two figures used throughout this document are **planning assumptions, not measurements**: the
+merged entry count (~1,000,000) and the FST's bytes-per-entry. Both are gated by build-time checks
+described below rather than trusted, for the same reason `image-sandbox`'s two v0 constants were
+both guesses and both wrong.
+
+## Legal boundary (settled first, because it constrains everything else)
+
+### Jurisdictional scope, and what it does not cover
+
+The operating assumption is **US, EU, and UK law** — UK explicitly, because UK GDPR / DPA 2018 is a
+separate regime post-Brexit and because IWF, cited below, is a UK body. No other jurisdiction is
+analysed here.
+
+That scope carries a known, documented simplification: **"legal adult content" is itself
+jurisdiction-relative.** The legality of drawn and animated depictions in particular varies by
+country — and this project's own `machine-learning` work trains on drawn/anime material, so the
+boundary is not hypothetical. This document does not claim the legal/illegal line it draws is
+universal; it claims only that the line is drawn under US/EU/UK law, and that a deployment
+elsewhere needs its own review. Stating this is not a hedge — it is the difference between a
+documented scope and an unexamined assumption.
+
+### Users
+
+The specific, defensible privacy claim is narrower than "GDPR doesn't apply": **this system does
+not collect, log, or transmit which domains a specific user visited.** That is the category of
+processing that matters here, and no part of this design does it — verdicts are computed on-device
+against a locally-held artifact, and nothing about a lookup leaves the device.
+
+The claim is *not* "this system never phones home." It does, in exactly one place: the
+[distribution](#distribution) fetch. Downloading a blocklist bundle from a public host is an
+outbound request that reveals to that host (and to anyone on the path) that a given IP address runs
+adult-content-filtering software, on a recurring cadence. That is a real, if much smaller, privacy
+signal than a browsing log — it carries no per-domain information, only the fact of the software's
+presence. It is worth stating plainly rather than designing around: updates are opt-in, so the
+signal is user-consented, and a user who does not want it can decline updates and keep a stale
+list.
+
+### Domain operators
+
+The larger exposure is not users, it is **domain operators**. A domain string can itself identify a
+natural person — a creator site branded with a personal name is the ordinary case, not the edge
+case — and classifying such a domain as hosting adult content is processing of special-category
+data under GDPR Art. 9 (data concerning sex life or sexual orientation). This is not solved by
+"we don't store user data."
+
+**The Art. 6/Art. 9/Art. 14 analysis below is a documented working assumption, not a legal
+opinion.** It records the reasoning this design was built against so an implementer isn't starting
+from nothing, but none of it has been reviewed by qualified counsel, and shipping the CSAM-adjacent
+personal-name triage or the general notice described here needs that review first — **the project
+owner is the decision owner for that sign-off**, tracked the same way any other pre-ship gate is
+tracked, not assumed satisfied by this document existing.
+
+**Lawful basis (working assumption).** Art. 6(1)(f), legitimate interest: child and household
+content safety. The Art. 9 condition is **Art. 9(2)(e), data manifestly made public by the data
+subject** — an operator publicly running an adult site under their own domain and branding has
+manifestly made that fact public themselves. This is the only Art. 9(2) condition that fits;
+consent is unobtainable at this scale and none of the other exemptions apply. This is the pipeline
+author's reading, offered as the starting point for counsel review, not a substitute for it.
+
+**Notice (working assumption).** Individual notice to every operator in a multi-million-entry
+aggregated list is disproportionate, so **Art. 14(5)(b)** applies. That exemption is not silence —
+the obligation it substitutes is a *public, general notice*: a published statement describing what
+the pipeline classifies, which sources it draws from, and how to dispute an entry. Publishing that
+statement is a shipping requirement, not a nicety, and its wording is part of what counsel review
+above needs to cover before the pipeline ships to real users.
+
+**Automated triage, not manual review.** Manually reviewing a multi-million-entry list is not a
+plan. What is implementable is a narrow heuristic in the merge step: flag a domain whose
+second-level label decomposes into **2–4 alphabetic tokens separated by `-`, `.`, or `_`**, in any
+order (covering `first-last`, `last-first`, `first.middle.last`, and the underscore variants),
+optionally raising confidence against a first-name/surname frequency list. Only matches enter a
+lighter review queue. This is explicitly a **triage filter to bound workload, not a completeness
+guarantee** — it will miss single-token personal brands and will flag plenty of ordinary
+two-word domains. Its value is that it turns "review everything" (impossible) into "review a
+tractable slice" (routine).
+
+**Dispute and rectification.** The device-local allowlist is not a remedy for an operator: it does
+not reach them, and they need a channel *into* the pipeline, not one out of it. A public
+operator-facing channel (a form or a published contact address, named in the general notice) is
+therefore required, and disputes split into two tracks with different correct outcomes:
+
+- **Rectification** — "this is misclassified / not adult content / not my domain." Verify and
+  correct. This unblocks: the entry is removed from the next build and recorded as a source-level
+  correction so a later refresh of the same source does not silently reinstate it.
+- **Objection to accurate processing (Art. 21)** — "the classification is accurate, I object
+  anyway." The controller may refuse and continue processing where there are compelling legitimate
+  grounds, and child-safety is one. But the refusal must be a **documented balancing judgment made
+  each time**, not silence and not a template. What makes refusing defensible is minimization: the
+  pipeline stores nothing about an operator beyond the domain string and its provenance — no
+  cross-referencing to an off-domain identity, no enrichment, no contact scraping. That
+  minimization is a design constraint, not a policy preference, precisely because it is what the
+  refusal rests on.
+
+### The CSAM boundary
+
+**This project never builds, holds, or infers a CSAM domain list.** Lists that identify illegal
+child-exploitation material are a different legal category, maintained under chain-of-custody by
+designated bodies (NCMEC, IWF, INHOPE) and distributed only to vetted members under contract. Holy
+Blocker's scope is legal-but-unwanted adult content, never illegal-content detection, and the
+pipeline must never attempt to compile or supplement anything resembling that list itself.
+
+A blocklist match is **not**, by itself, a reportable incident — the sources here classify legal
+adult content, so the overwhelming majority of matches are exactly that and require no action
+beyond blocking.
+
+The exceptional case is a credible, specific suspicion that a particular entry is CSAM rather than
+legal content. **That suspicion may only originate externally.** The pipeline forbids inspecting
+content, so it cannot itself produce such a signal, and a trigger that requires a contributor to
+have looked is circular. The only admissible triggers are:
+
+- a user report,
+- a partner or hotline organisation's public takedown notice,
+- a law-enforcement notice.
+
+Handling, precisely:
+
+- Reports arrive through a **private channel** — a published security-contact address or a private
+  issue tracker. Never a public GitHub issue, and never anything that lands in a public CI log. An
+  open-source project cannot promise "restricted access" to a public build artifact, so the control
+  is that the material never enters the public surface in the first place.
+- **Retention is minimal**: the domain string and the external report's own description. Nothing is
+  captured independently — the site is never fetched, rendered, cached, or inspected to "confirm"
+  it. The record is deleted once it has been reported onward and acted on.
+- The entry is quarantined (held out of the published artifact) and reported through NCMEC's
+  CyberTipline or IWF's portal.
+- **Reporting obligations vary by jurisdiction.** A contributor outside the US/UK may have
+  different, and in some countries mandatory, duties. This document does not enumerate them; it
+  requires that a contributor receiving such a report route it through the private channel rather
+  than acting alone.
+
+This is also why the liveness check below is DNS-only: it must never perform an application-layer
+request against a listed domain, so the pipeline can never accidentally retrieve or display a page
+body for anything on the list.
+
+## Decision
+
+### Sources
+
+Start with three, all actively maintained and with source-tracking rather than blind trust in any
+one of them:
+
+- **[StevenBlack/hosts](https://github.com/StevenBlack/hosts)** (`porn` extension) — widely used,
+  itself an aggregation of smaller lists.
+- **[hagezi/dns-blocklists](https://github.com/hagezi/dns-blocklists)** (NSFW list) — actively
+  maintained, documented methodology, frequent updates.
+- **[UT1 blacklists](https://dsi.ut-capitole.fr/blacklists/)** (Université Toulouse Capitole,
+  `adult` category) — a 15+ year academic project purpose-built for institutional content
+  filtering, the most rigorously documented of the three.
+
+#### Pinned revisions, never floating HEAD
+
+Each source is pinned to a **specific release tag or commit hash**, recorded in the pipeline's
+checked-in configuration. Moving to a newer upstream revision is an explicit version bump — a
+reviewed diff in a pull request — not something a scheduled run does by itself.
+
+This is the integrity gate on the *upstream* leg, which signing alone does not provide: the
+Ed25519 signature described under [Distribution](#distribution) proves the artifact came from this
+pipeline, and says nothing about whether a compromised upstream repository or a bad merged PR fed
+it garbage. Auto-fetching `HEAD` would launder an upstream compromise into a validly signed
+artifact within one cadence. Pinning converts that into something a human sees.
+
+Combined with the diff-size guard below, a version bump that adds an implausible number of entries
+also stops before publication rather than after.
+
+#### License gate
+
+**Each source's current license must be verified before implementation, and re-verified at every
+build.** This document deliberately does not assert what any of the three licenses currently say —
+licenses change, and an assertion in a decision doc is exactly the kind of one-time assumption that
+goes stale silently.
+
+What the design needs to know is which license *shapes* would break it, since the artifact is a
+redistributed derived binary:
+
+- **Share-alike / copyleft terms** that propagate into a derived combined work would attach to the
+  redistributed `.fst` artifact, and potentially to whatever ships alongside it. That is a design
+  break, not a paperwork item.
+- **Non-commercial-only terms** are compatible with the artifact as published today, but become a
+  break the moment the artifact is bundled with anything monetized.
+- **No-redistribution terms** (some blocklist projects carry these — oisd.nl is the commonly cited
+  example) block vendoring the source into a shipped artifact outright, even though the underlying
+  list is perfectly legal to hold. That is a distribution-license question, entirely separate from
+  the legality question above.
+
+The mechanism, so this is enforced rather than remembered: each source's `SourceSnapshot` carries a
+`license` field, and the build **checks it against a small checked-in allowlist of compatible
+license identifiers**. A source whose license identifier is not on the allowlist is refused —
+the build fails rather than quietly including it. Adding an identifier to the allowlist is a
+reviewed change, which is where the actual legal judgment gets made and recorded.
+
+**The merged artifact's own license is the least-permissive of its inputs**, computed at build time
+and written into the manifest, so the published bundle always states terms it can actually satisfy.
+
+Provenance is tracked one level deep, at the source actually being pulled from — StevenBlack's
+`porn` extension is itself an aggregation of smaller lists, and this decision does not require
+unwinding that further; if StevenBlack's own aggregation is later found to embed something
+improperly licensed, the fix is dropping the StevenBlack source entirely, not attributing
+individual entries within it.
+
+#### A failed fetch aborts the build
+
+If any configured source fails to fetch — network error, 404 on a pinned tag, a checksum mismatch —
+the **entire build aborts and nothing is published**. It does not proceed with two of three sources.
+
+Silently shipping partial coverage is the worst available outcome: it looks like a successful build,
+produces a validly signed artifact, and quietly removes a slice of protection that nobody is
+watching for. Dropping a source permanently is a deliberate, reviewed configuration change; it is
+never something a transient fetch failure decides.
+
+### Combining sources
+
+#### 1. Normalization is for comparison only, and never widens a rule's scope
+
+This is the sharpest correctness rule in the document, because getting it wrong blocks entire
+hosting providers. `net-shield`'s own `radix.rs` test suite already demonstrates the failure class:
+a rule for `adult` matching `site.adult`.
+
+Two distinct things must not be conflated:
+
+- **`normalize()` — a comparison key.** Lowercase; apply UTS #46 mapping and case folding; convert
+  U-labels to A-labels (punycode); strip a trailing dot; validate length limits after conversion.
+  Purely so that "is domain X already in the list" is a reliable comparison instead of a
+  string-literal accident. **It never changes what a rule covers**, and — unlike an earlier draft of
+  this document — it does not strip a `www.` label either, for exactly that reason: stripping it
+  would fold `www.example.com` and `example.com` onto the same comparison key before scope is even
+  decided, making a rule that named one indistinguishable from a rule that named the other.
+- **`RuleScope` — what a rule matches.** Either `Apex` (this domain and everything under it) or
+  `ExactHost` (this exact name only).
+
+**A rule is `Apex` only when the source's own listed entry is itself the registrable domain
+(eTLD+1).** It is never inferred by stripping a prefix. A source entry of `www.example.com` is
+**not** eTLD+1 — `www` is a label below the registrable domain — so it normalizes to its own
+comparison key and scopes to `ExactHost`, matching only `www.example.com`. A source entry of
+`example.com` *is* eTLD+1 and becomes `Apex`, which — because `Apex` covers everything under the
+domain — already matches `www.example.com` too, without the two entries needing to share a
+comparison key. Because the query side applies the identical `normalize()`, a lookup of
+`www.example.com` matches the `ExactHost` rule (or the `Apex` rule if one exists for the bare
+domain), a lookup of `example.com` matches only an `Apex` or `ExactHost` rule actually filed under
+`example.com`, and a lookup of `cdn.example.com` correctly matches neither unless something names
+it or the apex directly.
+
+Registrability is decided against the **[Public Suffix List](https://publicsuffix.org/)**, checked
+at build time:
+
+- An entry that *is* a public suffix (`com`, `co.uk`, `s3.amazonaws.com`, `blogspot.com`) is
+  **refused as an apex rule outright**. Nothing about the design should ever be able to emit a rule
+  covering an entire multi-tenant provider.
+- An entry below a public suffix that is not eTLD+1 (`foo.bar.example.com`) is kept as
+  `ExactHost`, not promoted.
+- An entry that *is* eTLD+1 under a provider suffix (`someone.blogspot.com`, since the PSL lists
+  `blogspot.com`) is legitimately `Apex` — that is the tenant's own registrable space, and the PSL
+  is precisely what tells the two cases apart.
+- **A small, explicit, checked-in denylist of major shared-hosting apexes** backstops the PSL,
+  which is community-maintained and incomplete. An entry on that denylist is never `Apex`, PSL or
+  not.
+
+#### 2. Union with provenance
+
+Track which source(s) flagged each domain, not just the domain itself. This matters twice: (a) if a
+source turns out to be low-quality or disappears, it can be backed out cleanly; (b) if a user
+disputes a block, the pipeline can say why it's blocked instead of shrugging.
+
+Provenance is a forensic tool, not a quality control. It tells you which source was wrong *after* a
+false positive has already shipped — which is why the union needs the measured gate below rather
+than trusting the sources to be individually clean.
+
+#### 3. A measured false-positive gate on every build
+
+A plain union is, by construction, the **maximum-noise** combining rule: every source's false
+positives survive into the output, and no source's cleanliness cancels another's mistakes. That
+directly contradicts this design's own goal of combining sources without amplifying each other's
+noise. Provenance does not fix it; measurement does.
+
+Every build therefore evaluates the merged list against a **known-good negative control set** and
+refuses to publish if it fails:
+
+- The control is the **[Tranco](https://tranco-list.eu/) top-N list**, pinned to a specific daily
+  release like any other source, minus a small **reviewed, checked-in exclusion file** of control
+  entries that are legitimately adult (there are a handful in any top-10k list, and leaving them in
+  would make the metric meaningless).
+- The gate is the fraction of the remaining control set that the merged list blocks. **Starting
+  threshold: 0.5%** — deliberately a starting value, to be re-derived from the first real
+  measurement rather than defended as correct. A build exceeding it does not publish.
+- The build also reports *which* control entries were hit and under which provenance ID, so a
+  regression names the source that caused it.
+
+This mirrors `machine-learning`'s `gate.py` release guardrail: the project already refuses to ship a
+classifier with no measured quality signal, and a blocklist with no measured false-positive rate is
+the same failure in a different package.
+
+#### 4. Personal-name triage
+
+The heuristic described under [Domain operators](#domain-operators) runs here, over the merged set,
+routing matches into a review queue. It changes no verdict on its own.
+
+#### 5. User-level allowlist override sits on top, unconditionally
+
+False positives are inevitable with any aggregated list, and there needs to be a local,
+no-appeal-required way to unblock a domain the household actually trusts. This decision fixes the
+*precedence* (allowlist checked before the shipped list, always wins) and the *ownership* (local to
+the device, never uploaded or reconciled against anything this pipeline produces); it deliberately
+leaves the exact matching semantics and persistence mechanics to `net-shield`'s own plan, since
+that's the crate that actually evaluates a query against both. The full precedence model, including
+where FST-sourced rules sit relative to `net-shield`'s existing explicit rules, is specified in
+[the plan](../components/domain-blocklist/plan.md) module 6.
+
+This is a *user's* remedy. It is not an operator's remedy — see the dispute channel above.
+
+#### 6. Don't blend categories silently
+
+A source's "adult" category and its "gambling" or "dating" category are different products, and a
+domain legitimately can be both — an aggregator listing under "adult" and a different one under
+"gambling" are two true statements about the same domain, not a conflict. `MergedEntry` therefore
+carries a **set** of categories, never a single value that one merge step could silently overwrite
+with the other. A build ships a domain if any one of its categories is in that build's configured
+set; it does not require all of a domain's categories to match. The exact type
+(`MergedEntry.categories: Vec<Category>`) and the provenance ID's matching field are in
+[the plan](../components/domain-blocklist/plan.md) module 2 and module 4.
+
+### Publish gates
+
+Signing proves an artifact came from this pipeline. It says nothing about whether the pipeline
+produced a *sane* artifact. Four checks stand between a completed build and a published bundle, and
+**each one requires explicit human sign-off to override — never an automatic publish**:
+
+| Gate | Refuses to publish when | Why |
+|---|---|---|
+| Liveness canary | any canary domain returns anything but its expected verdict | a filtering or hijacking resolver would otherwise prune the list to nothing |
+| Shrinkage | entry count drops **>10%** below the previous published build, or below an absolute floor | catches a bad sweep, a source that silently emptied, a parser regression |
+| Growth | *added* entries exceed **10%** of the previous published build | catches a compromised or mis-bumped upstream injecting bulk entries |
+| False-positive rate | control-set FP rate exceeds its threshold | catches noise amplification across the union |
+| Artifact size | the built `.fst` exceeds its size budget | catches unbounded growth before a device pays for it |
+
+The percentages are starting values chosen to be tight enough to catch a category error and loose
+enough not to fire on ordinary churn; like every other constant here they are to be re-derived once
+several real builds exist.
+
+#### Artifact size budget
+
+**Ceiling: 32 MB for the `.fst` file.** A build that exceeds it does not publish without a
+signed-off exception.
+
+The precedent is `image-sandbox`'s 15 MB model budget — this project states download/footprint
+ceilings and enforces them rather than discovering them on a user's device. 32 MB is chosen against
+a mobile download and a mmap-backed on-disk footprint, with headroom over the ~4 MB the planning
+assumption implies, precisely because the planning assumption is untrusted: if the real merged
+count turns out to be several million (UT1's `adult` category alone is plausibly a multiple of the
+assumed figure), the budget is what surfaces that as a decision rather than a surprise.
+
+### Liveness revalidation: DNS-only, centralized, cached with a TTL
+
+Liveness is checked by **DNS resolution only** — never a full HTTP fetch, and never ICMP. ICMP is
+the wrong signal regardless of cost: most hosting today sits behind a CDN or load balancer that
+either doesn't route ICMP to the origin or answers ping from an edge node unrelated to whether the
+site is actually up. DNS-only also satisfies the legal boundary above, since it never performs an
+application-layer request that could retrieve a page body.
+
+The verdict is a three-way match, not a boolean, because DNS has more failure modes than "up" or
+"down":
+
+| Response | Verdict | Effect on next build |
+|---|---|---|
+| A/AAAA record, or a CNAME chain resolving to one | Alive | kept |
+| NXDOMAIN | Dead | pruned |
+| NODATA, SERVFAIL, REFUSED, timeout, or a malformed/unparseable response | Unknown | **kept, unchanged** |
+
+Only `NXDOMAIN` prunes an entry. Everything else that isn't a clean positive answer is `Unknown`,
+not `Dead` — a resolver having a bad moment, a transient SERVFAIL, or a timeout must never be able
+to silently shrink the blocklist. An entry that stays `Unknown` across repeated sweeps is worth
+surfacing in the pipeline's own build metrics as a thing to look at, not a reason to change its
+inclusion.
+
+The table above describes one query's result; a liveness check runs **two** (A and AAAA), which can
+disagree — one family returning `NXDOMAIN` while the other times out is not a rare case, it is the
+ordinary shape of a dual-stack failure. The two combine in this order: **`Alive` if either lookup
+resolves** (one working address family is enough); otherwise **`Dead` only if both unambiguously
+return `NXDOMAIN`**; otherwise **`Unknown`**. A mixed `NXDOMAIN`/`Unknown` pair is therefore
+`Unknown`, never `Dead` — a resolver failing to give a straight answer on one address family must
+not let the other family's clean `NXDOMAIN` carry the domain to pruning. A domain checked for the
+first time that comes back `Unknown` is **included by default**, same as an already-cached
+`Unknown` entry: "we couldn't tell yet" is never itself a reason to omit a domain.
+
+**This runs centrally, in the list-build pipeline — never on an end-user device.** Client daemons
+only ever consume an already-pruned, signed list; they do not run their own liveness checks and this
+cost is never charged against a user's mobile data.
+
+#### The resolver, and the canary check that guards it
+
+**The pipeline must run against a documented, verified non-filtering resolver.** This is a hard
+requirement, not a configuration preference, and it is the single most dangerous failure mode in the
+whole design: a resolver that filters adult content — Cloudflare's `1.1.1.3` family filter,
+OpenDNS FamilyShield, and a great many corporate and CI-provider networks — returns NXDOMAIN or a
+sink address for essentially every domain on this list. Every entry reads as `Dead`. The pipeline
+prunes the list to near-zero, signs the result, and ships it. Nothing in the process looks broken.
+
+Two mechanisms, both required:
+
+**A named, non-filtering resolver.** The pipeline is configured with an explicit resolver address
+and does not use the host's system resolver, which on a CI runner is whatever the provider
+happens to supply. The default is Cloudflare's unfiltered `1.1.1.1` / `2606:4700:4700::1111`,
+explicitly *not* the `1.1.1.2` (malware) or `1.1.1.3` (family) variants. Any substitute must be
+documented and canary-verified the same way.
+
+**A canary check before every sweep**, over a small fixed set of control domains that has nothing to
+do with adult content, checked in both directions:
+
+- Several **known-always-alive, definitely-non-adult** domains (e.g. `iana.org`,
+  `root-servers.net`, a major-CDN hostname) must each return `Alive`.
+- At least one **reserved name guaranteed not to resolve** (RFC 2606 / RFC 6761 — `invalid.` and a
+  name under `test.`) must return `Dead`. This second direction catches the resolver that
+  NXDOMAIN-rewrites to a wildcard sink, which would produce the *opposite* failure: nothing ever
+  prunes, and the list quietly stops being maintained.
+
+**If any canary returns anything other than its expected verdict, the entire sweep aborts.** Every
+verdict from that run is treated as untrusted and discarded — not merged, not cached, not written
+back. Nothing is published. A partially-completed sweep is not salvaged, because there is no way to
+know at which query the resolver started lying.
+
+#### Cadence, TTL, and pacing — three separate numbers
+
+These were previously one number, which made the promised steady-state saving imaginary: if the
+recheck TTL equals the run cadence, every cached entry is due on every run, and a run a minute early
+or late swings the check volume wildly.
+
+- **Run cadence: monthly.** How often the pipeline builds and publishes.
+- **Dead-entry recheck TTL: 3 cadences (~3 months).** A domain cached as `Dead` that still appears
+  in a source refresh is only rechecked once its cache entry is older than the TTL. With TTL at
+  three times the cadence, roughly **one third** of the previously-dead cohort is due on any given
+  run — which is where the steady-state saving actually comes from. A genuine revival (domain
+  resold or re-registered) is still caught, within one TTL.
+- **Sweep pacing: spread over a ~24-hour window**, not the full month and not one burst. The doc
+  previously implied both 0.4 qps and ~280 qps without choosing. The chosen model is a steady low
+  rate across a bounded window: a cold sweep of ~1,000,000 domains is ~2,000,000 queries (see
+  below), which over 24 hours is **~23 qps** — low enough to be a polite, unremarkable load against
+  a public resolver, bounded enough that a sweep's results all describe roughly the same moment in
+  time. Steady-state sweeps are a fraction of that and finish sooner.
+
+A domain cached as **alive**, or brand new to every source, is checked on every sweep.
+
+**Batching multiple domains into one DNS query is not practically available** — RFC 1035's QDCOUNT
+field permits it in principle, but essentially no real-world resolver answers more than one question
+per message. The available lever is **concurrency** (many in-flight query packets at once,
+rate-limited to the chosen qps), not batching.
+
+#### The TTL cache needs a real home
+
+The cache is a multi-million-row `domain → {last_checked, verdict, sources}` table that must survive
+between runs. **A CI runner's filesystem is ephemeral and cannot hold it.** The pipeline therefore
+stores the cache as a **versioned object in dedicated persistent storage** — a private object-store
+bucket, or a release asset on the pipeline's own distribution channel, or a CI artifact cache with
+retention configured well beyond the TTL — fetched at the start of a run and written back at the
+end.
+
+It is **not committed into the public repository tree**, consistent with this project's existing
+convention of gitignoring corpora and model artifacts. A run that cannot load the cache starts cold
+and does a full sweep; a run that cannot write it back fails loudly rather than silently discarding
+three months of accumulated state.
+
+#### Egress: a documented estimate, not a measurement
+
+The previous figures undercounted by roughly 2×, because **a liveness check is not one query**. A
+and AAAA are separate QTYPEs requiring separate queries, and `QTYPE=ANY` is not a shortcut —
+RFC 8482 documents that major resolvers refuse or minimize it precisely to stop this use.
+
+- A DNS query (IPv4 header + UDP header + DNS header + question) for a typical hostname is roughly
+  **65–75 bytes** on the wire.
+- A response (positive A/AAAA record, or NXDOMAIN-with-SOA) is roughly **100–180 bytes**.
+- Round trip per query: ~150–250 bytes. **Per domain, at two queries: ~300–500 bytes**, call it
+  ~400 bytes as a working average.
+- Cold sweep of 1,000,000 domains (2,000,000 queries): **~300–500 MB**, spread over the 24-hour
+  sweep window.
+
+**These are estimates and should be presented as such.** They exclude retries on timeout, EDNS0
+option overhead, and CNAME-chain following where a resolver's answer requires a follow-up query —
+each of which adds queries, not bytes-per-query. The real number is above this range, not below it.
+It remains trivial for the pipeline infrastructure it runs on, which is why the estimate is good
+enough to design against and not worth measuring precisely up front.
+
+#### What DNS liveness does and does not tell you
+
+**DNS liveness measures registration, not content.** A parked, squatted, or repurposed domain still
+resolves and still reads as `Alive`; nothing here confirms the domain is still serving adult
+content, and confirming it would require exactly the application-layer fetch the legal boundary
+forbids. That limitation is accepted, not worked around.
+
+The converse gap is narrower but real: a domain that lapses and is re-registered by the same
+operator is pruned as `Dead` on one sweep and only re-enters the list when a source republishes it,
+leaving **up to one cadence period unblocked**.
+
+Both are accepted in the same direction, and for the project's stated reason: false negatives are
+the budget, false positives are the price. Keeping a stale-but-harmless entry costs a few bytes in
+a compact filter; removing a live one costs a bypass. This is exactly why `Unknown` never prunes
+and why only an unambiguous NXDOMAIN does.
+
+#### What pruning actually buys
+
+Pruning's original justification — smaller updates — **does not hold under the chosen artifact
+format.** The FST ships as one monolithic file with no delta or patch mechanism, so removing 2% of
+entries does not shrink any delivered download by a meaningful amount; the client re-downloads the
+whole file either way.
+
+The justifications that do hold:
+
+- **Bounding artifact size over years.** These lists accumulate monotonically — sources add and
+  essentially never prune. Without a pruning step the artifact grows without limit and eventually
+  collides with the size budget above.
+- **Reducing stale false-hit surface.** A dead domain that is later re-registered by an unrelated,
+  innocent party becomes a false positive that nothing else in the pipeline would catch.
+
+**Delta/patch distribution is a documented future improvement**, not part of this design. If it is
+built, pruning's original justification becomes true again.
+
+### On-device storage and lookup
+
+The distributed artifact is a **minimal-DFA finite-state transducer (FST) over reversed domain
+labels** (Rust's `fst` crate — pure Rust, no native C/C++ cross-compilation burden, unlike e.g.
+`marisa-trie`), not a plain text list or a runtime-only in-memory trie:
+
+- **Non-lossy** — an exact map from key to a small provenance/scope ID, not a probabilistic
+  structure. No Bloom filter as the primary structure: a Bloom filter's false positives fail the
+  non-lossy requirement outright.
+- **Compact** — an FST shares both common prefixes *and* common suffixes across entries, unlike a
+  plain trie which only shares prefixes. Domain data compresses well under this (`.com`, common
+  subdomain patterns, common second-level names all collapse into shared DFA states).
+
+  **The commonly quoted 2–4 bytes/entry figure describes a bare set, and this design builds a
+  `Map`.** States whose output values differ cannot be merged, so a per-key value degrades exactly
+  the suffix-sharing the estimate depends on. The mitigation is to make the value space small:
+  canonicalize the *combination* of `{sources, category, scope}` into a small enumerated set of
+  provenance IDs — most domains will share one of a few dozen combinations — rather than treating
+  every domain's provenance as unique. That bounds how much the value hurts compression, but it
+  does not restore the bare-set figure. **The bytes-per-entry number must be measured against a
+  real build, not assumed**, and the [artifact size budget](#artifact-size-budget) is the actual
+  gate, not the estimate.
+- **Reversed labels turn suffix matching into prefix matching.** `example.com` is stored as the key
+  `com.example`. `www.example.com` from a source is stored as its own key, `com.example.www` —
+  `normalize()` does not strip `www.` (see the normalization section above), so a `www` host keeps
+  its own identity in the key space and an `ExactHost` rule filed under it matches only that host.
+
+  A query is answered by exact lookups at each label boundary from shortest to longest (`com`,
+  `com.example`, `com.example.cdn`, …), first hit wins. A hit whose scope is `Apex` covers
+  everything below it; a hit whose scope is `ExactHost` matches only when the query key equals the
+  stored key exactly. **Cost is one exact lookup per label — bounded by label count, typically
+  single digits and formally bounded by DNS's 253-byte name limit — and each lookup is O(key
+  length), not O(1).** That is the honest bound; the previously asserted "~4–5 lookups" was a
+  typical case stated as a limit.
+
+  The general prefix-streaming capability of an FST is available for secondary uses (a "why is this
+  blocked" debug view, allowlist-manager autocomplete, version-diffing), with one hazard that must
+  be handled: **an unanchored prefix query for `com.example` also matches `com.examplezzz`**
+  (i.e. `examplezzz.com`), because nothing stops the match at a label boundary. Any prefix query
+  used for these purposes must therefore be **anchored to end exactly at a label boundary** — the
+  query prefix includes the trailing separator byte — so a prefix can never match past a partial
+  label. This hazard is why prefix-streaming is a secondary-use convenience and not something the
+  hot path uses.
+
+#### mmap: the tradeoff, stated honestly
+
+The artifact is **mmap-backed, not eagerly loaded into a heap buffer**. The previous framing claimed
+both "microsecond-scale, no meaningful penalty" and "reclaimable under memory pressure," which
+cannot both hold: eviction is precisely what makes the next access expensive. You do not get a
+mapping that is always cheap *and* evictable.
+
+The real trade:
+
+- mmap accepts a **rare, bounded tail latency** — a genuine major fault after a page has been
+  evicted is a real disk read, low milliseconds on flash storage — in exchange for the process never
+  being OOM-killed over an unreclaimable heap buffer of the same bytes.
+- That trade is correct because **losing the whole filter is worse than one occasionally slow
+  lookup.** An Android background process killed for holding tens of megabytes of unreclaimable heap
+  stops filtering entirely; a process that takes a few milliseconds on a cold page keeps filtering.
+- Steady-state lookups still hit resident pages and are cheap. The cost is a tail, not a baseline.
+
+Two things make that tail rarer and bounded:
+
+**Verification warms the cache for free.** Signature verification hashes the whole `.fst` file, so it
+reads every byte sequentially at load/update time. That pass naturally populates the page cache, so
+the mapping starts **fully resident immediately after an update** and only cools under genuine later
+memory pressure — which is exactly the condition under which eviction is the behavior you want.
+This also settles an apparent contradiction: the "we never eagerly load it all" property applies to
+**steady-state lookup access**, not to the one-time verification pass, which necessarily touches
+every byte. Those are different claims and only the first one was ever true.
+
+**A bounded latency budget on the hot path.** `net-shield`'s DNS path answers live queries, and a
+stalled lookup delays packet delivery. The FST lookup therefore runs off the packet-handling thread
+and the caller waits at most a small fixed budget (starting value: **2 ms**); on expiry it falls
+back to the last-known decision for that domain from a small in-memory cache, or, absent one, to the
+filter's existing default action — and counts the event. It never blocks the packet path waiting on
+a page fault. This is the same shape as the mac-daemon's rule that a tick with work in flight
+repeats the last verdict rather than stalling or defaulting to allow.
+
+Mechanics:
+
+- Hold the mapping behind a reference-counted handle (`Arc<Mmap>` via the `memmap2` crate). During
+  a swap, the old and new mappings *can* briefly coexist — any lookup already holding a clone of the
+  old `Arc` keeps it alive until it finishes — so this is not a claim that only one copy is ever
+  resident. The property that holds is narrower and still the important one: neither mapping is ever
+  force-retained beyond what's in use, both are file-backed and therefore reclaimable the moment
+  nothing references them, and the swap itself needs no bulk copy — just publishing a new `Arc` and
+  letting the old one's refcount drain to zero. The `Arc` adds a per-lookup atomic-refcount cost,
+  not a memory cost.
+- Updates are atomic at the file level: write the new signed file to a temp path and `rename()` over
+  the old one (atomic on POSIX filesystems, including Android's) — never overwrite the mapped file
+  in place.
+- **The last-known-good fallback needs a durable second copy, not just an atomic `rename()`.** A
+  single-slot layout (one `.fst` + one manifest, replaced in place) has nothing to fall back *to*
+  once the new file has replaced the old one — "fails closed to the last-known-good mapping" is only
+  true if a last-known-good file still exists on disk. The layout is therefore **two slots**,
+  `current/` and `previous/`, each holding a `.fst` + manifest pair, plus a small separate
+  high-water-mark record (the highest `version` ever verified, per the trust contract below):
+  1. Write the new `.fst` + manifest into a fresh temp directory.
+  2. `fsync` both files, then `fsync` the temp directory's own entry (the directory fsync is what
+     makes the file's existence durable, not just its contents).
+  3. Verify the new manifest's signature and `fst_digest` **from the temp location**, before it
+     becomes anything's `current`.
+  4. Move the *existing* `current/` to `previous/` (replacing whatever was there), then `rename()`
+     the temp directory to `current/`, then `fsync` the parent directory to persist both renames.
+  5. Only after step 4 completes does the loader update the persisted high-water mark, itself written
+     via the same temp-write-`fsync`-`rename` pattern, and only that write is what makes the update
+     "seen" on a future start — a crash between step 4 and the high-water-mark write is recovered on
+     next start by re-deriving the mark from `current/`'s own manifest, since a version that reached
+     `current/` intact is trusted at least that far.
+  - **Recovery on start:** verify `current/`'s manifest and digest. If that fails (missing, corrupt,
+    bad signature, or `fst_digest` mismatch — the file was truncated by a crash mid-write, for
+    instance), fall back to verifying `previous/` the same way and load it if it passes, logging the
+    fallback as a tamper/corruption signal. If **both** slots fail verification, the loader fails
+    closed to **no mapping** rather than fabricating one — `net-shield`'s existing default action for
+    an unloadable filter applies, the same as any other missing-artifact case, and this state is
+    surfaced the same way a revoked permission is elsewhere in this project, not silently swallowed.
+  - This sequence is why an interrupted update can never leave a client with an unverifiable *and*
+    unrecoverable state: at every point up to step 4, `current/` is untouched and still the prior
+    good version; from step 4 onward, `previous/` holds that same prior good version as a fallback.
+    Test the crash points explicitly: a crash before step 4 (current unaffected), a crash during the
+    `current`↔`previous` swap (recovery must find one consistent slot), and a crash after step 4 but
+    before the high-water-mark write (recovery re-derives the mark from `current/`).
+
+**The latency figures above are unmeasured.** The benchmarking plan that turns them into real
+numbers — including how to force genuine kernel-level eviction rather than measuring a warm cache
+and calling it a fault — is in [the plan](../components/domain-blocklist/plan.md).
+
+### Distribution
+
+The FST file *is* the signed, distributed artifact — no separate transform happens on the client.
+The pipeline that does normalize → merge → gate → liveness-TTL-prune also emits the final `.fst`
+file and a manifest, and publishes it (e.g. GitHub Releases — no login required, CDN-cached, cheap
+conditional `ETag` GETs for clients that are already current). Client updates are opt-in, never
+silent background polling, consistent with the project's local-first default — and see the note
+under [Users](#users) about the fetch itself being an outbound signal.
+
+**The trust contract, precisely:**
+
+- The manifest carries a monotonically increasing `version`, one or more `{key_id, signature}` pairs
+  (see key rotation below — this is a list, not a single field), the SHA-256 `fst_digest` of the
+  `.fst` file, the entry count, the per-source snapshots (version, license, fetch time), the computed
+  output license, and the provenance table. The exact struct is in
+  [the plan](../components/domain-blocklist/plan.md) module 4 and must match this section field for
+  field.
+- The `fst_digest` field binds the manifest to the artifact — a client can't be handed a manifest
+  that describes one artifact while a different one is loaded.
+- **Each Ed25519 signature covers the manifest bytes with that entry's `key_id` excluded** (the
+  `key_id`/`signature` list itself is appended after signing, not signed over — otherwise adding a
+  second signature during rotation would invalidate the first). `fst_digest` is already a field
+  *inside* the signed portion, so signing it already binds the artifact transitively; the earlier
+  `fst_digest || manifest_bytes` construction concatenated the digest with bytes that already
+  contained it, which added a way to get the framing wrong and no security property.
+- A client verifies against **any one** `{key_id, signature}` entry whose `key_id` is in its own
+  trusted set — it does not need every entry to verify, only one. This is what makes rotation work
+  without needing every client to agree on which key is "current."
+- A client rejects and falls back to the last-known-good bundle on: no entry verifying against any
+  key in its trusted set, a manifest whose `fst_digest` doesn't match the `.fst` file actually
+  present, a manifest that fails to parse, or a `version` that is **not strictly greater** than the
+  client's recorded high-water mark. That last check is what stops a compromised distribution point
+  from serving a validly signed but older, previously-revoked bundle back to a client (a rollback
+  attack).
+- **The high-water mark is the highest `version` the client has ever successfully verified**, stored
+  alongside the last-known-good bundle — not merely the version currently loaded, so a client that
+  has rolled back to a last-known-good bundle for an unrelated reason does not thereby re-accept an
+  older one.
+- **Accepted limitation:** a fresh install, or a device offline long enough to be reimaged, has no
+  high-water mark and will accept any validly signed bundle, including an old one. Anchoring the
+  floor in the shipped binary (a minimum acceptable `version` baked in at app build time) narrows
+  this but does not close it, since an old app build has an old floor. This residual gap is
+  accepted; closing it properly needs an online freshness check, which conflicts with the opt-in
+  update stance.
+- **Key rotation, both sides.** The binary ships a small list of trusted public keys, not a single
+  hardcoded one, but a client's trusted set only helps if the pipeline actually produces something
+  that set can verify — keeping an old key trusted in a *new* binary does nothing for a client still
+  running the *old* binary, which only knows the old key. So the pipeline, not just the client, has
+  an overlap obligation:
+  1. Ship an app update that adds the new key to the trusted set. No client yet requires it.
+  2. Once that update has had a full release cycle to reach clients, the pipeline switches to
+     **dual-signing**: every build carries both an old-key and a new-key `{key_id, signature}` entry
+     in the manifest. An unupdated client (old key only) still verifies via the old entry; an
+     updated client verifies via either.
+  3. Only after dual-signing has run for a full release cycle — long enough that a client which will
+     ever update has had the chance to — does the pipeline drop the old signature and sign
+     new-key-only. Retiring the old key from clients' trusted sets can follow in a later app update;
+     it is not itself security-critical, since an unused trusted key that nothing signs with anymore
+     is inert.
+  A key is never removed from the trusted set in the same release that introduces its replacement,
+  and the pipeline never stops producing a signature an already-shipped client can verify before that
+  client has had a real chance to update. Test the dual-signature manifest against both an
+  old-key-only and a both-keys-trusted client.
+
+**Verification runs on every process start, not only on update.** The tradeoff is explicit: it costs
+one sequential read and hash of the artifact per start (which, per the mmap section, is not wasted —
+it warms the mapping), and it is the only thing that detects an on-disk tamper *between* updates.
+Verifying only on update would make the check cheaper and leave a modified file undetected until the
+next update, which on an opt-in update cadence could be indefinitely. A daemon starts rarely and
+runs for a long time, so the cost lands in the right place. If a boot-time measurement ever shows it
+matters, the answer is a faster hash or an OS-level integrity mechanism — not dropping the check.
+
+#### Staleness must be visible
+
+Opt-in updates mean a client can sit on a months-old list forever, silently, which is in tension
+with the freshness the trust design assumes. The stance does not change — no unconsented background
+network call — but the *silence* does: the client **surfaces a visible in-app indicator when the
+loaded manifest's `build_time` is older than three cadence periods**, so a user who has ignored
+updates knows the list is stale rather than assuming it is current. Staleness a user can see is a
+choice; staleness they can't is a defect.
+
+## Rejected alternatives
+
+- **A single source** — no single list has both good coverage and reliable pruning; the union with
+  provenance is what makes a low-quality or disappearing source cheap to back out.
+- **Auto-fetching each source's branch HEAD** — convenient, and it turns any upstream compromise or
+  bad merge into a validly signed artifact within one cadence with no human in the loop. Pinned
+  revisions plus a reviewed version bump cost one PR per update and are the only thing standing
+  between an upstream mistake and a shipped one.
+- **ICMP-based liveness checking** — unreliable signal against CDN-fronted origins, and an
+  application-layer-adjacent probe is unnecessary risk against the CSAM boundary above; DNS-only is
+  both cheaper to reason about and safer.
+- **Using the CI host's system resolver** — the default is whatever the provider supplies, which is
+  filtered often enough that this is not a hypothetical, and the failure is silent and total. An
+  explicitly configured resolver plus a canary check is the only safe configuration.
+- **Client-side liveness revalidation** — would charge the recheck cost against every installed
+  device's egress and battery for a result that is identical across all of them; centralizing it
+  once in the pipeline is strictly better.
+- **Proceeding with a partial build when a source fetch fails** — produces a valid-looking, validly
+  signed artifact with a slice of coverage silently missing. Failing loudly is the only option that
+  cannot ship a lie.
+- **Inferring apex coverage by stripping prefixes** — the shortest path from `www.foo.example.com`
+  to blocking all of `example.com`, and from a hosting-provider hostname to blocking every tenant on
+  it. Scope comes from what the source actually named, checked against the PSL, and nowhere else.
+- **Manual review of the full list for personal-name domains** — not implementable at multi-million
+  scale, so proposing it is the same as proposing nothing. An automated triage filter over a
+  bounded review queue is a real mechanism.
+- **Bloom filter as the primary on-device structure** — fails the non-lossy requirement.
+- **`marisa-trie` instead of `fst`** — comparable compactness, but a native C++ dependency that
+  would need cross-compiling across every Android ABI this project targets, repeating the class of
+  pain already hit with `ort`/ONNX Runtime on Android (see the `image-sandbox` row in `AGENTS.md`).
+- **Eager heap-resident load of the FST bytes at startup** — simpler, and it removes the major-fault
+  tail entirely, which is a genuine advantage. It is rejected because it makes the bytes
+  unreclaimable: under Android's OOM-killer behavior for backgrounded processes, that trades a rare
+  slow lookup for an occasional total loss of filtering. It also forces a double-memory window
+  during an update, where mmap needs no bulk copy.
+- **Signing `fst_digest || manifest_bytes`** — the digest is already a manifest field, so the
+  concatenation binds nothing the manifest signature doesn't already bind, while adding a framing
+  detail two implementations could disagree about.

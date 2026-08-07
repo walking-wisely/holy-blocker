@@ -44,6 +44,25 @@ pub enum FilterAction {
 
 - Both filters are constructable from a flat slice of rule strings and expose a single query method. There is no file I/O in either type — callers load rules and pass them in.
 
+**Domain normalization is not defined here.** `DomainFilter` consumes `normalize()` from the shared
+`packages/domain-normalize` crate, which is the same function `packages/domain-blocklist` applies at
+build time when it produces the signed FST artifact. Reimplementing it on the query side would leave
+two copies that each pass their own tests and disagree in production — the drift
+`packages/text-policy-ffi` exists to prevent ("one implementation, no drift"). The cost is one small
+pure dependency with no I/O. See [domain-blocklist's plan](../domain-blocklist/plan.md) module 0 for
+the normalization contract and module 6 for the precedence model that places FST-sourced `Block`
+rules **below** this crate's existing explicit `Allow`/`Proxy` rules, so loading a blocklist artifact
+cannot change the behavior of an existing rule.
+
+**Signed-artifact loading is not defined here either, and deliberately does not extend
+`DomainFilter` itself.** `DomainFilter::from_rules` above stays exactly what it is — a flat, no-I/O,
+in-memory constructor — because the signed `.fst` file needs mmap ownership, signature verification,
+and a rollback high-water mark that have no business living inside a pure trie matcher. That work is
+a separate `BlocklistArtifact` type, specified in
+[domain-blocklist's plan](../domain-blocklist/plan.md) module 6, which `net-shield`'s top-level
+filter-query path consults *alongside* `DomainFilter` per the precedence table there — provenance
+IDs and `RuleScope` convert to `FilterAction` at that boundary, not inside `radix.rs`.
+
 Key signatures:
 
 ```rust
