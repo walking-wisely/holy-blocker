@@ -321,6 +321,109 @@ def check_guardrail(baseline, candidate, thresholds=None) -> GateResult
 path; `load_corpus` raises a `FileNotFoundError` that says so. Tests exercise the
 plumbing with synthetic noise images only.
 
+### `synth_composite.py` and `transport.py` — the screen-path measurement
+
+**Planned 2026-08-08, and the next thing to build in this package.** It is the Stage 0 of
+[image-sandbox's screen path](../image-sandbox/plan.md#the-screen-path), and everything downstream
+of it waits on the numbers it produces.
+
+#### Why this exists
+
+[classifier-operating-point.md](../../decisions/classifier-operating-point.md) records that the
+screen path operates outside every measurement this project has, and the macOS daemon has since
+shipped a classifier onto real frames anyway. The gap cannot be closed the obvious way —
+[image-corpus-custody.md](../../decisions/image-corpus-custody.md) forbids acquiring a corpus of
+explicit screen frames, and nothing else would do.
+
+What can be measured instead is the **transport shift**: what the pipeline's *geometry* does to a
+score, independent of content.
+
+```
+shift(X) = s(X) - s(pipeline(X))
+```
+
+where `s` is the classifier under its own published preprocessing and `pipeline` is
+composite-into-UI → capture-geometry → `check_raw`. Because crop, scale, composite and overlay are
+**content-blind** — they do the same thing to a photo of a dog as to anything else — a shift
+measured on benign imagery describes what the pipeline does to any image, including ones this
+project cannot hold. If the shift is near zero, the checkpoint's published operating point
+transfers to the screen path; if it is not, the size of it is the quantified loss.
+
+This is a **paired** design, and that is load-bearing twice over: it licenses the transfer
+argument, and it cancels photo-source bias, since a source's quirks sit in both terms and subtract
+out.
+
+#### `synth_composite.py` — the corpus is a compositor, not a download
+
+Reuses `synth_ui.py`'s pattern exactly: a pure, Pillow-free `plan_*` function that is
+deterministic in `(count, seed)`, a separate renderer, and a `manifest.json` so a stale run is
+detectable.
+
+```python
+@dataclass(frozen=True)
+class OverlaySpec:                 # style, coverage, opacity, font, colour, scrim
+@dataclass(frozen=True)
+class CompositeSpec:
+    background: BackgroundKind     # "synthetic_ui" | "own_screen"
+    inset: InsetKind               # "photo" | "flat_panel"   <- the keep/discard label
+    inset_rect: Rect               # ground truth for any future region proposal
+    overlay: OverlaySpec
+    seed: int
+
+def plan_composites(count: int, seed: int) -> list[CompositeSpec]: ...
+def render_composite(spec: CompositeSpec, photos: PhotoPool) -> Image: ...
+```
+
+Every label falls out of the spec — where the picture is, whether it is one, and how much text
+covers it. No human annotation, nothing to review, nothing explicit anywhere near it.
+
+**Overlay styles are generated, not sourced.** The overlays that matter here — a caption bar with a
+dark scrim, burned-in subtitles, a corner watermark, meme text, a timestamp pill, play-button
+chrome — are axis-aligned and drawn by a compositor. `SynthText`'s value is perspective-warping
+text onto scene geometry (a sign on a wall), which is the opposite of what is needed; borrow
+`SynthTIGER`'s font/colour/opacity sampling *ranges* and cite them, but take neither dependency.
+Fonts from Google Fonts (OFL), vendored so runs reproduce.
+
+**Photo sources**, per [image-corpus-custody.md](../../decisions/image-corpus-custody.md):
+developer's camera roll first, 3D renders second, COCO `val2017` third. Mix them deliberately —
+a single-source pool shares one compression signature, and the statistics under test are sensitive
+to exactly that, so a result could be "can I detect JPEG" wearing the wrong label. **Report every
+number sliced by photo source**; a source-specific effect then announces itself.
+
+#### `transport.py` — the measurement
+
+```python
+@dataclass(frozen=True)
+class TransportResult:             # per-cell shift distribution + n
+def measure_transport(scorer, composites) -> list[TransportResult]
+```
+
+Report median and p95 of the shift, sliced by **inset scale**, **text-overlay coverage**, and
+**photo source**. Improvement means the distribution collapsing toward zero, especially in the
+small-inset and high-overlay cells, which is where it is expected to be worst today.
+
+Two negative controls that must hold, or the corpus is not testing what it claims:
+
+- a photographic inset must survive at *every* overlay coverage level;
+- a flat-UI inset under the *same* overlays must not.
+
+#### What this measures, and what stays an argument
+
+| Term | How | Needs explicit content? | Kind |
+|---|---|---|---|
+| Classifier quality on images | inherited from the checkpoint's published eval | someone else's | measurement |
+| **Transport shift** | paired, benign, above | no | **measurement** |
+| False positives on real screens | run the daemon on the developer's own screen and count | no | measurement |
+| Gate false-discard rate | gated vs ungated, 1 frame in 20 | no | measurement |
+| Latency | timer | no | measurement |
+| **Screen miss rate** | inherited miss rate × measured ≈0 shift | — | **argument** |
+
+The last row is the only inference, and it is labelled as one. Everything else is a number.
+
+**Note the harness this builds on lives on `feat/ml-nsfw-baseline-eval`, not `master`** —
+`synth_ui.py`, `corpus.py` and `eval.py` were removed from `master` when the ML pipeline was
+reverted. Restoring or rebasing that branch is a prerequisite, not an optional cleanup.
+
 ### `quantize.py`
 
 ```
@@ -413,6 +516,15 @@ reproduced across opsets 17–21 at both 32px and 224px. `export.py` passes
    run only after the full unfreeze. Unblocked; baselines re-fixed against the
    full-unfreeze model.
 4. Relabelling study to settle the label-noise question, which remains open.
+5. **The screen-path transport measurement** — `synth_composite.py` + `transport.py` above. This is
+   the highest-value next step in this package: it is the baseline for every claim about the macOS
+   daemon's image path, it needs only benign imagery, and it splits the live-observed failures into
+   geometry (fixable and measurable here) versus concept (needs a second expert, unmeasurable
+   here). Run it against the pipeline as it exists **before** changing anything.
+6. **Sourcing rules are now a decision, not a judgement call** — see
+   [image-corpus-custody.md](../../decisions/image-corpus-custody.md). It supersedes the
+   "read a corpus archive in memory and delete it afterwards" allowance for corpora of *unknown*
+   provenance: no third-party imagery is ingested at all.
 
 
 ## What this does not cover
