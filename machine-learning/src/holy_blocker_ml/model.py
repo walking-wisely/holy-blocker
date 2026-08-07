@@ -45,7 +45,25 @@ def resolve_nsfw_index(id2label: dict[int, str]) -> int:
     Raises ValueError rather than guessing if the label set is not
     recognizable, so an incompatible model fails loudly at load time instead
     of silently scoring backwards.
+
+    Deliberately requires exactly two classes, even when exactly one label
+    matches an NSFW alias: a multi-class head (e.g. the common
+    normal/drawings/hentai/porn/sexy split) would otherwise resolve "silently
+    and wrongly" by matching one explicit class and quietly folding every
+    other explicit class (hentai, sexy, ...) into the "safe" probability mass
+    — the same "scores every image backwards with no error anywhere" failure
+    this function exists to prevent, just in the under-scoring direction.
+    `score_image`'s `softmax(logits)[nsfw_index]` is only a meaningful NSFW
+    probability for a genuinely binary head.
     """
+    if len(id2label) != 2:
+        raise ValueError(
+            f"resolve_nsfw_index only supports binary classifiers; got "
+            f"{len(id2label)} classes in id2label={id2label!r}. A multi-class "
+            "head (e.g. normal/drawings/hentai/porn/sexy) needs its own "
+            "aggregation rule, not a single matched label."
+        )
+
     matches = [
         index
         for index, label in id2label.items()
@@ -55,15 +73,15 @@ def resolve_nsfw_index(id2label: dict[int, str]) -> int:
         return matches[0]
 
     if len(matches) == 0:
-        # Fall back to elimination only when there are exactly two classes and
-        # the other one is recognizably "safe" — still explicit, still fails
-        # loudly otherwise.
+        # Fall back to elimination only when the other class is recognizably
+        # "safe" (the class count is already pinned to 2 above) — still
+        # explicit, still fails loudly otherwise.
         safe_matches = [
             index
             for index, label in id2label.items()
             if label.strip().lower() in _SAFE_LABEL_ALIASES
         ]
-        if len(id2label) == 2 and len(safe_matches) == 1:
+        if len(safe_matches) == 1:
             (nsfw_index,) = set(id2label.keys()) - set(safe_matches)
             return nsfw_index
 
@@ -85,7 +103,20 @@ def load_classifier(model_id: str = DEFAULT_MODEL_ID) -> NsfwClassifier:
     import torch
     from transformers import AutoImageProcessor, AutoModelForImageClassification
 
-    model = AutoModelForImageClassification.from_pretrained(model_id)
+    model, loading_info = AutoModelForImageClassification.from_pretrained(
+        model_id, output_loading_info=True
+    )
+    if loading_info["missing_keys"]:
+        # transformers only *logs* a warning and randomly initializes the
+        # classification head when a checkpoint has no matching head
+        # weights — the model still loads and still produces plausible-
+        # looking scores from random logits. That's indistinguishable from
+        # a working model at every downstream call, so it must be loud here.
+        raise ValueError(
+            f"'{model_id}' is missing classification-head weights "
+            f"({loading_info['missing_keys']!r}); its head would be randomly "
+            "initialized and every score meaningless. Refusing to load."
+        )
     model.eval()
     processor = AutoImageProcessor.from_pretrained(model_id)
     nsfw_index = resolve_nsfw_index(

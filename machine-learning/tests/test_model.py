@@ -30,3 +30,22 @@ def test_resolve_nsfw_index_raises_when_ambiguous() -> None:
 def test_resolve_nsfw_index_raises_when_multiple_labels_match() -> None:
     with pytest.raises(ValueError):
         resolve_nsfw_index({0: "nsfw", 1: "porn"})
+
+
+def test_resolve_nsfw_index_raises_on_unrecognized_two_class_labels() -> None:
+    # transformers' auto-generated default id2label when a model config
+    # carries none — the realistic shape of "an incompatible model", not the
+    # 3-class case above (which exits before the elimination fallback).
+    with pytest.raises(ValueError):
+        resolve_nsfw_index({0: "LABEL_0", 1: "LABEL_1"})
+
+
+def test_resolve_nsfw_index_rejects_multi_class_heads_even_with_one_match() -> None:
+    # A 5-class NSFW head (normal/drawings/hentai/porn/sexy is a common
+    # shape) has exactly one label matching an NSFW alias ("porn"), but
+    # resolving to that index alone would silently drop "hentai" and "sexy"
+    # into the safe probability mass. Must raise, not pick 3.
+    with pytest.raises(ValueError):
+        resolve_nsfw_index(
+            {0: "normal", 1: "drawings", 2: "hentai", 3: "porn", 4: "sexy"}
+        )

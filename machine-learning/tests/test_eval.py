@@ -62,3 +62,24 @@ def test_evaluate_scores_reports_recall_for_explicit_corpus() -> None:
     result = evaluate_scores(scores, "held-out-explicit", CorpusKind.EXPLICIT, thresholds=[0.5])
     text = report(result)
     assert "recall" in text
+
+
+def test_evaluate_scores_without_labels_omits_top_items_from_report() -> None:
+    result = evaluate_scores([0.1, 0.2], "unlabeled", CorpusKind.BENIGN, thresholds=[0.5])
+    assert result.labels is None
+    assert "highest-scoring" not in report(result)
+
+
+def test_evaluate_scores_rejects_mismatched_label_count() -> None:
+    with pytest.raises(ValueError):
+        evaluate_scores([0.1, 0.2], "x", CorpusKind.BENIGN, labels=["only-one.png"])
+
+
+def test_report_names_the_highest_scoring_items_when_labeled() -> None:
+    scores = [0.9, 0.1, 0.5]
+    labels = ["worst.png", "best.png", "middle.png"]
+    result = evaluate_scores(scores, "labeled", CorpusKind.BENIGN, thresholds=[0.5], labels=labels)
+    text = report(result)
+    assert "worst.png" in text
+    # The highest score should be listed before a lower one.
+    assert text.index("worst.png") < text.index("middle.png")

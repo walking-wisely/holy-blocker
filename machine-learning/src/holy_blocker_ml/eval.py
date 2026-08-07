@@ -51,6 +51,12 @@ class EvalResult:
     distribution: ScoreDistribution
     thresholds: tuple[ThresholdResult, ...]
     scores: tuple[float, ...]
+    # Parallel to `scores` when the caller can name what each score came
+    # from (e.g. a filename); None for evaluate_scores() callers that only
+    # have bare numbers. Without this a high max/p99 is unexplainable —
+    # `report()` uses it to name the worst-scoring items rather than leaving
+    # the tail as an anonymous number.
+    labels: tuple[str, ...] | None = None
 
 
 def _percentile(sorted_scores: Sequence[float], p: float) -> float:
@@ -102,18 +108,24 @@ def evaluate_scores(
     corpus_name: str,
     kind: CorpusKind,
     thresholds: Sequence[float] = DEFAULT_THRESHOLDS,
+    labels: Sequence[str] | None = None,
 ) -> EvalResult:
     """Turn a list of already-computed scores into an EvalResult.
 
     Split out from `evaluate_corpus` so tests never need a real scorer or
     real files — this is the pure core the rest of the module wraps.
     """
+    if labels is not None and len(labels) != len(scores):
+        raise ValueError(
+            f"labels ({len(labels)}) and scores ({len(scores)}) must be the same length"
+        )
     return EvalResult(
         corpus_name=corpus_name,
         kind=kind,
         distribution=summarize_scores(scores),
         thresholds=threshold_sweep(scores, thresholds),
         scores=tuple(scores),
+        labels=tuple(labels) if labels is not None else None,
     )
 
 
@@ -131,7 +143,15 @@ def evaluate_corpus(
     if not paths:
         raise ValueError(f"corpus '{spec.name}' at {spec.root} contains no images")
     scores = [score_fn(p) for p in paths]
-    return evaluate_scores(scores, spec.name, spec.kind, thresholds)
+    labels = [p.name for p in paths]
+    return evaluate_scores(scores, spec.name, spec.kind, thresholds, labels=labels)
+
+
+# How many of the highest-scoring items report() names. A max/p99 with no way
+# to say what produced it is unexplainable — did one degenerate corpus cell
+# dominate the tail, or is it spread out? — which is exactly the question a
+# reader needs answered before trusting a tail statistic on a small corpus.
+TOP_N_REPORTED = 10
 
 
 def report(result: EvalResult) -> str:
@@ -146,4 +166,9 @@ def report(result: EvalResult) -> str:
     ]
     for t in result.thresholds:
         lines.append(f"    >= {t.threshold:.2f}: {t.positive_rate:.2%}")
+    if result.labels is not None:
+        ranked = sorted(zip(result.scores, result.labels), reverse=True)
+        lines.append(f"  top {min(TOP_N_REPORTED, len(ranked))} highest-scoring items:")
+        for score, label in ranked[:TOP_N_REPORTED]:
+            lines.append(f"    {score:.4f}  {label}")
     return "\n".join(lines)
