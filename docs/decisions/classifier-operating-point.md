@@ -141,3 +141,27 @@ zero.
 frames, which needs a labelled corpus of them. Until then, whatever threshold
 is configured is a transfer from a neighbouring distribution, not one measured
 for this path.
+
+## The contract is now three classes, not two
+
+**Added after live testing surfaced both failure modes this decision predicts.**
+Running the two-class contract against real screen content produced both
+directions of error the sections above warn about in the abstract: false
+positives on ordinary non-sexual photos, and false negatives on illustrated
+content the two-class model had no way to name — the safe/explicit cut has no
+room for "suggestive but not explicit," and the specific checkpoint tested had
+no exposure to drawn/anime style at all.
+
+`packages/image-sandbox`'s classifier contract is therefore `safe`/`sexy`/
+`explicit` (`SAFE_INDEX`/`SEXY_INDEX`/`EXPLICIT_INDEX` = 0/1/2), and
+`SandboxConfig` takes **two** thresholds — `sexy_threshold` and
+`explicit_threshold` — compared independently against tiles reduced per class,
+with `explicit_threshold` checked first so a tile clearing both bars blocks
+rather than warns. Everything in the "no built-in default" section above
+applies to both: neither has a fallback, and both must be re-derived together
+for a given model and geometry, not carried over independently.
+
+This does not close the screen-path gap two sections up — it only gives the
+warn tier a real class to draw its line against instead of the daemon
+inventing one. No operating point has been measured for either threshold
+against screen content, same as before.

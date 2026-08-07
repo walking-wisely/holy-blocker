@@ -1,4 +1,4 @@
-//! ONNX inference over the exported MobileNetV3 classifier.
+//! ONNX inference over the exported classifier.
 //!
 //! Behind the `onnx` feature. Without it the crate still compiles and the
 //! sandbox degrades to allowing everything, so a build without an ONNX Runtime
@@ -6,51 +6,66 @@
 //!
 //! ## The score contract
 //!
-//! Pinned by `machine-learning/src/holy_blocker_ml/labels.py` and
-//! `eval.py:collect_predictions`, and every published threshold was derived
-//! under it:
+//! **Three classes, not two.** The binary `safe`/`explicit` contract missed a
+//! real failure mode measured live: a model with no middle tier either blocks
+//! ordinary photos it keys on the wrong cue for, or misses suggestive content
+//! it was never trained to name, with no dial in between. `docs/decisions/
+//! classifier-operating-point.md` records the model swap this generalises for.
 //!
-//! - the graph output `logits` has shape `[batch, 2]`;
-//! - index 0 is `safe`, index 1 is `explicit` (`BINARY_LABELS`, pinned there
-//!   rather than derived from sorted directory names precisely so it cannot
-//!   silently invert);
-//! - the score is `softmax(logits)[1]`;
-//! - block when that score is `>= threshold`.
+//! - the graph output `logits` has shape `[batch, 3]`;
+//! - index 0 is `safe`, index 1 is `sexy`, index 2 is `explicit`
+//!   (`SAFE_INDEX`/`SEXY_INDEX`/`EXPLICIT_INDEX`, named rather than derived
+//!   from sorted directory names precisely so the order cannot silently
+//!   invert);
+//! - scores are `softmax(logits)`, one probability per class, summing to 1;
+//! - `sandbox.rs` compares the `sexy` and `explicit` probabilities against
+//!   their own thresholds independently — a tile can be simultaneously "not
+//!   explicit enough to block" and "sexy enough to warn".
 //!
 //! Inventing a different reduction here — argmax, a raw logit, index 0 — would
 //! produce numbers that look like probabilities and mean something else.
 
-/// A classifier verdict for one image.
+/// A classifier verdict for one image. All three are `softmax(logits)` at
+/// their respective index, so `safe_score + sexy_score + explicit_score == 1`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ClassifyResult {
-    /// `softmax(logits)[EXPLICIT_INDEX]`, in [0, 1].
+    pub safe_score: f32,
+    pub sexy_score: f32,
     pub explicit_score: f32,
 }
 
-/// Output index of the `explicit` class. Mirrors `labels.POSITIVE_INDEX`.
-pub const EXPLICIT_INDEX: usize = 1;
+/// Output index of the `safe` class.
+pub const SAFE_INDEX: usize = 0;
+/// Output index of the `sexy` (suggestive, non-explicit) class.
+pub const SEXY_INDEX: usize = 1;
+/// Output index of the `explicit` class.
+pub const EXPLICIT_INDEX: usize = 2;
 
-/// Number of classes the exported head emits. Mirrors `labels.BINARY_LABELS`.
-pub const CLASS_COUNT: usize = 2;
+/// Number of classes the exported head emits.
+pub const CLASS_COUNT: usize = 3;
 
-/// Turn a row of logits into the positive-class probability.
+/// Turn a row of logits into one probability per class.
 ///
 /// Pure, so the contract above is testable without a model file. Subtracts the
 /// row maximum before exponentiating, which is the standard guard against
 /// overflow on large logits and changes no result.
-pub fn explicit_score(logits: &[f32]) -> f32 {
+pub fn class_scores(logits: &[f32]) -> ClassifyResult {
     debug_assert_eq!(logits.len(), CLASS_COUNT);
     let max = logits.iter().copied().fold(f32::NEG_INFINITY, f32::max);
     let exponentiated: Vec<f32> = logits.iter().map(|v| (v - max).exp()).collect();
     let total: f32 = exponentiated.iter().sum();
-    exponentiated[EXPLICIT_INDEX] / total
+    ClassifyResult {
+        safe_score: exponentiated[SAFE_INDEX] / total,
+        sexy_score: exponentiated[SEXY_INDEX] / total,
+        explicit_score: exponentiated[EXPLICIT_INDEX] / total,
+    }
 }
 
 #[derive(Debug)]
 pub enum ClassifierError {
     #[cfg(feature = "onnx")]
     Session(ort::Error),
-    /// The graph did not produce the `[batch, 2]` output the contract requires.
+    /// The graph did not produce the `[batch, 3]` output the contract requires.
     UnexpectedOutput(String),
     /// Built without the `onnx` feature.
     Unavailable,
@@ -126,7 +141,7 @@ mod backend {
                     logits.len()
                 )));
             }
-            Ok(ClassifyResult { explicit_score: explicit_score(&logits[..CLASS_COUNT]) })
+            Ok(class_scores(&logits[..CLASS_COUNT]))
         }
     }
 }
@@ -157,41 +172,74 @@ mod tests {
     use super::*;
 
     #[test]
-    fn equal_logits_split_the_probability_evenly() {
-        assert!((explicit_score(&[0.0, 0.0]) - 0.5).abs() < 1e-6);
+    fn equal_logits_split_the_probability_evenly_across_three_classes() {
+        let result = class_scores(&[0.0, 0.0, 0.0]);
+        assert!((result.safe_score - 1.0 / 3.0).abs() < 1e-6);
+        assert!((result.sexy_score - 1.0 / 3.0).abs() < 1e-6);
+        assert!((result.explicit_score - 1.0 / 3.0).abs() < 1e-6);
     }
 
     #[test]
-    fn a_dominant_explicit_logit_scores_near_one() {
-        assert!(explicit_score(&[0.0, 10.0]) > 0.999);
+    fn a_dominant_explicit_logit_scores_near_one_on_explicit_only() {
+        let result = class_scores(&[0.0, 0.0, 10.0]);
+        assert!(result.explicit_score > 0.999);
+        assert!(result.sexy_score < 0.001);
+        assert!(result.safe_score < 0.001);
     }
 
     #[test]
-    fn a_dominant_safe_logit_scores_near_zero() {
-        assert!(explicit_score(&[10.0, 0.0]) < 0.001);
+    fn a_dominant_sexy_logit_scores_near_one_on_sexy_only() {
+        // The tier this contract exists to add: high on sexy without also
+        // reading as explicit.
+        let result = class_scores(&[0.0, 10.0, 0.0]);
+        assert!(result.sexy_score > 0.999);
+        assert!(result.explicit_score < 0.001);
     }
 
     #[test]
-    fn the_positive_class_is_index_one_not_zero() {
-        // If BINARY_LABELS were ever derived from sorted names, "explicit"
-        // would sort to index 0 and every verdict would invert. This asserts
-        // the direction, not just the arithmetic.
-        assert!(explicit_score(&[0.0, 1.0]) > explicit_score(&[1.0, 0.0]));
+    fn a_dominant_safe_logit_scores_near_zero_on_the_others() {
+        let result = class_scores(&[10.0, 0.0, 0.0]);
+        assert!(result.safe_score > 0.999);
+        assert!(result.sexy_score < 0.001);
+        assert!(result.explicit_score < 0.001);
+    }
+
+    #[test]
+    fn the_three_scores_always_sum_to_one() {
+        for logits in [[0.0, 1.0, 2.0], [-5.0, 3.0, 0.5], [10.0, -10.0, 0.0]] {
+            let result = class_scores(&logits);
+            let total = result.safe_score + result.sexy_score + result.explicit_score;
+            assert!((total - 1.0).abs() < 1e-5, "{logits:?} summed to {total}");
+        }
+    }
+
+    #[test]
+    fn class_order_is_safe_then_sexy_then_explicit_not_alphabetical() {
+        // Alphabetical would put "explicit" before "safe" before "sexy". If the
+        // index constants were ever derived that way every verdict would
+        // silently point at the wrong class. Assert the direction, not just
+        // that scores differ.
+        let result = class_scores(&[0.0, 1.0, 2.0]);
+        assert!(result.explicit_score > result.sexy_score);
+        assert!(result.sexy_score > result.safe_score);
     }
 
     #[test]
     fn large_logits_do_not_overflow_to_nan() {
-        let score = explicit_score(&[1000.0, 1001.0]);
-
-        assert!(score.is_finite(), "got {score}");
-        assert!(score > 0.5);
+        let result = class_scores(&[1000.0, 1000.5, 1001.0]);
+        assert!(result.safe_score.is_finite());
+        assert!(result.sexy_score.is_finite());
+        assert!(result.explicit_score.is_finite());
+        assert!(result.explicit_score > result.safe_score);
     }
 
     #[test]
-    fn scores_stay_within_the_unit_interval() {
-        for pair in [[-50.0, 50.0], [50.0, -50.0], [0.0, 0.0], [3.5, -2.1]] {
-            let score = explicit_score(&pair);
-            assert!((0.0..=1.0).contains(&score), "{pair:?} gave {score}");
+    fn every_score_stays_within_the_unit_interval() {
+        for logits in [[-50.0, 0.0, 50.0], [50.0, 0.0, -50.0], [0.0, 0.0, 0.0], [3.5, -2.1, 1.0]] {
+            let result = class_scores(&logits);
+            for score in [result.safe_score, result.sexy_score, result.explicit_score] {
+                assert!((0.0..=1.0).contains(&score), "{logits:?} gave {score}");
+            }
         }
     }
 

@@ -35,7 +35,7 @@ pub mod preprocess;
 pub mod raw;
 pub mod sandbox;
 
-pub use classifier::{ClassifierError, ClassifyResult, ImageClassifier, explicit_score};
+pub use classifier::{ClassifierError, ClassifyResult, ImageClassifier, class_scores};
 pub use preprocess::{
     PreprocessConfig, PreprocessError, preprocess, preprocess_tiles, tile_starts,
 };

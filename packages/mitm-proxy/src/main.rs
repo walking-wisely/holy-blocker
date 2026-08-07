@@ -44,10 +44,12 @@ async fn main() -> Result<()> {
 
     let engine = Arc::new(scan::build_default_engine());
     // `unwrap_or(0.0)` never actually falls back: `Options::from_args` rejects
-    // an `image_model` with no `image_threshold` before this runs, so the
-    // fallback is only reachable when there is no model to apply it to.
+    // an `image_model` with no `image_threshold`/`image_sexy_threshold` before
+    // this runs, so the fallback is only reachable when there is no model to
+    // apply it to.
     let sandbox = Arc::new(scan::build_image_sandbox(
         options.image_model.as_deref(),
+        options.image_sexy_threshold.unwrap_or(0.0),
         options.image_threshold.unwrap_or(0.0),
     ));
     // mode_cell can be swapped at runtime (e.g. from a desktop config_update IPC message,

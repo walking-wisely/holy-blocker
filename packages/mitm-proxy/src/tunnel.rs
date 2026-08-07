@@ -199,7 +199,13 @@ async fn forward(
                     tokio::task::spawn_blocking(move || (hooks.image_scanner)(&payload)).await;
                 match verdict {
                     Ok(ScanResult::Block { .. }) => return Ok(blocked()),
-                    Ok(ScanResult::Allow) => {}
+                    // No warn response exists at the network layer yet — the
+                    // same gap `apply_mode` already has for text verdicts,
+                    // which narrows `Action::Warn` to `Allow` unconditionally.
+                    // Passing the image through here keeps that behaviour
+                    // consistent rather than inventing a third HTTP response
+                    // shape for one path and not the other.
+                    Ok(ScanResult::Allow) | Ok(ScanResult::Warn { .. }) => {}
                     Err(e) => {
                         // The scanner panicked or the runtime is shutting down.
                         // Fail open: a fault in us is not evidence about the

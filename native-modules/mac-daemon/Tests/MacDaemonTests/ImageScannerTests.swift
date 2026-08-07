@@ -63,17 +63,23 @@ private func inlineScanner(
     #expect(ImageMapping.scanVerdict(for: .block(score: 0.9)).regions.isEmpty)
 }
 
-@Test func thereIsNoWarnBandOnTheImagePath() {
-    // A probability has no warn band, and inventing one here would be this daemon making up an
-    // operating point the measurement never established. `ProtectionMode` is where a block
-    // legitimately becomes a warn, and that lives in ScanLoop.
-    let outcomes: [ImageOutcome] = [
-        .allow(score: nil), .allow(score: 0.0), .allow(score: 0.4649), .block(score: 0.4650),
-        .block(score: 1.0),
-    ]
+@Test func aWarnOutcomeBecomesAWarnVerdictTaggedAsImageSourced() {
+    // The classifier's `sexy` class is the warn band now — the crate's own threshold, not this
+    // daemon inventing an operating point. `ProtectionMode` can still downgrade it further, in
+    // ScanLoop, the same as it can downgrade a block.
+    let verdict = ImageMapping.scanVerdict(for: .warn(score: 0.35))
+
+    #expect(verdict.action == .warn)
+    #expect(verdict.rawAction == .warn)
+    #expect(verdict.source == .image)
+    #expect(abs(verdict.score - 0.35) < 0.0001)
+}
+
+@Test func allowOutcomesNeverMapToWarnOrBlock() {
+    let outcomes: [ImageOutcome] = [.allow(score: nil), .allow(score: 0.0), .allow(score: 0.99)]
 
     for outcome in outcomes {
-        #expect(ImageMapping.scanVerdict(for: outcome).action != .warn)
+        #expect(ImageMapping.scanVerdict(for: outcome).action == .allow)
     }
 }
 
