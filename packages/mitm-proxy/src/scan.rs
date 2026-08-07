@@ -16,6 +16,10 @@ use text_policy::{
 /// Outcome of a scan operation.
 pub enum ScanResult {
     Allow,
+    /// Only the image path produces this today — a probability has a warn
+    /// band now that the classifier has a `sexy` class, and text verdicts
+    /// still narrow warn to allow through `apply_mode`.
+    Warn { score: u32 },
     Block { score: u32 },
 }
 
@@ -132,16 +136,18 @@ pub fn scan_body(engine: &PolicyEngine, html: &str, mode: ProtectionMode) -> Sca
 
 /// Classify an intercepted image body.
 ///
-/// The score is `softmax(logits)[explicit]` from the MobileNetV3 classifier;
-/// `image-sandbox` owns the threshold comparison. Scores are floats in [0, 1]
-/// while `ScanResult::Block` carries an integer, so it is scaled to 0..100 —
-/// the field is a diagnostic for logs, not an input to any decision.
+/// The scores are `softmax(logits)` from the classifier's `sexy`/`explicit`
+/// classes; `image-sandbox` owns both threshold comparisons. Scores are
+/// floats in [0, 1] while `ScanResult` carries an integer, so each is scaled
+/// to 0..100 — the field is a diagnostic for logs, not an input to any
+/// decision.
 ///
 /// A sandbox with no model loaded allows everything, which is what runs when
 /// `--image-model` is not passed.
 pub fn scan_image(sandbox: &ImageSandbox, bytes: &[u8]) -> ScanResult {
     match sandbox.check(bytes) {
         ImageVerdict::Block { score } => ScanResult::Block { score: (score * 100.0) as u32 },
+        ImageVerdict::Warn { score } => ScanResult::Warn { score: (score * 100.0) as u32 },
         ImageVerdict::Allow => ScanResult::Allow,
     }
 }
@@ -151,18 +157,24 @@ pub fn scan_image(sandbox: &ImageSandbox, bytes: &[u8]) -> ScanResult {
 /// A missing or unreadable model is reported and then tolerated rather than
 /// being fatal: the proxy's other phases still work, and refusing to start
 /// would take out URL and body filtering too.
-pub fn build_image_sandbox(model_path: Option<&std::path::Path>, threshold: f32) -> ImageSandbox {
+pub fn build_image_sandbox(
+    model_path: Option<&std::path::Path>,
+    sexy_threshold: f32,
+    explicit_threshold: f32,
+) -> ImageSandbox {
     let Some(path) = model_path else {
         return ImageSandbox::disabled();
     };
     match ImageClassifier::load(path, image_sandbox::preprocess::INPUT_SIZE) {
         Ok(classifier) => {
             tracing::info!(
-                "image classifier loaded from {} (threshold {threshold})",
+                "image classifier loaded from {} (sexy threshold {sexy_threshold}, explicit \
+                 threshold {explicit_threshold})",
                 path.display()
             );
             let config = SandboxConfig {
-                explicit_threshold: threshold,
+                explicit_threshold,
+                sexy_threshold,
                 preprocess: image_sandbox::PreprocessConfig::default(),
             };
             ImageSandbox::new(classifier, config)
@@ -219,13 +231,13 @@ mod tests {
 
     #[test]
     fn scan_image_allows_truncated_jpeg_bytes() {
-        let sandbox = build_image_sandbox(None, UNUSED_THRESHOLD);
+        let sandbox = build_image_sandbox(None, UNUSED_THRESHOLD, UNUSED_THRESHOLD);
         assert!(matches!(scan_image(&sandbox, &[0xFF, 0xD8, 0xFF]), ScanResult::Allow));
     }
 
     #[test]
     fn scan_image_allows_empty_input() {
-        let sandbox = build_image_sandbox(None, UNUSED_THRESHOLD);
+        let sandbox = build_image_sandbox(None, UNUSED_THRESHOLD, UNUSED_THRESHOLD);
         assert!(matches!(scan_image(&sandbox, &[]), ScanResult::Allow));
     }
 
@@ -234,7 +246,7 @@ mod tests {
         // The no-`--image-model` case must behave exactly as the proxy did
         // before this phase existed, so an operator who does not configure a
         // model sees no change at all.
-        let sandbox = build_image_sandbox(None, UNUSED_THRESHOLD);
+        let sandbox = build_image_sandbox(None, UNUSED_THRESHOLD, UNUSED_THRESHOLD);
         assert!(matches!(scan_image(&sandbox, b"anything at all"), ScanResult::Allow));
     }
 
@@ -244,6 +256,7 @@ mod tests {
         // filtering as well would turn it into an outage.
         let sandbox = build_image_sandbox(
             Some(std::path::Path::new("/nonexistent/model.onnx")),
+            UNUSED_THRESHOLD,
             UNUSED_THRESHOLD,
         );
         assert!(matches!(scan_image(&sandbox, &[0xFF, 0xD8, 0xFF]), ScanResult::Allow));

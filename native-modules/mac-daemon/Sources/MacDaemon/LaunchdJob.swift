@@ -25,22 +25,29 @@ public struct LaunchdJob: Equatable, Sendable {
     public let kind: Kind
     /// Where stdout and stderr go. launchd discards both without it.
     public let logPath: URL?
+    /// Extra environment for the job's process. `launchctl setenv` was tried first and dropped:
+    /// it sets the aqua session's environment for processes launchd spawns *after* the call, but
+    /// that ordering is not observable from here, and a job bootstrapped moments too early — the
+    /// common case right after `bundle.sh` — silently starts without it. Baking the value into the
+    /// plist itself has no such race: `EnvironmentVariables` applies from that job's first launch.
+    public let environment: [String: String]
 
     public static func daemon(
-        label: String, executable: URL, arguments: [String], logPath: URL? = nil
+        label: String, executable: URL, arguments: [String], logPath: URL? = nil,
+        environment: [String: String] = [:]
     ) -> LaunchdJob {
         LaunchdJob(
             label: label, executable: executable, arguments: arguments, kind: .daemon,
-            logPath: logPath)
+            logPath: logPath, environment: environment)
     }
 
     public static func agent(
         label: String, executable: URL, arguments: [String], home: URL, uid: uid_t,
-        logPath: URL? = nil
+        logPath: URL? = nil, environment: [String: String] = [:]
     ) -> LaunchdJob {
         LaunchdJob(
             label: label, executable: executable, arguments: arguments,
-            kind: .agent(home: home, uid: uid), logPath: logPath)
+            kind: .agent(home: home, uid: uid), logPath: logPath, environment: environment)
     }
 
     public var installPath: URL {
@@ -90,6 +97,10 @@ public struct LaunchdJob: Equatable, Sendable {
         if let logPath {
             entries["StandardOutPath"] = logPath.path
             entries["StandardErrorPath"] = logPath.path
+        }
+
+        if !environment.isEmpty {
+            entries["EnvironmentVariables"] = environment
         }
 
         return try PropertyListSerialization.data(

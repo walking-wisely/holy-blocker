@@ -28,7 +28,7 @@ let usage = """
       ax-text [delay] [no-manual]       read the frontmost window's AX text (default delay: 3s;
                                         no-manual skips Chromium's AXManualAccessibility opt-in)
       overlay [seconds] [passive]       cover every screen with a real overlay window
-      image-scan <model.onnx> <threshold> [size]
+      image-scan <model.onnx> <sexy-threshold> <explicit-threshold> [size]
                                         classify a synthetic frame with the real ONNX model
       bundle <output-dir> [identity] [ffi-lib-dir]
                                         assemble and sign HolyBlockerDaemon.app (default: ad-hoc)
@@ -48,6 +48,9 @@ let usage = """
                                         required to enable image scanning, no built-in default —
                                         unset or unparseable degrades to allow-everything, the
                                         same as a missing model
+      HOLY_BLOCKER_IMAGE_SEXY_THRESHOLD sexy score at or above which an image warns; required
+                                        alongside HOLY_BLOCKER_IMAGE_THRESHOLD to enable image
+                                        scanning at all — see that variable
     """
 
 let stateDirectory = URL(
@@ -60,6 +63,11 @@ let snapshotPath = stateDirectory.appendingPathComponent("proxy-snapshot.json")
 /// `nil` (unset or unparseable) degrades image scanning off, the same path a missing model takes.
 let imageThreshold: Float? =
     ProcessInfo.processInfo.environment["HOLY_BLOCKER_IMAGE_THRESHOLD"].flatMap(Float.init)
+
+/// The `sexy`-tier counterpart to `imageThreshold`. Both must be present for image scanning to
+/// turn on — see `AgentRenderLoop.init`.
+let imageSexyThreshold: Float? =
+    ProcessInfo.processInfo.environment["HOLY_BLOCKER_IMAGE_SEXY_THRESHOLD"].flatMap(Float.init)
 
 let runner = SystemCommandRunner()
 
@@ -225,17 +233,20 @@ final class AgentRenderLoop {
 
         // The model is sealed inside the bundle. A missing or unloadable model, or a missing
         // threshold, degrades the image path to allow-everything rather than taking the daemon
-        // down — the text path is independent of it and must keep running. Which of the three
+        // down — the text path is independent of it and must keep running. Which of the four
         // happened is reported, because a silently disabled classifier is indistinguishable from a
         // clean screen.
         let modelURL = Bundle.main.url(
             forResource: AppBundle.classifierModelName, withExtension: nil)
         let classifier: ImageClassifying
-        if let modelURL, let threshold = imageThreshold,
-            let loaded = try? RealImageClassifier(modelPath: modelURL.path, threshold: threshold)
+        if let modelURL, let sexyThreshold = imageSexyThreshold, let explicitThreshold = imageThreshold,
+            let loaded = try? RealImageClassifier(
+                modelPath: modelURL.path, sexyThreshold: sexyThreshold,
+                explicitThreshold: explicitThreshold)
         {
             classifier = loaded
-            self.imagePathStatus = "on (threshold \(loaded.threshold))"
+            self.imagePathStatus =
+                "on (sexy threshold \(loaded.sexyThreshold), explicit threshold \(loaded.threshold))"
         } else {
             classifier = RealImageClassifier.disabled()
             self.imagePathStatus =
@@ -243,7 +254,9 @@ final class AgentRenderLoop {
                 ? "off (no \(AppBundle.classifierModelName) in bundle)"
                 : imageThreshold == nil
                     ? "off (HOLY_BLOCKER_IMAGE_THRESHOLD not set)"
-                    : "off (model failed to load)"
+                    : imageSexyThreshold == nil
+                        ? "off (HOLY_BLOCKER_IMAGE_SEXY_THRESHOLD not set)"
+                        : "off (model failed to load)"
         }
         let imageScanner = ImageScanner(classifier: classifier)
         self.imageScanner = imageScanner
@@ -402,15 +415,17 @@ func runRenderLoop(gate: PermissionGate, capture: SCShareableContentCapture) thr
 /// What it does not check is what the model *says*: a flat colour is not content, and what the
 /// classifier makes of one is not a claim this repository should be making. The assertion is that a
 /// number comes back in range.
-func runImageScan(modelPath: String, threshold: Float, size: Int) {
+func runImageScan(modelPath: String, sexyThreshold: Float, explicitThreshold: Float, size: Int) {
     let classifier: RealImageClassifier
     do {
-        classifier = try RealImageClassifier(modelPath: modelPath, threshold: threshold)
+        classifier = try RealImageClassifier(
+            modelPath: modelPath, sexyThreshold: sexyThreshold, explicitThreshold: explicitThreshold)
     } catch {
         fail("could not load \(modelPath): \(error)")
     }
     print("model: \(modelPath)")
-    print("threshold: \(classifier.threshold)")
+    print("sexy threshold: \(classifier.sexyThreshold)")
+    print("explicit threshold: \(classifier.threshold)")
 
     // Mid-grey, opaque, tightly packed BGRA — the layout `PixelBufferCopy.depad` produces.
     let pixels = [UInt8](repeating: 0x80, count: size * size * 4)
@@ -427,7 +442,7 @@ func runImageScan(modelPath: String, threshold: Float, size: Int) {
         // The one genuinely bad answer: the model was loaded but nothing classified. On this path
         // that means the frame was refused before inference — a geometry or buffer-size mistake.
         print("warning: no score — the frame never reached the model")
-    case .allow(let score), .block(let score as Float?):
+    case .allow(let score), .warn(let score as Float?), .block(let score as Float?):
         if let score, !(0...1).contains(score) {
             print("warning: score outside 0...1 — the output contract has changed")
         }
@@ -622,12 +637,13 @@ do {
         try await runCapture()
 
     case "image-scan":
-        guard rest.count >= 2, let threshold = Float(rest[1]) else {
-            fail("expected <model.onnx> <threshold> [size]")
+        guard rest.count >= 3, let sexyThreshold = Float(rest[1]), let explicitThreshold = Float(rest[2])
+        else {
+            fail("expected <model.onnx> <sexy-threshold> <explicit-threshold> [size]")
         }
         runImageScan(
-            modelPath: rest[0], threshold: threshold,
-            size: rest.count > 2 ? Int(rest[2]) ?? 512 : 512)
+            modelPath: rest[0], sexyThreshold: sexyThreshold, explicitThreshold: explicitThreshold,
+            size: rest.count > 3 ? Int(rest[3]) ?? 512 : 512)
 
     case "ax-text":
         runAXText(
@@ -712,11 +728,23 @@ do {
                 arguments: ["run", "/usr/local/bin/mitm-proxy", "/Library/Application Support/HolyBlocker"],
                 logPath: URL(fileURLWithPath: "/var/log/holy-blocker-daemon.log"))
         case "agent":
+            // The agent reads HOLY_BLOCKER_IMAGE_THRESHOLD/HOLY_BLOCKER_IMAGE_SEXY_THRESHOLD from
+            // its own process environment, and a LaunchAgent's environment comes from its plist,
+            // not from the shell that generated it — so if the operator has them set when running
+            // this verb, bake them into the plist rather than silently dropping them and shipping
+            // an image-scanning-off job.
+            var agentEnvironment: [String: String] = [:]
+            for name in ["HOLY_BLOCKER_IMAGE_THRESHOLD", "HOLY_BLOCKER_IMAGE_SEXY_THRESHOLD"] {
+                if let value = ProcessInfo.processInfo.environment[name] {
+                    agentEnvironment[name] = value
+                }
+            }
             job = LaunchdJob.agent(
                 label: "com.holyblocker.agent", executable: executable, arguments: ["agent"],
                 home: FileManager.default.homeDirectoryForCurrentUser, uid: getuid(),
                 logPath: FileManager.default.homeDirectoryForCurrentUser
-                    .appendingPathComponent("Library/Logs/holy-blocker-agent.log"))
+                    .appendingPathComponent("Library/Logs/holy-blocker-agent.log"),
+                environment: agentEnvironment)
         default:
             fail("expected <daemon|agent>")
         }
