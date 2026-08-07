@@ -7,6 +7,61 @@ under [experiments/](experiments/). The threshold and metric choices are recorde
 The classification strategy and model gating rationale live in [../content-classification.md](../../architecture/content-classification.md).
 This document is the build plan: what modules to add, in what order, and what each one is responsible for.
 
+**Note on the "Current state" section below (added on `feat/ml-nsfw-baseline-eval`,
+branched from `master`):** it describes a fine-tuning pipeline (`config.py`, `labels.py`,
+`train.py`, `export_tflite.py`, etc.) that does not exist in `machine-learning/` on this
+branch — only [results.md](results.md) and this plan file carry that history forward. What
+actually exists here is a much smaller, fresh **baseline evaluation harness**, described in
+[Baseline evaluation (v0)](#baseline-evaluation-v0) below. Treat the rest of "Current state"
+as historical/aspirational until the fine-tuning pipeline is rebuilt or merged in from
+elsewhere.
+
+## Baseline evaluation (v0)
+
+**Done**, on `machine-learning/` as it exists on this branch. Ships
+[`Falconsai/nsfw_image_detection`](https://huggingface.co/Falconsai/nsfw_image_detection)
+(ViT-base, Apache-2.0, `id2label = {0: "normal", 1: "nsfw"}`) exactly as published — no
+fine-tuning — and measures its false-positive behavior on **rendered UI / text-heavy
+screenshots**, closing a small piece of the gap [classifier-operating-point.md](../../decisions/classifier-operating-point.md#the-screen-path-operates-outside-this-measurement)
+flags ("the screen path operates outside this measurement"): that decision was recorded
+against a *different* model and geometry, but the underlying problem — no measurement
+exists for rendered UI at all — is the same regardless of which backbone.
+
+- `model.py` — loads the pretrained classifier; resolves the NSFW class index from the
+  model's own `id2label` rather than hardcoding it (a silent label-order flip would
+  otherwise score every image backwards with no error anywhere, the same failure mode
+  `packages/image-sandbox`'s pinned `BINARY_LABELS` guards against).
+- `synth_ui.py` — a fully synthetic generator for the benign corpus (code editors, chat,
+  documents, terminals, spreadsheets, forms; common desktop/phone resolutions; light/dark
+  themes). No captured screen content, no third-party imagery.
+- `corpus.py` — loads a labeled-by-directory corpus from a gitignored local path; raises
+  loudly rather than silently scoring zero images if the path is missing.
+- `eval.py` — pure: score distribution (mean/median/p90/p95/p99) plus a threshold sweep.
+  No single threshold is picked — this model has no measured operating point yet.
+- `scripts/run_baseline_eval.py` — generates the corpus if needed and runs the eval.
+- 23 tests, all pure-logic (no torch/transformers, no network, no real corpus needed to run).
+
+**Measured** (300 synthetic images, seed 0; reproduced at seed 1 within ~1.5pp per
+threshold): mean score 0.052, median 0.002 — most rendered UI scores very low — but the
+tail is real: p95 = 0.31, p99 = 0.63, max = 0.77. False-positive rate by candidate
+threshold: 14.3% @ 0.10, 9.7% @ 0.20, 6.0% @ 0.30, 2.3% @ 0.50, 0.7% @ 0.70. No threshold
+is chosen here; this is a first data point on an off-the-shelf model against a
+distribution it was never evaluated against.
+
+**What this does not cover, deliberately deferred:**
+- **Geometry** — evaluated with the model's own published preprocessing (direct resize to
+  224×224, mean/std 0.5), not `packages/image-sandbox`'s tile-max geometry. Building a
+  faithful tile-max harness in Python is only worth it once a backbone is actually chosen
+  for production.
+- **Recall** — only the benign/false-positive side is measured. Recall needs a held-out
+  explicit corpus, which this pipeline deliberately does not source or store (see
+  `corpus.py`'s docstring).
+- **Real screenshots** — the corpus is 100% synthetic; a small batch of real local
+  screenshots (never committed) would sanity-check the synthetic set against reality.
+- **Fine-tuning** — out of scope for this pass by request.
+
+See `machine-learning/README.md` for setup and how to re-run the eval.
+
 ## Current state
 
 All six planned steps are complete. The package at `machine-learning/` has:
