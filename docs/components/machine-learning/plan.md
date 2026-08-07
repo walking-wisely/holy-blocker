@@ -7,6 +7,75 @@ under [experiments/](experiments/). The threshold and metric choices are recorde
 The classification strategy and model gating rationale live in [../content-classification.md](../../architecture/content-classification.md).
 This document is the build plan: what modules to add, in what order, and what each one is responsible for.
 
+**Note on the "Current state" section below (added on `feat/ml-nsfw-baseline-eval`,
+branched from `master`):** it describes a fine-tuning pipeline (`config.py`, `labels.py`,
+`train.py`, `export_tflite.py`, etc.) that does not exist in `machine-learning/` on this
+branch — only [results.md](results.md) and this plan file carry that history forward. What
+actually exists here is a much smaller, fresh **baseline evaluation harness**, described in
+[Baseline evaluation (v0)](#baseline-evaluation-v0) below. Treat the rest of "Current state"
+as historical/aspirational until the fine-tuning pipeline is rebuilt or merged in from
+elsewhere.
+
+## Baseline evaluation (v0)
+
+**Done**, on `machine-learning/` as it exists on this branch. Uses
+[`Falconsai/nsfw_image_detection`](https://huggingface.co/Falconsai/nsfw_image_detection)
+(ViT-base, Apache-2.0, `id2label = {0: "normal", 1: "nsfw"}`), downloaded from Hugging Face
+on the first evaluation run rather than shipped as weights in this package, exactly as
+published — no fine-tuning — and measures its false-positive behavior on **rendered UI / text-heavy
+screenshots**, a distribution [classifier-operating-point.md](../../decisions/classifier-operating-point.md)
+never measures for any model or geometry this project has shipped. Per that decision's
+"a threshold belongs to a model *and* a geometry" rule, **the numbers below describe a
+different model under a different geometry** — this classifier's own published
+whole-image resize, not `packages/image-sandbox`'s tile-max — and are not comparable to
+`image-sandbox`'s thresholds. Notably, two of the six thresholds swept below (0.20 and
+0.50) coincide with values `classifier-operating-point.md` records as *superseded* or
+*not a real threshold* for the deployed model; that coincidence is numeric only.
+
+- `model.py` — loads the pretrained classifier; resolves the NSFW class index from the
+  model's own `id2label` rather than hardcoding it (a silent label-order flip would
+  otherwise score every image backwards with no error anywhere, the same failure mode
+  `packages/image-sandbox`'s pinned `BINARY_LABELS` guards against).
+- `synth_ui.py` — a fully synthetic generator for the benign corpus (code editors, chat,
+  documents, terminals, spreadsheets, forms; common desktop/phone resolutions; light/dark
+  themes). No captured screen content, no third-party imagery.
+- `corpus.py` — loads a labeled-by-directory corpus from a gitignored local path; raises
+  loudly rather than silently scoring zero images if the path is missing.
+- `eval.py` — pure: score distribution (mean/median/p90/p95/p99) plus a threshold sweep,
+  plus (when the caller supplies labels, as `evaluate_corpus` does) the top-N
+  highest-scoring filenames in `report()`, so a tail statistic is never an unexplainable
+  number — see the README's "top 10 highest-scoring items" for what this actually found.
+  No single threshold is picked — this model has no measured operating point yet.
+- `scripts/run_baseline_eval.py` — generates the corpus if needed and runs the eval.
+- 32 tests, all deterministic (no torch/transformers, no network, no model download, no real
+  corpus needed to run) — most are pure-logic, and the synthetic UI tests additionally use
+  Pillow and write to a temp directory on disk.
+
+**Measured** (300 synthetic images, seed 0; reproduced at seed 1, max drift 1.34pp per
+threshold — see `machine-learning/README.md` for the full second-seed sweep): mean score
+0.052, median 0.002 — most rendered UI scores very low — but the tail is real: p95 =
+0.31, p99 = 0.63 (the 4th-highest of 300 scores), max = 0.77 (a single image). False-
+positive rate by candidate threshold: 14.3% @ 0.10, 9.7% @ 0.20, 6.0% @ 0.30, 2.3% @
+0.50, 0.7% @ 0.70 (**2 of 300 images** — at n=300 the tail thresholds are a handful of
+samples wide and should not be read as precise). No threshold is chosen here; this is a
+first data point on an off-the-shelf model, under its own preprocessing, against a fully
+synthetic corpus containing no photographic or illustrated content — the two biggest gaps
+to a production number, both listed below.
+
+**What this does not cover, deliberately deferred:**
+- **Geometry** — evaluated with the model's own published preprocessing (direct resize to
+  224×224, mean/std 0.5), not `packages/image-sandbox`'s tile-max geometry. Building a
+  faithful tile-max harness in Python is only worth it once a backbone is actually chosen
+  for production.
+- **Recall** — only the benign/false-positive side is measured. Recall needs a held-out
+  explicit corpus, which this pipeline deliberately does not source or store (see
+  `corpus.py`'s docstring).
+- **Real screenshots** — the corpus is 100% synthetic; a small batch of real local
+  screenshots (never committed) would sanity-check the synthetic set against reality.
+- **Fine-tuning** — out of scope for this pass by request.
+
+See `machine-learning/README.md` for setup and how to re-run the eval.
+
 ## Current state
 
 All six planned steps are complete. The package at `machine-learning/` has:

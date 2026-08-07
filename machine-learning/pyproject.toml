@@ -1,0 +1,30 @@
+[project]
+name = "holy-blocker-ml"
+version = "0.1.0"
+description = "Evaluation (and, later, fine-tuning) pipeline for Holy Blocker's image classifier"
+requires-python = ">=3.10,<3.14"
+readme = "README.md"
+license = { text = "Proprietary" }
+dependencies = [
+    "torch>=2.4",
+    "torchvision",
+    "transformers>=4.31",
+    "pillow>=10.0",
+    "numpy>=1.26",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

@@ -16,6 +16,7 @@ The packages below **exist in the repo today** and are actively being built:
 | `packages/text-policy`      | Rust                          | normalize + lexicon done; scorer/evaluator/policy not yet started   |
 | `packages/mitm-proxy`       | Rust                          | Plain HTTP forwarding works; HTTPS CONNECT returns 501              |
 | `native-modules/win-daemon` | C++20                         | WinEvent hooks + message loop; no capture/OCR/IPC yet               |
+| `machine-learning`          | Python                        | **Baseline evaluation only, no fine-tuning.** Uses `Falconsai/nsfw_image_detection` (pretrained ViT, Apache-2.0, downloaded from Hugging Face on the first evaluation run — no weights are shipped in this package) as-is and measures its false-positive rate on a fully synthetic UI/text-screenshot corpus (code editors, chat, documents, terminals, spreadsheets, forms — text and chrome only, no photos/icons/video frames) via `synth_ui.py` + `eval.py`. No threshold is picked; a score distribution and threshold sweep are reported instead (300 synthetic images, **this model's own whole-image resize, not `image-sandbox`'s tile-max, and not comparable to `image-sandbox`'s thresholds**: FPR 9.7% @ 0.20, 2.3% @ 0.50 — 0.20 and 0.50 are swept values here, not this project's operating point). See `docs/components/machine-learning/plan.md` for details and what's deliberately deferred (tile-max geometry, recall, real screenshots, fine-tuning) |
 
 The packages below are **planned but not yet created** — do not assume they exist:
 
