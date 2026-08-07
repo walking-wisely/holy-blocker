@@ -55,19 +55,31 @@ happen **before** punycode encoding, or two spellings of the same name encode di
 2. Apply **UTS #46** mapping and case folding (this subsumes plain ASCII lowercasing).
 3. Convert U-labels to A-labels — punycode encoding per **RFC 3492**, with code-point eligibility
    per **RFC 5892**. Storage and comparison are always in A-label form.
-4. Strip a single leading literal `www.` label, if present.
-5. **Validate lengths after conversion** — a label that exceeds 63 bytes or a full name that
+4. **Validate lengths after conversion** — a label that exceeds 63 bytes or a full name that
    exceeds 253 bytes *after* A-label expansion is rejected as malformed. Pre-conversion length is
    not a valid check; punycode expands.
 
-Step 4 is a comparison convenience and **never widens scope** — see the decision doc's
-normalization section, and `classify_scope` below, which is what actually decides coverage.
+**There is no `www.`-stripping step, deliberately.** An earlier draft of this design stripped a
+leading `www.` label before comparison, on the theory that it was "just a comparison convenience."
+It wasn't: `classify_scope` runs on the *same* string `normalize()` produces, so a stripped
+`www.example.com` and a bare `example.com` collapsed onto the identical comparison key and could
+not be told apart downstream — a source entry meant to name only the `www` host silently became
+indistinguishable from one naming the apex, and a query for the bare domain incorrectly matched a
+rule that was only ever supposed to cover its `www` subdomain. `www.example.com` is therefore
+normalized, scoped, and stored exactly like any other three-label hostname — it produces its own
+`ExactHost` entry that matches `www.example.com` and nothing else. If a source separately lists the
+bare `example.com` as `Apex`, that Apex entry already covers `www.example.com` (and every other
+subdomain) at lookup time — see [module 4](#4-fst_build--the-on-device-artifact) — so no aliasing
+step is needed to get the common case right, and the uncommon case (only the `www` host is listed)
+no longer silently over-blocks.
 
 `classify_scope` returns `Apex` only when the normalized entry is exactly the registrable domain
 (eTLD+1) per the Public Suffix List; `ExactHost` otherwise; and `None` (refuse the entry as an apex
 rule) when the entry *is* a public suffix or appears on the shared-hosting denylist. Test this
 first and hard: `com`, `co.uk`, `blogspot.com`, `s3.amazonaws.com` must never produce `Apex`, while
-`someone.blogspot.com` must.
+`someone.blogspot.com` must. Also test the `www.` case directly: an `ExactHost` entry for
+`www.example.com` must match a query for `www.example.com`, and must **not** match `example.com` or
+`cdn.example.com`.
 
 ## Modules to add
 
@@ -84,10 +96,12 @@ Responsibilities:
 
 - One module per source, each parsing that source's native format (hosts-file syntax for
   StevenBlack, plain domain-per-line for hagezi, UT1's category directory structure) into a
-  common `RawEntry { domain: String, source: SourceId, category: Category }`. `category` is
-  populated here, not inferred later — it's the one thing only the source-specific parser knows
-  (UT1 hands it out per directory, hagezi's NSFW list and StevenBlack's `porn` extension are each a
-  single fixed category), and module 2's merge step needs it on every `RawEntry` it consumes.
+  common `RawEntry { domain: String, source: SourceId, category: Category, scope_hint: ScopeHint }`.
+  `ScopeHint { None, Apex }` records whether the source line was an ordinary entry or a wildcard —
+  see the input-shape table below for how each parser sets it. `category` is populated here, not
+  inferred later — it's the one thing only the source-specific parser knows (UT1 hands it out per
+  directory, hagezi's NSFW list and StevenBlack's `porn` extension are each a single fixed
+  category), and module 2's merge step needs both fields on every `RawEntry` it consumes.
 - **Each source is fetched at a pinned revision** — a release tag or commit hash from the checked-in
   source configuration, never a branch HEAD. A `SourceConfig { source: SourceId, url: String,
   pinned_revision: String, expected_license: LicenseId }` is part of the repository, and moving a
@@ -147,15 +161,21 @@ Responsibilities:
   - `classify_scope = None` (the entry is a public suffix or on the shared-hosting denylist) → the
     entry is **dropped**, counted, and named in the build report. This is the case that would
     otherwise black-hole an entire hosting provider.
-- `MergedEntry { domain: String, scope: RuleScope, sources: Vec<SourceId>, category: Category }` —
-  the union type. Merging two `RawEntry`s for the same normalized domain unions their `sources`
-  rather than picking one arbitrarily, so a later "why is this blocked" query can answer with every
-  source that flagged it. Merging two entries with different scopes takes the **wider** scope
-  (`Apex` wins), since one source legitimately naming the apex is a stronger statement than another
-  naming one host under it.
-- Categories are never blended silently: a source's own category (`adult`, `gambling`, `dating`,
-  ...) is preserved through merge, and only entries in the categories this build is configured to
-  ship are passed on to module 3.
+- `MergedEntry { domain: String, scope: RuleScope, sources: Vec<SourceId>, categories: Vec<Category> }`
+  — the union type. **`categories` is a set, not a single value**, because two sources can
+  legitimately disagree about what kind of site a domain is (one flags it `adult`, another flags the
+  same domain `gambling`) and both are true statements about it, not a conflict to resolve. Merging
+  two `RawEntry`s for the same normalized domain unions their `sources` the same way, rather than
+  picking one arbitrarily, so a later "why is this blocked" query can answer with every source that
+  flagged it and every category it was flagged under. Merging two entries with different scopes
+  takes the **wider** scope (`Apex` wins), since one source legitimately naming the apex is a
+  stronger statement than another naming one host under it.
+- Categories are never blended into a single value: a source's own category (`adult`, `gambling`,
+  `dating`, ...) is added to the entry's `categories` set, never overwrites it, and an entry ships to
+  module 3 if **any** of its categories is one this build is configured to ship (an `adult`-only
+  build still includes a domain that is also flagged `gambling`, because the `adult` flag alone
+  qualifies it). Test a domain classified as both `adult` and `gambling` by two different sources and
+  assert both categories survive merge.
 - **Personal-name triage** — `flag_personal_name(second_level_label: &str) -> bool`. Pure function:
   returns true when the second-level label decomposes into **2–4 alphabetic tokens** separated by
   `-`, `.`, or `_`, in any order. Optionally raises confidence against an embedded first-name /
@@ -197,6 +217,24 @@ Responsibilities:
   the build's own logs/metrics, not a reason to change its inclusion.
   No HTTP fetch, no TCP connection to the domain's own server, no ICMP — see the decision doc's
   legal boundary for why an application-layer request against a listed domain is never made here.
+
+  **Reducing the A and AAAA lookups to one `Verdict`** — the two queries are independent and can
+  disagree (e.g. A returns `NXDOMAIN` while AAAA times out), so `check()` applies this order,
+  evaluated top to bottom:
+
+  1. If **either** lookup (or its CNAME chain) resolves to an address, the result is `Alive`. One
+     working address family is enough for the domain to be reachable.
+  2. Otherwise, if **both** lookups unambiguously return `NXDOMAIN`, the result is `Dead`.
+  3. Otherwise — at least one lookup is `Unknown` and neither is `Alive` — the result is `Unknown`.
+     This covers a mixed `NXDOMAIN`/`Unknown` pair: one family failing to resolve while the other
+     family's answer is merely inconclusive must never be conflated with both families cleanly
+     saying the domain doesn't exist.
+
+  A domain checked for the first time that comes back `Unknown` is **included by default**, the
+  same as an existing domain whose cached verdict is `Unknown` — a build never treats "we couldn't
+  tell" as a reason to omit a domain it has no prior information about. Test the mixed-verdict case
+  explicitly, and test first-seen-`Unknown` retention separately from previously-cached-`Unknown`
+  retention.
 - **An explicitly configured resolver, never the host's system resolver.** The address is
   configuration, defaulting to Cloudflare's unfiltered `1.1.1.1` / `2606:4700:4700::1111` —
   explicitly *not* the `1.1.1.2` or `1.1.1.3` filtering variants. A CI provider's default resolver
@@ -245,15 +283,21 @@ src/fst_build.rs
 Responsibilities:
 
 - Reverses each surviving domain's labels (`example.com` → `com.example`) so subdomain matching
-  becomes prefix/exact-match at label boundaries on the consumer side. Note the key is the
-  *normalized* form: a source entry of `www.example.com` also produces the key `com.example`, with
-  scope `ExactHost` — it is **not** stored as `com.example.www`.
+  becomes prefix/exact-match at label boundaries on the consumer side. The key is the *normalized*
+  form with no host-identity stripping (module 0): a source entry of `www.example.com` produces the
+  key `com.example.www`, distinct from the apex key `com.example` — an `ExactHost` rule stored under
+  the `www` key matches only a query for `www.example.com`, never the bare domain or any other
+  subdomain. A separate `Apex` entry for `example.com`, if one exists, already covers `www` (and
+  every other subdomain) through the label-boundary lookup below, without needing the two keys to
+  collide.
 - Sorts the reversed, deduplicated key set (an `fst::MapBuilder` requirement — the merge/dedupe step
   upstream already produces this property, so this is not new work, just an ordering constraint on
   output).
 - Builds the FST, mapping each key to a small **provenance ID** (`u32`). The ID encodes the
-  canonicalized combination of `{sources, category, scope}` — **an enumerated set, not a per-domain
-  value.** Most domains share one of a few dozen combinations, and keeping the value space small is
+  canonicalized combination of `{sources, categories, scope}` — **an enumerated set, not a
+  per-domain value.** `categories` is the same set `MergedEntry` carries (module 2): a domain
+  flagged under two categories keeps both in the combination it's assigned. Most domains share one
+  of a few dozen combinations, and keeping the value space small is
   what limits the damage a `Map`'s per-key value does to suffix-sharing (states with differing
   outputs cannot be merged). The ID is only meaningful alongside the manifest entry that decodes it,
   so a future "why is this blocked" surface needs no second on-device lookup structure.
@@ -265,29 +309,38 @@ Responsibilities:
   ```rust
   struct Manifest {
       version: u64,                          // monotonic; the client's rollback high-water mark
-      key_id: KeyId,                         // which trusted public key signed this
       build_time: Timestamp,
       entry_count: u64,
       output_license: LicenseId,             // least-permissive of the input licenses
       sources: Vec<SourceSnapshot>,          // one per constituent source, from module 1
-      provenance_table: Vec<ProvenanceEntry>, // provenance_id -> { sources, category, scope }
+      provenance_table: Vec<ProvenanceEntry>, // provenance_id -> { sources, categories, scope }
       fst_digest: [u8; 32],                  // SHA-256 of the .fst file, binding manifest to artifact
+      signatures: Vec<Signature>,            // { key_id: KeyId, bytes: [u8; 64] } — see below
   }
   ```
 
-  `version` and `key_id` are load-bearing, not decoration: the decision doc's rollback defense
+  `version` and `signatures` are load-bearing, not decoration: the decision doc's rollback defense
   rejects a bundle whose `version` is not strictly greater than the client's high-water mark, and
-  `key_id` is how a client selects the verifying key instead of trying every key in its trusted set.
-  An earlier draft of this struct had neither, contradicting the trust contract it was supposed to
-  implement.
+  each `signatures` entry's `key_id` is how a client picks which of its trusted keys to try instead
+  of guessing. An earlier draft of this struct had a single `key_id`/signature pair, which is exactly
+  what key rotation (decision doc, [Distribution](../../decisions/domain-blocklist-sourcing.md#distribution))
+  cannot be built on — a single signer means the pipeline can only ever satisfy one generation of
+  client trust set at a time. `signatures` is a list so a build can carry both an old-key and a
+  new-key signature during a rotation's overlap window.
 
-- **Signs `manifest_bytes` with the pipeline's Ed25519 key. Just the manifest bytes.** Not
-  `fst_digest || manifest_bytes` — `fst_digest` is already a field inside the manifest, so signing
-  the manifest already binds the artifact transitively. The concatenation added a framing detail two
-  implementations could disagree about and no security property.
+- **Signs `manifest_bytes` with every key currently active for signing** — one entry in `signatures`
+  per key, each an Ed25519 signature over the manifest bytes with the `signatures` field itself
+  excluded from what's signed (it's appended after signing each entry, not signed over — otherwise
+  adding the second signature during rotation would invalidate the first). Outside a rotation window
+  there is exactly one entry. Not `fst_digest || manifest_bytes` — `fst_digest` is already a field
+  inside the manifest, so signing the manifest already binds the artifact transitively. The
+  concatenation added a framing detail two implementations could disagree about and no security
+  property.
 - Round-trip tests cover building a small provenance table, encoding it into the manifest, decoding
-  it back to the same `{sources, category, scope}` per ID, and verifying a signature over the
-  manifest bytes rejects a manifest whose `fst_digest` has been altered.
+  it back to the same `{sources, categories, scope}` per ID — including a domain assigned two
+  categories — verifying that a manifest with two signature entries (simulating a rotation) validates
+  against a client trusting only the old key, only the new key, or both, and that altering
+  `fst_digest` after signing invalidates every signature entry.
 
 (See [Reference documents](#reference-documents) below for the FST/mmap references this module builds on.)
 
@@ -329,11 +382,40 @@ constant.
 
 ### 6. `net-shield` integration
 
-Teach `DomainFilter`'s loading path to accept the signed `.fst` file (mmap-backed, `Arc`-wrapped for
-atomic swap, per the decision doc) as an alternative to the existing flat rule-slice constructor,
-without changing the existing constructor's behavior or its tests.
+`DomainFilter` (`packages/net-shield/src/radix.rs`) gains a **second, separate loading path**
+alongside its existing one — it does not grow I/O or mmap logic of its own. A new type owns the
+signed-artifact concerns and hands `DomainFilter` something it already knows how to consume:
 
-Two things must be specified here or matching breaks silently.
+```rust
+// packages/net-shield/src/radix.rs — unchanged:
+impl DomainFilter {
+    pub fn from_rules(rules: &[(&str, FilterAction)]) -> Self   // existing, untouched
+}
+
+// new: a thin wrapper that owns the artifact, not DomainFilter itself
+pub struct BlocklistArtifact {
+    map: Arc<memmap2::Mmap>,       // the mmap-backed .fst, per the decision doc
+    provenance: Vec<ProvenanceEntry>,
+}
+
+impl BlocklistArtifact {
+    /// Verifies the manifest signature and fst_digest against `path`'s current/previous
+    /// slot layout (decision doc, on-device storage section) before returning. Fails closed:
+    /// an Err here means "no artifact," never a partially-trusted one.
+    pub fn load(path: &Path, trusted_keys: &[PublicKey]) -> Result<Self, ArtifactError>
+
+    /// Looks up a provenance ID for a domain key, or None if absent. Pure, no I/O — the mmap
+    /// access itself is what can major-fault, not this call.
+    fn provenance_for(&self, reversed_key: &str) -> Option<&ProvenanceEntry>
+}
+```
+
+`DomainFilter::from_rules` and its existing tests are untouched. A `BlocklistArtifact` is a
+*separate* handle that `net-shield`'s top-level filter-query path consults in addition to
+`DomainFilter`, per the precedence table below — it is not spliced into `DomainFilter`'s own
+internal trie.
+
+Three things must be specified here or matching breaks silently.
 
 **Precedence.** The FST stores a provenance ID, not a `FilterAction`, and `net-shield`'s existing
 `DomainFilter` has richer semantics than a flat block-only list: a specific `Allow` can override a
@@ -356,10 +438,32 @@ would leave two copies that each pass their own tests and disagree in production
 `packages/text-policy-ffi` exists to prevent, per the "one implementation, no drift" lesson recorded
 in the mac-daemon row of `AGENTS.md`.
 
-**Lookup budget.** Per the decision doc's mmap section, the FST lookup runs off the packet-handling
-thread and the caller waits at most a small fixed budget (starting value **2 ms**), falling back to
-a cached decision for that domain or the filter's existing default — never blocking packet delivery
-on a page fault. The fallback count is a metric, not a silent path.
+**Lookup budget.** Per the decision doc's mmap section, a `BlocklistArtifact` lookup must never block
+packet delivery on a page fault, which `dns_shield.rs`'s current inline, synchronous
+`self.domains.lookup(...)` call cannot guarantee once `domains` can be artifact-backed. The bounded
+contract:
+
+- A single-threaded worker owns the `BlocklistArtifact` and receives lookup requests over a bounded
+  channel keyed by the **normalized** domain (module 0's `normalize()` — the packet-handling side
+  must never normalize differently than the worker or a cache hit/miss becomes non-deterministic).
+- `DnsShield::inspect` sends a request and waits at most **2 ms** (starting value, per the mmap
+  section) on a response channel. Two outcomes:
+  - The worker answers in time → its provenance-derived `FilterAction` is used and also written into
+    a small in-memory LRU cache keyed by the same normalized domain, so a repeated query for the same
+    domain during a burst doesn't re-enter the channel at all.
+  - The budget expires first → `inspect` falls back to the LRU cache's last answer for that domain
+    if one exists, otherwise to `DomainFilter`'s existing default action. The in-flight worker
+    request is not cancelled; its eventual answer still populates the cache for the next query.
+- **A request already in flight for the same domain is not duplicated** — a second `inspect` call for
+  a domain the worker is already resolving attaches to the same in-flight future rather than queuing
+  a second worker request, so a burst of packets to one blocked domain costs one worker round trip,
+  not one per packet.
+- Every fallback (timeout expiry) increments a counter exposed the same way other daemon health
+  signals are — a metric, not a silently absorbed path — since a fallback that fires constantly means
+  the 2 ms budget or the cache size needs revisiting.
+- Tests cover: a fast worker response within budget, a slow worker forcing the timeout fallback (with
+  and without a warm cache entry), and two concurrent lookups for the same domain collapsing to one
+  worker request.
 
 ### 7. `cli` — the pipeline entry point
 

@@ -58,17 +58,26 @@ case — and classifying such a domain as hosting adult content is processing of
 data under GDPR Art. 9 (data concerning sex life or sexual orientation). This is not solved by
 "we don't store user data."
 
-**Lawful basis.** Art. 6(1)(f), legitimate interest: child and household content safety. The
-Art. 9 condition is **Art. 9(2)(e), data manifestly made public by the data subject** — an operator
-publicly running an adult site under their own domain and branding has manifestly made that fact
-public themselves. This is the only Art. 9(2) condition that fits; consent is unobtainable at this
-scale and none of the other exemptions apply.
+**The Art. 6/Art. 9/Art. 14 analysis below is a documented working assumption, not a legal
+opinion.** It records the reasoning this design was built against so an implementer isn't starting
+from nothing, but none of it has been reviewed by qualified counsel, and shipping the CSAM-adjacent
+personal-name triage or the general notice described here needs that review first — **the project
+owner is the decision owner for that sign-off**, tracked the same way any other pre-ship gate is
+tracked, not assumed satisfied by this document existing.
 
-**Notice.** Individual notice to every operator in a multi-million-entry aggregated list is
-disproportionate, so **Art. 14(5)(b)** applies. That exemption is not silence — the obligation it
-substitutes is a *public, general notice*: a published statement describing what the pipeline
-classifies, which sources it draws from, and how to dispute an entry. Publishing that statement is
-a shipping requirement, not a nicety.
+**Lawful basis (working assumption).** Art. 6(1)(f), legitimate interest: child and household
+content safety. The Art. 9 condition is **Art. 9(2)(e), data manifestly made public by the data
+subject** — an operator publicly running an adult site under their own domain and branding has
+manifestly made that fact public themselves. This is the only Art. 9(2) condition that fits;
+consent is unobtainable at this scale and none of the other exemptions apply. This is the pipeline
+author's reading, offered as the starting point for counsel review, not a substitute for it.
+
+**Notice (working assumption).** Individual notice to every operator in a multi-million-entry
+aggregated list is disproportionate, so **Art. 14(5)(b)** applies. That exemption is not silence —
+the obligation it substitutes is a *public, general notice*: a published statement describing what
+the pipeline classifies, which sources it draws from, and how to dispute an entry. Publishing that
+statement is a shipping requirement, not a nicety, and its wording is part of what counsel review
+above needs to cover before the pipeline ships to real users.
 
 **Automated triage, not manual review.** Manually reviewing a multi-million-entry list is not a
 plan. What is implementable is a narrow heuristic in the merge step: flag a domain whose
@@ -224,20 +233,26 @@ a rule for `adult` matching `site.adult`.
 Two distinct things must not be conflated:
 
 - **`normalize()` — a comparison key.** Lowercase; apply UTS #46 mapping and case folding; convert
-  U-labels to A-labels (punycode); strip a trailing dot; strip a single leading literal `www.`
-  label; validate length limits after conversion. Purely so that "is domain X already in the list"
-  is a reliable comparison instead of a string-literal accident. **It never changes what a rule
-  covers.**
+  U-labels to A-labels (punycode); strip a trailing dot; validate length limits after conversion.
+  Purely so that "is domain X already in the list" is a reliable comparison instead of a
+  string-literal accident. **It never changes what a rule covers**, and — unlike an earlier draft of
+  this document — it does not strip a `www.` label either, for exactly that reason: stripping it
+  would fold `www.example.com` and `example.com` onto the same comparison key before scope is even
+  decided, making a rule that named one indistinguishable from a rule that named the other.
 - **`RuleScope` — what a rule matches.** Either `Apex` (this domain and everything under it) or
   `ExactHost` (this exact name only).
 
 **A rule is `Apex` only when the source's own listed entry is itself the registrable domain
-(eTLD+1).** It is never inferred by stripping a prefix. So a source entry of `www.example.com`
-normalizes to the key `example.com` with scope `ExactHost` — the source named a specific host, and
-stripping `www.` for comparison must not silently promote that into apex coverage. A source entry
-of `example.com` is eTLD+1 and becomes `Apex`. The `www.` strip is symmetric: because the query
-side applies the *same* `normalize()`, a lookup of `www.example.com` also reduces to
-`example.com` and hits the `ExactHost` rule, while `cdn.example.com` correctly does not.
+(eTLD+1).** It is never inferred by stripping a prefix. A source entry of `www.example.com` is
+**not** eTLD+1 — `www` is a label below the registrable domain — so it normalizes to its own
+comparison key and scopes to `ExactHost`, matching only `www.example.com`. A source entry of
+`example.com` *is* eTLD+1 and becomes `Apex`, which — because `Apex` covers everything under the
+domain — already matches `www.example.com` too, without the two entries needing to share a
+comparison key. Because the query side applies the identical `normalize()`, a lookup of
+`www.example.com` matches the `ExactHost` rule (or the `Apex` rule if one exists for the bare
+domain), a lookup of `example.com` matches only an `Apex` or `ExactHost` rule actually filed under
+`example.com`, and a lookup of `cdn.example.com` correctly matches neither unless something names
+it or the apex directly.
 
 Registrability is decided against the **[Public Suffix List](https://publicsuffix.org/)**, checked
 at build time:
@@ -308,8 +323,14 @@ This is a *user's* remedy. It is not an operator's remedy — see the dispute ch
 
 #### 6. Don't blend categories silently
 
-A source's "adult" category and its "gambling" or "dating" category are different products; only
-merge the categories actually shipped as one filter.
+A source's "adult" category and its "gambling" or "dating" category are different products, and a
+domain legitimately can be both — an aggregator listing under "adult" and a different one under
+"gambling" are two true statements about the same domain, not a conflict. `MergedEntry` therefore
+carries a **set** of categories, never a single value that one merge step could silently overwrite
+with the other. A build ships a domain if any one of its categories is in that build's configured
+set; it does not require all of a domain's categories to match. The exact type
+(`MergedEntry.categories: Vec<Category>`) and the provenance ID's matching field are in
+[the plan](../components/domain-blocklist/plan.md) module 2 and module 4.
 
 ### Publish gates
 
@@ -363,6 +384,16 @@ not `Dead` — a resolver having a bad moment, a transient SERVFAIL, or a timeou
 to silently shrink the blocklist. An entry that stays `Unknown` across repeated sweeps is worth
 surfacing in the pipeline's own build metrics as a thing to look at, not a reason to change its
 inclusion.
+
+The table above describes one query's result; a liveness check runs **two** (A and AAAA), which can
+disagree — one family returning `NXDOMAIN` while the other times out is not a rare case, it is the
+ordinary shape of a dual-stack failure. The two combine in this order: **`Alive` if either lookup
+resolves** (one working address family is enough); otherwise **`Dead` only if both unambiguously
+return `NXDOMAIN`**; otherwise **`Unknown`**. A mixed `NXDOMAIN`/`Unknown` pair is therefore
+`Unknown`, never `Dead` — a resolver failing to give a straight answer on one address family must
+not let the other family's clean `NXDOMAIN` carry the domain to pruning. A domain checked for the
+first time that comes back `Unknown` is **included by default**, same as an already-cached
+`Unknown` entry: "we couldn't tell yet" is never itself a reason to omit a domain.
 
 **This runs centrally, in the list-build pipeline — never on an end-user device.** Client daemons
 only ever consume an already-pruned, signed list; they do not run their own liveness checks and this
@@ -517,10 +548,9 @@ labels** (Rust's `fst` crate — pure Rust, no native C/C++ cross-compilation bu
   real build, not assumed**, and the [artifact size budget](#artifact-size-budget) is the actual
   gate, not the estimate.
 - **Reversed labels turn suffix matching into prefix matching.** `example.com` is stored as the key
-  `com.example`. Note that `www.example.com` from a source is *also* stored as `com.example` —
-  `normalize()` strips the `www.` label before reversal — with `ExactHost` scope; it is **not**
-  stored as `com.example.www`. (The earlier draft of this document said otherwise, contradicting
-  its own normalization rule. The normalization rule wins.)
+  `com.example`. `www.example.com` from a source is stored as its own key, `com.example.www` —
+  `normalize()` does not strip `www.` (see the normalization section above), so a `www` host keeps
+  its own identity in the key space and an `ExactHost` rule filed under it matches only that host.
 
   A query is answered by exact lookups at each label boundary from shortest to longest (`com`,
   `com.example`, `com.example.cdn`, …), first hit wins. A hit whose scope is `Apex` covers
@@ -587,8 +617,37 @@ Mechanics:
 - Updates are atomic at the file level: write the new signed file to a temp path and `rename()` over
   the old one (atomic on POSIX filesystems, including Android's) — never overwrite the mapped file
   in place.
-- A missing, corrupt, or signature-verification-failed file fails closed to the last-known-good
-  mapping, never to an empty (fail-open) structure.
+- **The last-known-good fallback needs a durable second copy, not just an atomic `rename()`.** A
+  single-slot layout (one `.fst` + one manifest, replaced in place) has nothing to fall back *to*
+  once the new file has replaced the old one — "fails closed to the last-known-good mapping" is only
+  true if a last-known-good file still exists on disk. The layout is therefore **two slots**,
+  `current/` and `previous/`, each holding a `.fst` + manifest pair, plus a small separate
+  high-water-mark record (the highest `version` ever verified, per the trust contract below):
+  1. Write the new `.fst` + manifest into a fresh temp directory.
+  2. `fsync` both files, then `fsync` the temp directory's own entry (the directory fsync is what
+     makes the file's existence durable, not just its contents).
+  3. Verify the new manifest's signature and `fst_digest` **from the temp location**, before it
+     becomes anything's `current`.
+  4. Move the *existing* `current/` to `previous/` (replacing whatever was there), then `rename()`
+     the temp directory to `current/`, then `fsync` the parent directory to persist both renames.
+  5. Only after step 4 completes does the loader update the persisted high-water mark, itself written
+     via the same temp-write-`fsync`-`rename` pattern, and only that write is what makes the update
+     "seen" on a future start — a crash between step 4 and the high-water-mark write is recovered on
+     next start by re-deriving the mark from `current/`'s own manifest, since a version that reached
+     `current/` intact is trusted at least that far.
+  - **Recovery on start:** verify `current/`'s manifest and digest. If that fails (missing, corrupt,
+    bad signature, or `fst_digest` mismatch — the file was truncated by a crash mid-write, for
+    instance), fall back to verifying `previous/` the same way and load it if it passes, logging the
+    fallback as a tamper/corruption signal. If **both** slots fail verification, the loader fails
+    closed to **no mapping** rather than fabricating one — `net-shield`'s existing default action for
+    an unloadable filter applies, the same as any other missing-artifact case, and this state is
+    surfaced the same way a revoked permission is elsewhere in this project, not silently swallowed.
+  - This sequence is why an interrupted update can never leave a client with an unverifiable *and*
+    unrecoverable state: at every point up to step 4, `current/` is untouched and still the prior
+    good version; from step 4 onward, `previous/` holds that same prior good version as a fallback.
+    Test the crash points explicitly: a crash before step 4 (current unaffected), a crash during the
+    `current`↔`previous` swap (recovery must find one consistent slot), and a crash after step 4 but
+    before the high-water-mark write (recovery re-derives the mark from `current/`).
 
 **The latency figures above are unmeasured.** The benchmarking plan that turns them into real
 numbers — including how to force genuine kernel-level eviction rather than measuring a warm cache
@@ -605,24 +664,28 @@ under [Users](#users) about the fetch itself being an outbound signal.
 
 **The trust contract, precisely:**
 
-- The manifest carries a monotonically increasing `version`, a `key_id` naming which signing key was
-  used, the SHA-256 `fst_digest` of the `.fst` file, the entry count, the per-source snapshots
-  (version, license, fetch time), the computed output license, and the provenance table. The exact
-  struct is in [the plan](../components/domain-blocklist/plan.md) module 4 and must match this
-  section field for field.
+- The manifest carries a monotonically increasing `version`, one or more `{key_id, signature}` pairs
+  (see key rotation below — this is a list, not a single field), the SHA-256 `fst_digest` of the
+  `.fst` file, the entry count, the per-source snapshots (version, license, fetch time), the computed
+  output license, and the provenance table. The exact struct is in
+  [the plan](../components/domain-blocklist/plan.md) module 4 and must match this section field for
+  field.
 - The `fst_digest` field binds the manifest to the artifact — a client can't be handed a manifest
   that describes one artifact while a different one is loaded.
-- **The Ed25519 signature covers the manifest bytes.** Nothing more. `fst_digest` is already a field
-  *inside* the manifest, so signing the manifest already binds the artifact transitively; the
-  earlier `fst_digest || manifest_bytes` construction concatenated the digest with bytes that
-  already contained it, which added a way to get the framing wrong and no security property.
-- `key_id` lets a client select the trusted public key to verify against directly, instead of
-  trying every key in its trusted set until one works.
-- A client rejects and falls back to the last-known-good bundle on: a signature that doesn't verify,
-  an unknown `key_id`, a manifest whose `fst_digest` doesn't match the `.fst` file actually present,
-  a manifest that fails to parse, or a `version` that is **not strictly greater** than the client's
-  recorded high-water mark. That last check is what stops a compromised distribution point from
-  serving a validly signed but older, previously-revoked bundle back to a client (a rollback
+- **Each Ed25519 signature covers the manifest bytes with that entry's `key_id` excluded** (the
+  `key_id`/`signature` list itself is appended after signing, not signed over — otherwise adding a
+  second signature during rotation would invalidate the first). `fst_digest` is already a field
+  *inside* the signed portion, so signing it already binds the artifact transitively; the earlier
+  `fst_digest || manifest_bytes` construction concatenated the digest with bytes that already
+  contained it, which added a way to get the framing wrong and no security property.
+- A client verifies against **any one** `{key_id, signature}` entry whose `key_id` is in its own
+  trusted set — it does not need every entry to verify, only one. This is what makes rotation work
+  without needing every client to agree on which key is "current."
+- A client rejects and falls back to the last-known-good bundle on: no entry verifying against any
+  key in its trusted set, a manifest whose `fst_digest` doesn't match the `.fst` file actually
+  present, a manifest that fails to parse, or a `version` that is **not strictly greater** than the
+  client's recorded high-water mark. That last check is what stops a compromised distribution point
+  from serving a validly signed but older, previously-revoked bundle back to a client (a rollback
   attack).
 - **The high-water mark is the highest `version` the client has ever successfully verified**, stored
   alongside the last-known-good bundle — not merely the version currently loaded, so a client that
@@ -634,12 +697,25 @@ under [Users](#users) about the fetch itself being an outbound signal.
   this but does not close it, since an old app build has an old floor. This residual gap is
   accepted; closing it properly needs an online freshness check, which conflicts with the opt-in
   update stance.
-- **Key rotation**: the binary ships a small list of trusted public keys, not a single hardcoded
-  one. Introducing a new key means shipping an app update that adds it to the trusted set *before*
-  the pipeline starts signing with it; retiring an old key means leaving it in the trusted set for
-  one full release cycle after the new key is introduced (so clients that haven't updated yet can
-  still verify a bundle signed with either), then dropping it. A key is never removed from the
-  trusted set in the same release that introduces its replacement.
+- **Key rotation, both sides.** The binary ships a small list of trusted public keys, not a single
+  hardcoded one, but a client's trusted set only helps if the pipeline actually produces something
+  that set can verify — keeping an old key trusted in a *new* binary does nothing for a client still
+  running the *old* binary, which only knows the old key. So the pipeline, not just the client, has
+  an overlap obligation:
+  1. Ship an app update that adds the new key to the trusted set. No client yet requires it.
+  2. Once that update has had a full release cycle to reach clients, the pipeline switches to
+     **dual-signing**: every build carries both an old-key and a new-key `{key_id, signature}` entry
+     in the manifest. An unupdated client (old key only) still verifies via the old entry; an
+     updated client verifies via either.
+  3. Only after dual-signing has run for a full release cycle — long enough that a client which will
+     ever update has had the chance to — does the pipeline drop the old signature and sign
+     new-key-only. Retiring the old key from clients' trusted sets can follow in a later app update;
+     it is not itself security-critical, since an unused trusted key that nothing signs with anymore
+     is inert.
+  A key is never removed from the trusted set in the same release that introduces its replacement,
+  and the pipeline never stops producing a signature an already-shipped client can verify before that
+  client has had a real chance to update. Test the dual-signature manifest against both an
+  old-key-only and a both-keys-trusted client.
 
 **Verification runs on every process start, not only on update.** The tradeoff is explicit: it costs
 one sequential read and hash of the artifact per start (which, per the mmap section, is not wasted —
