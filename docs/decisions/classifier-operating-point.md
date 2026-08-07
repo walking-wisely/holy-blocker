@@ -123,3 +123,37 @@ FN-averse product.
   [experiments/input-handling.md](../components/machine-learning/experiments/input-handling.md),
   and it is not a threshold: no operating point applies, because the model is
   never consulted. Content served under that size is unfiltered.
+
+## The screen path operates outside this measurement (added 2026-08-08)
+
+Every figure above is measured on a corpus of *images*. The macOS daemon hands
+the same classifier, under the same tile-max geometry, a **screen frame** — a
+distribution nothing in this repository covers. The two differ in ways that
+plausibly move the operating point in opposite directions: a screen frame is
+mostly application chrome, so "small region in a large safe background" becomes
+the typical case rather than the tail case tile-max was measured on; and screen
+content is rendered rather than photographed, while the over-block rate at any
+usable threshold is already concentrated in drawn imagery.
+
+**A labelled corpus of explicit screen frames would close this, and it will
+never exist** — [image-corpus-custody.md](image-corpus-custody.md) rules out
+acquiring one, and nothing else would serve.
+
+What replaces it is a **paired transport-shift measurement**: `s(X)` against
+`s(pipeline(X))` over benign imagery composited into rendered UI. Because the
+pipeline's geometry — crop, scale, composite, overlay — is content-blind, a
+shift measured on benign images describes what it does to *any* image. A shift
+measured near zero licenses transferring the checkpoint's own operating point
+onto the screen path; a shift that is not near zero is the quantified loss.
+
+That is an argument resting on one measurement, not a measurement of the thing
+itself, and it is labelled as such wherever it is used. The harness is planned
+in
+[machine-learning/plan.md](../components/machine-learning/plan.md#synth_compositepy-and-transportpy--the-screen-path-measurement);
+the work it gates is in
+[image-sandbox/plan.md](../components/image-sandbox/plan.md#the-screen-path).
+
+Until it runs, the daemon reports the score on **every** verdict including
+allows, so the margin under the configured cut is observable rather than
+invisible — and an allow that never reached the model stays distinguishable
+from one the model scored at zero.
