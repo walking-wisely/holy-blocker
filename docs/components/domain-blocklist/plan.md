@@ -766,12 +766,36 @@ decision doc's [Distribution](../../decisions/domain-blocklist-sourcing.md#distr
    ("the pipeline binary wires in a real HTTP client") — nothing here needs live network access to
    test. Not yet consumed by `liveness`, `fst_build`, or `cli` (modules 3, 4, 7 — all still
    unbuilt).
-5. `liveness.rs` — `due_for_check` first as a pure function against a fake clock and fake cache
+5. ~~`liveness.rs` — `due_for_check` first as a pure function against a fake clock and fake cache
    entries with cadence ≠ TTL (this is the part with the trickiest edge cases: reappeared-stale vs.
    genuinely-revived entries). Then `canary_check` against a fake resolver that simulates a
    family-filtering resolver, a wildcard-sink resolver, and a healthy one — all three must be
    distinguishable. The real DNS lookup is a thin, separately-tested edge behind a trait so none of
-   this needs live network access to test.
+   this needs live network access to test.~~ **Done, minus the real DNS client, persistent cache
+   I/O, and the qps-paced sweep loop — all left to `cli` (module 7, unbuilt), the same split
+   module 1 draws for its real HTTP fetcher.** `LookupResult`/`UnknownReason` model one
+   single-QTYPE answer; `Verdict` is the combined per-domain outcome `combine()` produces from one
+   A and one AAAA `LookupResult` via `check()`, per the plan's three-step ordering (either
+   resolving → `Alive`; both `NxDomain` → `Dead`; otherwise, at least one `Unknown` and neither
+   `Resolved` → `Unknown`, covering the named mixed `NxDomain`/`Unknown` case explicitly). Real
+   lookups go through the `DnsLookup` trait, exactly as `SourceFetcher` does for module 1's HTTP
+   fetch — nothing here needs live network access to test. `due_for_check(cache_entry, now,
+   ttl_seconds)` takes only the TTL, not a cadence parameter: cadence is the caller's coarser
+   scheduling concern, deliberately kept out of this signature so a caller can't conflate the two
+   the plan is careful to decouple; `now.saturating_sub(last_checked)` reads clock skew (`now`
+   before `last_checked`) as "just checked" rather than underflowing into a bogus multi-decade gap
+   that would read as due regardless of TTL. `should_prune()` is the one-line rule "only `Dead`
+   prunes," tested separately for first-seen-`Unknown` vs. previously-cached-`Unknown` per the
+   plan's own split. `canary_check()` runs every `alive_controls` entry then the `dead_control`
+   through `check()` and returns `CanaryResult::Failed { detail }` naming which control domain
+   misbehaved and what was expected — distinguishing a family-filtering resolver (an alive control
+   comes back `Dead`), a wildcard-sink resolver (the dead control comes back `Alive`), and an
+   inconclusive resolver (a control comes back `Unknown`, which fails the canary even though a
+   real sweep would keep an `Unknown` domain, since the control set is supposed to be
+   unambiguous) as three distinct, separately tested failures; it reports the mismatch only —
+   discarding the sweep and refusing to write the cache back on any canary failure is `cli`'s job,
+   per the plan. 19 tests. Not yet consumed by `fst_build` or `cli` (modules 4, 7 — both still
+   unbuilt).
 6. `fst_build.rs` — pin against a small hand-built key set first (a handful of domains sharing
    prefixes and suffixes, mixed `Apex` and `ExactHost`) and assert exact-match, label-boundary
    scoping, and **anchored** prefix-streaming behavior before building the real list.

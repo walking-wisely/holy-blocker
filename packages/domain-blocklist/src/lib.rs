@@ -6,6 +6,7 @@
 //! Runs as a periodic offline batch job, never on an end-user device.
 
 pub mod gates;
+pub mod liveness;
 pub mod merge;
 pub mod sources;
 pub mod types;
@@ -13,6 +14,10 @@ pub mod types;
 pub use gates::{
     FalsePositiveHit, GateResult, PreviousBuild, false_positive_gate, false_positive_hits,
     growth_gate, license_gate, review_queue, shrinkage_gate, size_gate,
+};
+pub use liveness::{
+    CacheEntry, CanaryConfig, CanaryResult, DnsLookup, LookupResult, RecordType, UnknownReason,
+    Verdict, canary_check, check as check_liveness, due_for_check, should_prune,
 };
 pub use merge::{
     MergeOutput, MergeReport, filter_by_category, flag_personal_name, merge as merge_entries,
