@@ -539,9 +539,30 @@ Responsibilities:
    `example.com`/`www.example.com` pair stays two distinct entries with distinct scopes) and the
    review-driven regression tests above. Not yet consumed by `sources`, `gates`, or `fst_build`
    (modules 1, 3, 4 — all still unbuilt).
-3. `gates.rs` — pure functions against synthetic counts and key sets. Built early precisely because
+3. ~~`gates.rs` — pure functions against synthetic counts and key sets. Built early precisely because
    they are cheap, pure, and are what stops every category of bad build; leaving them for last means
-   the first real run has no guardrail.
+   the first real run has no guardrail.~~ **Done.** `shrinkage_gate`/`growth_gate` take an explicit
+   `prev_count`/`prev_keys` of zero as "nothing published yet" and skip the percentage check
+   entirely (only `shrinkage_gate`'s `absolute_floor` can still gate a first build) — the plan
+   names these gates as comparisons against "the previous published build's manifest" but doesn't
+   say what a first build (no previous manifest) should do, and refusing it for "100% growth over
+   nothing" would be absurd. `false_positive_hits`/`false_positive_gate` match a control domain
+   against `MergedEntry.domain` by **direct string equality**, not the `Apex`-scope
+   subdomain-covering lookup `fst_build`/`net-shield` (modules 4/6, still unbuilt) implement at
+   query time — documented as a deliberate simplification appropriate to what this module has to
+   work with before the FST exists, not an oversight. `license_gate` needed `SourceSnapshot` and
+   `LicenseId`, defined in `types.rs` ahead of `sources` (module 1, still unbuilt) the same way
+   `RawEntry`/`MergedEntry` were ahead of it for module 2 — `LicenseId` is a `String` newtype
+   rather than a closed enum since SPDX identifiers are an open external set the allowlist (not the
+   type system) is meant to constrain, and `Timestamp` is a plain `u64` Unix-seconds alias rather
+   than a `chrono`/`time` dependency, since nothing yet does date arithmetic on it. Every gate
+   returns `GateResult::Pass`/`Fail(String)` — the failure message names the evidence (which
+   control domains hit and under which sources, which license and source, the measured percentage
+   against the limit) rather than a bare boolean, per the plan's "refuses publication and requires
+   explicit human sign-off" framing. 28 tests, including the plan's named percentages (10%
+   shrinkage/growth, 0.5% false-positive) at, just under, and just over each limit. Not yet
+   consumed by `cli` (module 7, unbuilt) — the pipeline that would call these gates in sequence and
+   act on a `Fail` doesn't exist yet.
 4. `sources/` — one parser per source against small fixture files first (a few lines of each
    source's real format, not a live fetch), covering every row of the input-shape table above, then
    wire in the real pinned `SourceFetcher` HTTP path last.

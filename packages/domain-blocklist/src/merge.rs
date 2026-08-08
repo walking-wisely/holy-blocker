@@ -3,7 +3,7 @@
 //!
 //! Pure and I/O-free, per `docs/components/domain-blocklist/plan.md`: it consumes
 //! `domain_normalize::normalize`/`classify_scope` (module 0) and produces the input to `gates`
-//! (module 3) and `fst_build` (module 4), both still unbuilt.
+//! (module 5, done — see `gates.rs`) and `fst_build` (module 4, still unbuilt).
 
 use std::collections::BTreeMap;
 use std::net::IpAddr;
@@ -162,7 +162,12 @@ pub fn merge(raw_entries: &[RawEntry], shared_hosting_denylist: &[&str]) -> Merg
 pub fn filter_by_category(entries: &[MergedEntry], allowed: &[Category]) -> Vec<MergedEntry> {
     entries
         .iter()
-        .filter(|entry| entry.categories.iter().any(|category| allowed.contains(category)))
+        .filter(|entry| {
+            entry
+                .categories
+                .iter()
+                .any(|category| allowed.contains(category))
+        })
         .cloned()
         .collect()
 }
@@ -191,14 +196,21 @@ pub fn flag_personal_name(second_level_label: &str) -> bool {
         .collect();
 
     (2..=4).contains(&tokens.len())
-        && tokens.iter().all(|token| token.chars().all(|c| c.is_ascii_alphabetic()))
+        && tokens
+            .iter()
+            .all(|token| token.chars().all(|c| c.is_ascii_alphabetic()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn entry(domain: &str, source: crate::types::SourceId, category: Category, hint: ScopeHint) -> RawEntry {
+    fn entry(
+        domain: &str,
+        source: crate::types::SourceId,
+        category: Category,
+        hint: ScopeHint,
+    ) -> RawEntry {
         RawEntry {
             domain: domain.to_string(),
             source,
@@ -273,7 +285,12 @@ mod tests {
         #[test]
         fn single_entry_survives_as_is() {
             let out = merge(
-                &[entry("example.com", SourceId::StevenBlack, Category::Adult, ScopeHint::Apex)],
+                &[entry(
+                    "example.com",
+                    SourceId::StevenBlack,
+                    Category::Adult,
+                    ScopeHint::Apex,
+                )],
                 &[],
             );
             assert_eq!(out.entries.len(), 1);
@@ -289,8 +306,18 @@ mod tests {
         fn two_sources_for_the_same_domain_union_their_sources() {
             let out = merge(
                 &[
-                    entry("example.com", SourceId::StevenBlack, Category::Adult, ScopeHint::Apex),
-                    entry("example.com", SourceId::Hagezi, Category::Adult, ScopeHint::Apex),
+                    entry(
+                        "example.com",
+                        SourceId::StevenBlack,
+                        Category::Adult,
+                        ScopeHint::Apex,
+                    ),
+                    entry(
+                        "example.com",
+                        SourceId::Hagezi,
+                        Category::Adult,
+                        ScopeHint::Apex,
+                    ),
                 ],
                 &[],
             );
@@ -307,8 +334,18 @@ mod tests {
             // by two different sources must survive merge with both categories intact.
             let out = merge(
                 &[
-                    entry("example.com", SourceId::StevenBlack, Category::Adult, ScopeHint::Apex),
-                    entry("example.com", SourceId::Ut1, Category::Gambling, ScopeHint::Apex),
+                    entry(
+                        "example.com",
+                        SourceId::StevenBlack,
+                        Category::Adult,
+                        ScopeHint::Apex,
+                    ),
+                    entry(
+                        "example.com",
+                        SourceId::Ut1,
+                        Category::Gambling,
+                        ScopeHint::Apex,
+                    ),
                 ],
                 &[],
             );
@@ -325,8 +362,18 @@ mod tests {
             // a wildcard (Apex). The union is Apex — a stronger statement wins.
             let out = merge(
                 &[
-                    entry("example.com", SourceId::StevenBlack, Category::Adult, ScopeHint::None),
-                    entry("example.com", SourceId::Hagezi, Category::Adult, ScopeHint::Apex),
+                    entry(
+                        "example.com",
+                        SourceId::StevenBlack,
+                        Category::Adult,
+                        ScopeHint::None,
+                    ),
+                    entry(
+                        "example.com",
+                        SourceId::Hagezi,
+                        Category::Adult,
+                        ScopeHint::Apex,
+                    ),
                 ],
                 &[],
             );
@@ -340,14 +387,32 @@ mod tests {
             // ExactHost entry for www.example.com are two keys, never aliased onto one.
             let out = merge(
                 &[
-                    entry("example.com", SourceId::StevenBlack, Category::Adult, ScopeHint::Apex),
-                    entry("www.example.com", SourceId::StevenBlack, Category::Adult, ScopeHint::None),
+                    entry(
+                        "example.com",
+                        SourceId::StevenBlack,
+                        Category::Adult,
+                        ScopeHint::Apex,
+                    ),
+                    entry(
+                        "www.example.com",
+                        SourceId::StevenBlack,
+                        Category::Adult,
+                        ScopeHint::None,
+                    ),
                 ],
                 &[],
             );
             assert_eq!(out.entries.len(), 2);
-            let apex = out.entries.iter().find(|e| e.domain == "example.com").unwrap();
-            let host = out.entries.iter().find(|e| e.domain == "www.example.com").unwrap();
+            let apex = out
+                .entries
+                .iter()
+                .find(|e| e.domain == "example.com")
+                .unwrap();
+            let host = out
+                .entries
+                .iter()
+                .find(|e| e.domain == "www.example.com")
+                .unwrap();
             assert_eq!(apex.scope, RuleScope::Apex);
             assert_eq!(host.scope, RuleScope::ExactHost);
         }
@@ -355,7 +420,12 @@ mod tests {
         #[test]
         fn a_public_suffix_entry_is_dropped_and_counted() {
             let out = merge(
-                &[entry("co.uk", SourceId::Ut1, Category::Adult, ScopeHint::None)],
+                &[entry(
+                    "co.uk",
+                    SourceId::Ut1,
+                    Category::Adult,
+                    ScopeHint::None,
+                )],
                 &[],
             );
             assert!(out.entries.is_empty());
@@ -408,7 +478,12 @@ mod tests {
             // erroring — it must be caught by its own check, not conflated with either drop
             // reason above.
             let out = merge(
-                &[entry("0.0.0.0", SourceId::StevenBlack, Category::Adult, ScopeHint::None)],
+                &[entry(
+                    "0.0.0.0",
+                    SourceId::StevenBlack,
+                    Category::Adult,
+                    ScopeHint::None,
+                )],
                 &[],
             );
             assert!(out.entries.is_empty());
@@ -442,7 +517,12 @@ mod tests {
             let over_long_label = "a".repeat(64);
             let unnormalizable = format!("{over_long_label}.com");
             let out = merge(
-                &[entry(&unnormalizable, SourceId::Ut1, Category::Adult, ScopeHint::None)],
+                &[entry(
+                    &unnormalizable,
+                    SourceId::Ut1,
+                    Category::Adult,
+                    ScopeHint::None,
+                )],
                 &[unnormalizable.as_str()],
             );
             assert_eq!(out.report.dropped_normalization_failed, 1);
@@ -453,9 +533,24 @@ mod tests {
         fn three_sources_for_the_same_domain_union_all_three() {
             let out = merge(
                 &[
-                    entry("example.com", SourceId::StevenBlack, Category::Adult, ScopeHint::Apex),
-                    entry("example.com", SourceId::Hagezi, Category::Gambling, ScopeHint::Apex),
-                    entry("example.com", SourceId::Ut1, Category::Dating, ScopeHint::Apex),
+                    entry(
+                        "example.com",
+                        SourceId::StevenBlack,
+                        Category::Adult,
+                        ScopeHint::Apex,
+                    ),
+                    entry(
+                        "example.com",
+                        SourceId::Hagezi,
+                        Category::Gambling,
+                        ScopeHint::Apex,
+                    ),
+                    entry(
+                        "example.com",
+                        SourceId::Ut1,
+                        Category::Dating,
+                        ScopeHint::Apex,
+                    ),
                 ],
                 &[],
             );
@@ -472,7 +567,12 @@ mod tests {
 
         #[test]
         fn the_same_source_and_category_repeated_three_times_dedupes_to_one() {
-            let raw = entry("example.com", SourceId::Ut1, Category::Adult, ScopeHint::Apex);
+            let raw = entry(
+                "example.com",
+                SourceId::Ut1,
+                Category::Adult,
+                ScopeHint::Apex,
+            );
             let out = merge(&[raw.clone(), raw.clone(), raw], &[]);
             assert_eq!(out.entries.len(), 1);
             assert_eq!(out.entries[0].sources, vec![SourceId::Ut1]);
@@ -485,14 +585,27 @@ mod tests {
             // same domain must collapse into one MergedEntry, not survive as two.
             let out = merge(
                 &[
-                    entry("EXAMPLE.COM", SourceId::Ut1, Category::Adult, ScopeHint::Apex),
-                    entry("example.com.", SourceId::Hagezi, Category::Gambling, ScopeHint::Apex),
+                    entry(
+                        "EXAMPLE.COM",
+                        SourceId::Ut1,
+                        Category::Adult,
+                        ScopeHint::Apex,
+                    ),
+                    entry(
+                        "example.com.",
+                        SourceId::Hagezi,
+                        Category::Gambling,
+                        ScopeHint::Apex,
+                    ),
                 ],
                 &[],
             );
             assert_eq!(out.entries.len(), 1);
             assert_eq!(out.entries[0].domain, "example.com");
-            assert_eq!(out.entries[0].sources, vec![SourceId::Hagezi, SourceId::Ut1]);
+            assert_eq!(
+                out.entries[0].sources,
+                vec![SourceId::Hagezi, SourceId::Ut1]
+            );
             assert_eq!(
                 out.entries[0].categories,
                 vec![Category::Adult, Category::Gambling]
@@ -506,8 +619,18 @@ mod tests {
             // entry downgrade it back to ExactHost.
             let out = merge(
                 &[
-                    entry("example.com", SourceId::Hagezi, Category::Adult, ScopeHint::Apex),
-                    entry("example.com", SourceId::StevenBlack, Category::Adult, ScopeHint::None),
+                    entry(
+                        "example.com",
+                        SourceId::Hagezi,
+                        Category::Adult,
+                        ScopeHint::Apex,
+                    ),
+                    entry(
+                        "example.com",
+                        SourceId::StevenBlack,
+                        Category::Adult,
+                        ScopeHint::None,
+                    ),
                 ],
                 &[],
             );
@@ -518,9 +641,24 @@ mod tests {
         #[test]
         fn merge_output_does_not_depend_on_raw_entry_order() {
             let forward = vec![
-                entry("example.com", SourceId::StevenBlack, Category::Adult, ScopeHint::Apex),
-                entry("example.com", SourceId::Hagezi, Category::Gambling, ScopeHint::Apex),
-                entry("example.com", SourceId::Ut1, Category::Dating, ScopeHint::Apex),
+                entry(
+                    "example.com",
+                    SourceId::StevenBlack,
+                    Category::Adult,
+                    ScopeHint::Apex,
+                ),
+                entry(
+                    "example.com",
+                    SourceId::Hagezi,
+                    Category::Gambling,
+                    ScopeHint::Apex,
+                ),
+                entry(
+                    "example.com",
+                    SourceId::Ut1,
+                    Category::Dating,
+                    ScopeHint::Apex,
+                ),
             ];
             let mut reversed = forward.clone();
             reversed.reverse();
@@ -547,7 +685,10 @@ mod tests {
 
         #[test]
         fn any_matching_category_qualifies_the_entry() {
-            let entries = vec![merged("example.com", vec![Category::Adult, Category::Gambling])];
+            let entries = vec![merged(
+                "example.com",
+                vec![Category::Adult, Category::Gambling],
+            )];
             let out = filter_by_category(&entries, &[Category::Adult]);
             assert_eq!(out.len(), 1);
         }
@@ -571,7 +712,10 @@ mod tests {
             // Not reachable through merge() today (every RawEntry carries exactly one category),
             // but filter_by_category is pub — its own degenerate case should hold on its own.
             let entries = vec![merged("example.com", vec![])];
-            let out = filter_by_category(&entries, &[Category::Adult, Category::Gambling, Category::Dating]);
+            let out = filter_by_category(
+                &entries,
+                &[Category::Adult, Category::Gambling, Category::Dating],
+            );
             assert!(out.is_empty());
         }
     }

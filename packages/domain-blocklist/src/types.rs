@@ -56,3 +56,29 @@ pub struct MergedEntry {
     pub sources: Vec<SourceId>,
     pub categories: Vec<Category>,
 }
+
+/// SPDX-style identifier for a source's license (e.g. `"CC0-1.0"`, `"MIT"`). A newtype rather
+/// than a closed enum: the license identifiers a real source can carry are an open external set
+/// (SPDX itself grows), and what constrains them — the checked-in allowlist `gates::license_gate`
+/// checks against — is configuration, not something this crate's type system should try to
+/// enumerate exhaustively.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct LicenseId(pub String);
+
+/// Seconds since the Unix epoch. A plain alias rather than a wrapping type or a `chrono`/`time`
+/// dependency: nothing in this crate does date arithmetic on it yet, only records and compares it.
+pub type Timestamp = u64;
+
+/// Provenance for one source's fetch, independent of the entries it produced. Module 1's
+/// per-source fetcher produces one of these alongside its `RawEntry`s; `fst_build`'s manifest
+/// (module 4) carries it forward, and `gates::license_gate` (module 5) checks its `license`
+/// against a checked-in allowlist. Defined here, ahead of `sources` (module 1, unbuilt) — the
+/// same reason `RawEntry`/`MergedEntry` live here rather than in `merge.rs`: the modules that
+/// construct and gate on this type need somewhere to import it from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceSnapshot {
+    pub source: SourceId,
+    pub revision: String,
+    pub license: LicenseId,
+    pub fetched_at: Timestamp,
+}
