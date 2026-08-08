@@ -1,0 +1,9 @@
+[package]
+name = "domain-normalize"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+idna = "1.1.0"
+psl = "2.1.223"
+thiserror = "2.0.20"

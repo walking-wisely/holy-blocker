@@ -483,11 +483,19 @@ Responsibilities:
 
 ## Implementation order
 
-1. `packages/domain-normalize` — pure, no I/O, tested first and hardest. `normalize()` against IDNs
+1. ~~`packages/domain-normalize` — pure, no I/O, tested first and hardest. `normalize()` against IDNs
    (both directions of the UTS #46 → punycode ordering), trailing dots, mixed case, `www.` variants,
    and post-conversion length limits; `classify_scope` against public suffixes, provider suffixes,
    the shared-hosting denylist, and deep hostnames. Every apex-widening bug this design fears is
-   caught here or nowhere.
+   caught here or nowhere.~~ **Done.** `normalize()` uses the `idna` crate's UTS46 pass
+   (`AsciiDenyList::STD3`, `Hyphens::Allow`, `DnsLength::Ignore`, with label/name length validated
+   explicitly afterward per RFC 1035 §2.3.4/RFC 5891 §4.4) and `classify_scope()` uses the `psl`
+   crate (compiled-in Public Suffix List data — no I/O, no network fetch) plus a caller-supplied
+   shared-hosting denylist slice. 22 tests, including every named case from this plan (`com`,
+   `co.uk`, `blogspot.com`, `s3.amazonaws.com` never `Apex`; `someone.blogspot.com` is `Apex`;
+   `www.example.com` normalizes to itself and scopes `ExactHost`, distinct from the `example.com`
+   `Apex` key). Not yet consumed by `domain-blocklist` (module 1+, unbuilt) or `net-shield` (module
+   6, unbuilt) — this is the shared crate only.
 2. `merge.rs` — pure functions (the union/provenance merge, scope resolution, category filtering,
    `flag_personal_name`) with no I/O. Test against hand-built `RawEntry` fixtures.
 3. `gates.rs` — pure functions against synthetic counts and key sets. Built early precisely because
