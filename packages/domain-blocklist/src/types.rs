@@ -65,6 +65,19 @@ pub struct MergedEntry {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct LicenseId(pub String);
 
+impl LicenseId {
+    /// SPDX license identifiers are compared case-insensitively; this also trims surrounding
+    /// whitespace, which a value freshly read from a `LICENSE` file or an upstream API response
+    /// can carry. `derive(PartialEq)` above stays exact-string, byte-identity equality — this is
+    /// the separate, deliberately looser comparison `gates::license_gate` uses against its
+    /// allowlist, so `"MIT"` and `"mit"` (or `"MIT "`) aren't treated as different licenses. See
+    /// <https://spdx.org/licenses/> for the identifier registry this project's allowlist draws
+    /// from.
+    pub fn spdx_matches(&self, other: &LicenseId) -> bool {
+        self.0.trim().eq_ignore_ascii_case(other.0.trim())
+    }
+}
+
 /// Seconds since the Unix epoch. A plain alias rather than a wrapping type or a `chrono`/`time`
 /// dependency: nothing in this crate does date arithmetic on it yet, only records and compares it.
 pub type Timestamp = u64;

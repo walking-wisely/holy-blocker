@@ -355,27 +355,57 @@ below refuses publication and requires explicit human sign-off to override — n
 publish.** They are pure and separately tested precisely because they are the last thing standing
 between a bad build and a signed one.
 
-- `shrinkage_gate(prev_count, new_count, max_drop_pct, absolute_floor) -> GateResult` — fails when
-  the entry count drops more than **10%** below the previous published build, or below an absolute
-  floor. Catches a bad liveness sweep the canary missed, a source that silently emptied, and parser
-  regressions.
-- `growth_gate(prev_keys, new_keys, max_add_pct) -> GateResult` — fails when *added* entries exceed
-  **10%** of the previous published build. Catches a compromised or mis-bumped upstream injecting
-  bulk entries. Shrinkage and growth are separate gates because they catch opposite failures.
-- `false_positive_gate(merged, control_set, exclusions, max_fp_rate) -> GateResult` — evaluates the
-  merged list against a **known-good negative control**: the [Tranco](https://tranco-list.eu/)
-  top-N list, pinned to a specific daily release like any other source, minus a small reviewed,
-  checked-in exclusion file of control entries that are legitimately adult. **Starting threshold:
-  0.5%.** Reports which control entries were hit and under which provenance ID, so a regression
-  names the source that caused it. This mirrors `machine-learning`'s `gate.py` release guardrail —
-  the project already refuses to ship a classifier with no measured quality signal, and a blocklist
-  with no measured FP rate is the same gap.
+- `shrinkage_gate(prev_count: PreviousBuild<u64>, new_count, max_drop_pct, absolute_floor) ->
+  GateResult` — fails when the entry count drops more than **10%** below the previous published
+  build, or below an absolute floor. Catches a bad liveness sweep the canary missed, a source that
+  silently emptied, and parser regressions. `PreviousBuild<T>` (`None` | `Existing(T)`) is
+  deliberate, not `u64`/`Option<u64>`: a caller that failed to load the previous manifest and a
+  caller correctly reporting a genuine first build must never be able to produce the same input, or
+  this gate (and `growth_gate` below) silently disables itself on the easiest-to-produce mistake —
+  see the decision doc's [Distribution](../../decisions/domain-blocklist-sourcing.md#distribution)
+  trust contract for what "the previous manifest" means.
+- `growth_gate(prev_keys: PreviousBuild<&BTreeSet<String>>, new_keys, max_add_pct) -> GateResult` —
+  fails when *added* entries exceed **10%** of the previous published build. Catches a compromised
+  or mis-bumped upstream injecting bulk entries. Shrinkage and growth are separate gates because
+  they catch opposite failures.
+- `false_positive_gate(merged, control_set, exclusions, max_fp_rate, min_control_size) ->
+  GateResult` — evaluates the merged list against a **known-good negative control**: the
+  [Tranco](https://tranco-list.eu/) top-N list, pinned to a specific daily release like any other
+  source. See the decision doc's ["A measured false-positive gate on every
+  build"](../../decisions/domain-blocklist-sourcing.md#3-a-measured-false-positive-gate-on-every-build)
+  for the full design; in short:
+  - `false_positive_hits(merged, control_set) -> Vec<FalsePositiveHit>` finds every control-set
+    domain the merged list blocks, normalizing `control_set` identically to `merged`'s own keys
+    first (an earlier version of this function compared unnormalized control entries against
+    normalized merged keys and silently matched nothing).
+  - `FalsePositiveHit::is_corroborated()` is true when **two or more** independent sources flagged
+    the domain — a corroborated hit never counts as a false positive, since it takes two separately
+    curated projects independently agreeing rather than one project's own file-level mistake.
+  - `review_queue(merged, control_set, exclusions) -> Vec<FalsePositiveHit>` is the bounded set that
+    actually needs a human: uncorroborated hits not already covered by a small, reviewed,
+    checked-in `exclusions` file. This is what replaces reviewing "every adult site Tranco ranks."
+  - The gate itself fails when `review_queue`'s rate against the checked control set exceeds
+    `max_fp_rate`, or when the checked control set falls below `min_control_size` (an empty or
+    truncated control-set fetch must never look identical to "measured, and clean"). **Starting
+    threshold: 0.5%.**
+  - Reports which control entries were hit and under which sources, so a regression names the
+    source that caused it. This mirrors `machine-learning`'s `gate.py` release guardrail — the
+    project already refuses to ship a classifier with no measured quality signal, and a blocklist
+    with no measured FP rate is the same gap.
 - `size_gate(artifact_bytes, ceiling) -> GateResult` — **ceiling 32 MB** for the `.fst` file. The
   precedent for stating a ceiling at all is `image-sandbox`'s 15 MB model budget. Since the merged
   entry count is a planning assumption rather than a measurement, this gate is what turns "the list
   is much bigger than we assumed" into a decision instead of a surprise on a user's device.
-- `license_gate(snapshots, allowlist) -> GateResult` — module 1 enforces this at fetch time; it is
-  re-checked here so the published artifact can never carry a snapshot the allowlist doesn't cover.
+- `license_gate(merged, snapshots, allowlist) -> GateResult` — module 1 enforces the
+  license-on-allowlist half of this at fetch time; it is re-checked here so the published artifact
+  can never carry a snapshot the allowlist doesn't cover. Also fails when a source that contributed
+  entries to `merged` has **no** snapshot at all (an omission, not a bad license — the cheaper
+  mistake to make and the one a license-only check misses entirely), or when `snapshots` carries
+  more than one entry for the same source (ambiguous license coverage). License comparison is
+  case/whitespace-insensitive, matching SPDX's own identifier rule. **Not yet checked here, and
+  tracked as a gap until module 1/4 exist to check it against:** a source's snapshot `license`
+  drifting from its `SourceConfig.expected_license` pin, and the manifest's own `output_license`
+  field being consistent with what was actually measured.
 
 Every threshold above is a **starting value to be re-derived from real builds**, not a defended
 constant.
@@ -426,11 +456,13 @@ the bottom, not on top:
 |---|---|---|
 | 1 (highest) | Device-local user allowlist | Always wins, unconditionally. The user's no-appeal remedy |
 | 2 | `net-shield`'s existing explicit rule set | `Allow` and `Proxy` entries, unchanged semantics, including a specific `Allow` beating a broader `Block` |
-| 3 | FST-sourced `Block` rules | Apply only to domains not covered by 1 or 2. Scope (`Apex` vs `ExactHost`) comes from the provenance table |
-| 4 (lowest) | `DomainFilter`'s existing default | `Proxy`, unchanged |
+| 3 | `OverlaySet`-sourced rules (module 8, unbuilt) | Additions/removals published since the last bulk `.fst` rebuild — see module 8. Checked before the bulk FST specifically because its whole purpose is to represent state the bulk artifact doesn't have yet |
+| 4 | FST-sourced `Block` rules | Apply only to domains not covered by 1–3. Scope (`Apex` vs `ExactHost`) comes from the provenance table |
+| 5 (lowest) | `DomainFilter`'s existing default | `Proxy`, unchanged |
 
-The FST is consulted only after levels 1 and 2 miss, so loading a multi-million-entry blocklist can
-never change the behavior of an existing explicit rule or an existing test.
+The FST is consulted only after levels 1–3 miss, so loading a multi-million-entry blocklist can
+never change the behavior of an existing explicit rule, an existing test, or an in-flight overlay
+entry.
 
 **Normalization.** The query side must normalize **identically** to the build side. Both consume
 `packages/domain-normalize` (module 0); neither reimplements it. Reimplementing it in `net-shield`
@@ -465,6 +497,13 @@ contract:
   and without a warm cache entry), and two concurrent lookups for the same domain collapsing to one
   worker request.
 
+**The overlay (priority 3, module 8) does not share this budget or this worker.** It is bounded to a
+few thousand entries by module 8's own size cap, so it is held as a plain in-memory `HashMap` rather
+than mmap-backed — there is no page fault to bound a budget against, and consulting it costs an
+ordinary hash lookup on the calling thread before the bulk-FST worker is ever contacted. Module 8's
+own load/verify/swap path is what needs the async, off-thread treatment; the query-time lookup does
+not.
+
 ### 7. `cli` — the pipeline entry point
 
 ```text
@@ -480,6 +519,89 @@ Responsibilities:
   sources instead of live fetches, so most of the pipeline is testable without network access.
 - Every abort path — fetch failure, license gate, canary failure, any publish gate — exits non-zero
   with the specific reason. Nothing about a refused build should require reading a log to notice.
+
+### 8. `overlay` — a small, fast-cadence tier for urgent additions and removals
+
+```text
+src/overlay.rs
+```
+
+**The problem this solves.** The bulk `.fst` (module 4) can only ever be rebuilt whole — `fst::Map`
+has no incremental-edit API, and the compression itself is a function of the *entire* sorted key
+set, so one added or removed key can shift which states downstream get merged. That rebuild is cheap
+on the pipeline's own build machine but is not the bottleneck: every *device* update, no matter how
+small the actual change, still costs a full-artifact re-download and a full sequential hash-verify
+(the decision doc's on-device storage section — verification reads every byte, by design, on every
+load). Waiting for the next monthly bulk rebuild to propagate a single newly-flagged domain, or an
+urgent takedown of a wrongly-blocked one, is too slow for either case, and shrinking the bulk
+cadence to fix it would mean paying that full-artifact cost on every device far more often than the
+bulk gates (canary, shrinkage, growth, false-positive) need to run.
+
+The fix is not to make the bulk FST patchable — the `fst` crate offers no such thing, and mutating a
+live mmap that lookups may be concurrently reading is its own hazard the on-device storage design
+already avoids by never doing it (see the decision doc's rejected alternatives). The fix is a
+**second, much smaller artifact** that is cheap enough to re-fetch and re-verify in full, often:
+
+- `OverlayEntry { domain: String, scope: RuleScope, action: OverlayAction, categories: Vec<Category>, added_at: Timestamp }`,
+  where `OverlayAction { Add, Remove }` — `Remove` is what makes an urgent takedown of a wrongly-block
+  domain possible without waiting for the next bulk rebuild, the same way the bulk FST's `Apex`/
+  `ExactHost` distinction already exists for `Add`.
+- `OverlaySet { entries: Vec<OverlayEntry> }`, capped at a **starting value of 5,000 entries** — an
+  order of magnitude of headroom over what "urgent, between bulk rebuilds" should ever need, kept
+  small on purpose so the whole set stays cheap to hold in memory unindexed (module 6's lookup-budget
+  section) and cheap to transmit even on a slow connection.
+- A manifest reusing **exactly** module 4's trust contract — monotonic `version`, `{key_id,
+  signature}` list, a digest binding the manifest to the entry set, the same current/previous
+  atomic-slot swap on disk. This is not a new mechanism to design or a new mechanism to audit; it is
+  the same one, applied to a smaller payload. See module 4's manifest struct and the decision doc's
+  Distribution section for the field-for-field contract this must match.
+
+**Publish gates, scaled down, not skipped.** The bulk gates' statistical thresholds (10% shrinkage,
+10% growth, 0.5% false-positive) don't mean anything against a few-entry diff, but "never an
+automatic publish" still applies:
+
+- `overlay_size_gate(current_len, added, removed, max_publish_size) -> GateResult` — refuses a
+  publish that adds or removes more than a small fixed count in one go (starting value: **50**
+  entries per publish). A legitimate urgent fix is a handful of domains; anything larger than that is
+  either a mis-scoped batch that should go through the reviewed bulk pipeline instead, or a sign
+  something is wrong with whatever produced the list of urgent entries.
+- Every `OverlayEntry.domain` still goes through `domain_normalize::normalize`/`classify_scope`
+  (module 0) and the same public-suffix/shared-hosting-denylist refusal `merge()` already applies —
+  an overlay is not a bypass of the scoping rules that protect against black-holing a hosting
+  provider, just of the monthly cadence.
+- Signing and human sign-off are not waived for being small. The plan's framing — "every gate below
+  refuses publication and requires explicit human sign-off to override" — applies here at a smaller
+  scale, not a lower bar.
+
+**Folding and draining.** Every bulk rebuild (module 7's `cli`) first folds the current overlay's
+`Add` entries into the ordinary source-merge pipeline as if they had arrived from a source with that
+build's cadence, and applies its `Remove` entries as exclusions against the freshly-merged set,
+before running the bulk gates. Once a bulk build incorporating a given overlay entry publishes, that
+entry is dropped from the next `OverlaySet` — the overlay is a bounded, actively-drained queue of
+"not yet reflected in the bulk artifact," never a second permanent copy of the list living outside
+the reviewed bulk pipeline. An overlay that is never drained (the bulk pipeline stops running, or
+keeps failing its own gates) is exactly the kind of staleness the decision doc's "staleness must be
+visible" rule already covers — surfaced the same way, not through a separate mechanism.
+
+**Distribution stays inside the existing consent model — this does not become a background push.**
+Per the decision doc, updates are opt-in and never silently polled; the overlay does not change that
+contract, it changes what a check costs. A user who checks daily pays a few-KB, sub-second overlay
+fetch and verify on days without a bulk update, instead of either doing nothing (today's only opt-in
+outcome between monthly bulk releases) or paying a multi-megabyte re-fetch to catch one new domain.
+"Fast" here means "cheap enough that the user's own chosen check cadence is enough," not a new
+covert channel.
+
+**On-device precedence and lookup.** Specified in module 6 above (priority 3, between `net-shield`'s
+explicit rule set and the bulk FST) — checked before the bulk FST specifically because it exists to
+cover exactly the domains the bulk artifact doesn't have yet, and held as a plain in-memory map since
+its capped size makes mmap's page-fault tradeoff unnecessary.
+
+**Reference documents**
+
+Reuses module 4's manifest/signing contract and its reference documents (Ed25519 signing, the
+Distribution section's rollback/rotation model) without restating them — nothing here introduces a
+new wire format or a new OS interface. See [module 4](#4-fst_build--the-on-device-artifact) and the
+decision doc's [Distribution](../../decisions/domain-blocklist-sourcing.md#distribution) section.
 
 ## Implementation order
 
@@ -541,28 +663,64 @@ Responsibilities:
    (modules 1, 3, 4 — all still unbuilt).
 3. ~~`gates.rs` — pure functions against synthetic counts and key sets. Built early precisely because
    they are cheap, pure, and are what stops every category of bad build; leaving them for last means
-   the first real run has no guardrail.~~ **Done.** `shrinkage_gate`/`growth_gate` take an explicit
-   `prev_count`/`prev_keys` of zero as "nothing published yet" and skip the percentage check
-   entirely (only `shrinkage_gate`'s `absolute_floor` can still gate a first build) — the plan
-   names these gates as comparisons against "the previous published build's manifest" but doesn't
-   say what a first build (no previous manifest) should do, and refusing it for "100% growth over
-   nothing" would be absurd. `false_positive_hits`/`false_positive_gate` match a control domain
-   against `MergedEntry.domain` by **direct string equality**, not the `Apex`-scope
-   subdomain-covering lookup `fst_build`/`net-shield` (modules 4/6, still unbuilt) implement at
-   query time — documented as a deliberate simplification appropriate to what this module has to
-   work with before the FST exists, not an oversight. `license_gate` needed `SourceSnapshot` and
-   `LicenseId`, defined in `types.rs` ahead of `sources` (module 1, still unbuilt) the same way
-   `RawEntry`/`MergedEntry` were ahead of it for module 2 — `LicenseId` is a `String` newtype
-   rather than a closed enum since SPDX identifiers are an open external set the allowlist (not the
-   type system) is meant to constrain, and `Timestamp` is a plain `u64` Unix-seconds alias rather
-   than a `chrono`/`time` dependency, since nothing yet does date arithmetic on it. Every gate
-   returns `GateResult::Pass`/`Fail(String)` — the failure message names the evidence (which
-   control domains hit and under which sources, which license and source, the measured percentage
-   against the limit) rather than a bare boolean, per the plan's "refuses publication and requires
-   explicit human sign-off" framing. 28 tests, including the plan's named percentages (10%
-   shrinkage/growth, 0.5% false-positive) at, just under, and just over each limit. Not yet
-   consumed by `cli` (module 7, unbuilt) — the pipeline that would call these gates in sequence and
-   act on a `Fail` doesn't exist yet.
+   the first real run has no guardrail.~~ **Done, including an adversarial (Opus) review's fixes.**
+   `shrinkage_gate`/`growth_gate` take `prev_count`/`prev_keys` as `PreviousBuild<T>`
+   (`None`/`Existing`), not a bare `u64`/`Option` — the review's sharpest finding was that a caller
+   who failed to load the previous manifest and a caller correctly reporting a genuine first build
+   both produced the same zero/empty value, which silently disabled both gates' percentage checks
+   on the easiest mistake to make; `PreviousBuild` makes "no data" an explicit, named variant a
+   caller must consciously choose rather than an ambiguous default (only `shrinkage_gate`'s
+   `absolute_floor` still gates a first build). Every threshold-taking gate now validates its
+   fraction is finite and in `[0, 1]` first — a `NaN` threshold previously made every `>` comparison
+   silently `false`, passing the gate unconditionally on a config mistake rather than refusing to
+   run.
+
+   `false_positive_gate` is a substantially different design from the first version, not just a bug
+   fix: the plan originally specified subtracting a hand-maintained exclusion file from Tranco, but
+   Tranco carries no content-category metadata at all (it's a pure traffic ranking) and genuinely
+   contains adult sites at real density (~1–2.5%, not "a handful" — measured against live data), so
+   an exclusion file large enough to matter would need hundreds of entries reviewed on every re-pin.
+   The fix is **cross-source corroboration**: `FalsePositiveHit::is_corroborated()` treats two or
+   more independently-maintained sources agreeing a domain is sensitive as sufficient evidence (a
+   single source's tag is that source's own file-level curation choice — see the plan's module 1 —
+   so one source alone proves less than two agreeing does), and `review_queue()` narrows the actual
+   manual-triage surface to just the uncorroborated, not-yet-excluded hits — see the decision doc's
+   "cross-source corroboration" section for the full rationale, including the accepted limitation
+   that this assumes the sources curate independently, which hasn't been separately verified. Two
+   further fixes, both confirmed live before being fixed: `false_positive_hits` now normalizes
+   `control_set`/`exclusions` the same way `merged`'s own keys already are (an unnormalized control
+   set previously matched nothing and reported a 0% rate against a list blocking 100% of it — the
+   exact class of bug `merge.rs`'s own earlier adversarial review already fixed once, reintroduced
+   here); and lookup is now a `HashMap` index built once (O(control + merged)) rather than a nested
+   linear scan (confirmed to cost ~10¹² comparisons at realistic multi-million-entry list sizes).
+   `false_positive_gate` also takes a `min_control_size` floor — an empty or truncated control-set
+   fetch previously passed silently, indistinguishable from "measured, and clean." The direct
+   string-equality match against `MergedEntry.domain` (not the `Apex`-scope subdomain-covering
+   lookup `fst_build`/`net-shield`, modules 4/6, implement at query time) is kept and now correctly
+   justified: it's safe specifically because Tranco ranks registrable, pay-level domains, not
+   because "it's unlikely to matter."
+
+   `license_gate` gained a `merged` parameter and now fails when a source that contributed entries
+   has **no** snapshot at all — the license-only version of this check passed trivially on an
+   *omitted* snapshot, which is the cheaper mistake and the one this exists to catch, since module
+   1's fetch-time check re-verified here is exactly what should have made an omission unreachable.
+   It also fails on duplicate snapshots for one source (ambiguous coverage) and compares licenses
+   case/whitespace-insensitively via the new `LicenseId::spdx_matches`, matching SPDX's own
+   identifier rule (an earlier exact-string comparison failed *closed*, correctly, but on a
+   confusing message that invited "just add the lowercase spelling too" instead of fixing the
+   comparison). **Explicitly not yet covered, and tracked as a gap rather than silently dropped:**
+   a source's snapshot license drifting from its `SourceConfig.expected_license` pin, and the
+   manifest's `output_license` field's own consistency — both need `SourceConfig`/`Manifest`
+   (modules 1/4, still unbuilt) to exist before they can be checked. `SourceSnapshot`/`LicenseId`
+   were defined in `types.rs` ahead of `sources` (module 1) the same way `RawEntry`/`MergedEntry`
+   were ahead of it for module 2.
+
+   Every gate returns `GateResult::Pass`/`Fail(String)` — the failure message names the evidence
+   (which control domains hit and under which sources, which license and source, the measured
+   percentage against the limit, capped at 20 named hits with a count of the remainder) rather than
+   a bare boolean, per the plan's "refuses publication and requires explicit human sign-off"
+   framing. 80 tests. Not yet consumed by `cli` (module 7, unbuilt) — the pipeline that would call
+   these gates in sequence and act on a `Fail` doesn't exist yet.
 4. `sources/` — one parser per source against small fixture files first (a few lines of each
    source's real format, not a live fetch), covering every row of the input-shape table above, then
    wire in the real pinned `SourceFetcher` HTTP path last.
@@ -579,6 +737,10 @@ Responsibilities:
    fixture sources, not a live fetch.
 8. `net-shield` integration — the precedence table and the shared `normalize()`, per module 6.
 9. **The mmap benchmark** (below) — after there is a real artifact to map.
+10. `overlay.rs` — after `fst_build` and `net-shield` integration both exist, since it reuses
+    module 4's manifest/signing contract wholesale and slots into module 6's precedence table rather
+    than defining either from scratch. Pin the size and publish-size gates against synthetic entry
+    sets first, the same way `gates.rs` was built ahead of a real artifact to test against.
 
 ## Benchmarking plan — the mmap major-fault tail
 
@@ -672,9 +834,13 @@ RFC 5891 alone specifies neither the mapping rules nor the encoding.
   module 1.
 - **IP-literal blocking** — `net-shield`'s `IpFilter`, fed by its own rule source, not a
   domain-keyed FST.
-- **Delta/patch distribution of the artifact** — the FST ships monolithically. Noted in the decision
-  doc as a future improvement; until it exists, pruning's justification is bounded artifact size and
-  reduced stale-hit surface, not smaller downloads.
+- **Incremental patching of the bulk `.fst` itself** — the FST ships monolithically and always will;
+  `fst::Map` has no edit API and mutating a live mmap concurrently read by lookups is a correctness
+  hazard the design avoids rather than solves. What *is* now specified is a small, separately-signed
+  fast-cadence tier alongside it (module 8, `overlay`) for additions/removals that can't wait for the
+  next bulk rebuild — see module 8 and the decision doc's on-device-storage/distribution sections.
+  Bulk pruning's justification is unchanged by this: bounded artifact size and reduced stale-hit
+  surface, not smaller downloads.
 - **The on-device runtime lookup itself** — that is `net-shield`'s `DomainFilter`
   ([its plan](../net-shield/plan.md)); this crate only produces the artifact `DomainFilter` loads,
   plus the shared `normalize()` both sides use.

@@ -10,8 +10,8 @@ pub mod merge;
 pub mod types;
 
 pub use gates::{
-    FalsePositiveHit, GateResult, false_positive_gate, false_positive_hits, growth_gate,
-    license_gate, shrinkage_gate, size_gate,
+    FalsePositiveHit, GateResult, PreviousBuild, false_positive_gate, false_positive_hits,
+    growth_gate, license_gate, review_queue, shrinkage_gate, size_gate,
 };
 pub use merge::{
     MergeOutput, MergeReport, filter_by_category, flag_personal_name, merge as merge_entries,
