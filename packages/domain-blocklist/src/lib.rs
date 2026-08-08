@@ -7,6 +7,7 @@
 
 pub mod gates;
 pub mod merge;
+pub mod sources;
 pub mod types;
 
 pub use gates::{
@@ -16,6 +17,9 @@ pub use gates::{
 pub use merge::{
     MergeOutput, MergeReport, filter_by_category, flag_personal_name, merge as merge_entries,
     resolve_scope,
+};
+pub use sources::{
+    FetchError, FetchedSource, ParseOutput, ParseReport, SourceConfig, SourceFetcher, fetch_source,
 };
 pub use types::{
     Category, LicenseId, MergedEntry, RawEntry, ScopeHint, SourceId, SourceSnapshot, Timestamp,

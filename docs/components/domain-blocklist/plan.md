@@ -737,9 +737,35 @@ decision doc's [Distribution](../../decisions/domain-blocklist-sourcing.md#distr
    a bare boolean, per the plan's "refuses publication and requires explicit human sign-off"
    framing. 80 tests. Not yet consumed by `cli` (module 7, unbuilt) — the pipeline that would call
    these gates in sequence and act on a `Fail` doesn't exist yet.
-4. `sources/` — one parser per source against small fixture files first (a few lines of each
+4. ~~`sources/` — one parser per source against small fixture files first (a few lines of each
    source's real format, not a live fetch), covering every row of the input-shape table above, then
-   wire in the real pinned `SourceFetcher` HTTP path last.
+   wire in the real pinned `SourceFetcher` HTTP path last.~~ **Done, minus the real HTTP client.**
+   `sources/mod.rs` holds what all three parsers share: `SourceConfig` (checked-in fetch
+   coordinates — `source`/`url`/`pinned_revision`/`expected_license`), the `SourceFetcher` trait,
+   and `fetch_source()`, which checks a fetch's served revision against the pin, its served license
+   against `expected_license` (catching a silent relicense even when the new license would itself
+   be allowlisted — `FetchError::LicenseChanged`, distinct from `LicenseNotAllowed`), and its
+   license against the build's allowlist, in that order, before any parser sees the bytes — every
+   failure is a `FetchError` variant meant to abort the whole build, never to be caught and skipped,
+   per the plan's "a failed fetch aborts the whole build" rule. Parsing is one shared
+   `parse_document()` taking a `LineFormat` (`HostsFile` or `PlainDomain`, the only two native
+   formats these three sources ship in — hosts-file syntax differs from plain domain-per-line only
+   in whether an address column precedes the domain); `stevenblack.rs`/`hagezi.rs`/`ut1.rs` are thin
+   wrappers over it naming their `SourceId`/`Category`/`LineFormat`, matching the plan's one-file-
+   per-source layout. Implements every row of the input-shape table: comment/blank skip (including
+   an inline `# note` trailing a domain), hosts-format address-column discard, wildcard
+   (`*.example.com`) base extraction with `ScopeHint::Apex`, and bare-IP-literal drop-and-count
+   (`ParseReport::dropped_ip_literal`) — no normalization happens here, per the plan, since that
+   stays `domain_normalize::normalize`, applied once in `merge` (module 2). UT1's `category`
+   parameter is supplied by the caller per directory, since UT1 gives no in-band signal of which
+   category a `domains` file belongs to; `ut1::count_urls_entries()` is the pure counter the plan's
+   "documented coverage limitation, not a silent drop" rule calls for, so the size of the skipped-
+   `urls` gap stays visible in the build's metrics without this crate ever extracting a URL entry.
+   19 new tests (99 total). The real pinned HTTP `SourceFetcher` implementation, and UT1's per-
+   category `SourceConfig` list, are left to `cli` (module 7, unbuilt) per this module's own text
+   ("the pipeline binary wires in a real HTTP client") — nothing here needs live network access to
+   test. Not yet consumed by `liveness`, `fst_build`, or `cli` (modules 3, 4, 7 — all still
+   unbuilt).
 5. `liveness.rs` — `due_for_check` first as a pure function against a fake clock and fake cache
    entries with cadence ≠ TTL (this is the part with the trickiest edge cases: reappeared-stale vs.
    genuinely-revived entries). Then `canary_check` against a fake resolver that simulates a
