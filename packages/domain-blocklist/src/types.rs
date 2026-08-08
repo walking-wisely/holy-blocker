@@ -73,6 +73,13 @@ impl LicenseId {
     /// allowlist, so `"MIT"` and `"mit"` (or `"MIT "`) aren't treated as different licenses. See
     /// <https://spdx.org/licenses/> for the identifier registry this project's allowlist draws
     /// from.
+    ///
+    /// `eq_ignore_ascii_case` folds only ASCII case, which is deliberate here rather than an
+    /// oversight: the SPDX License List's short identifiers this crate compares against are
+    /// specified as ASCII strings, so there is no legitimate identifier this would compare wrong.
+    /// A non-ASCII `LicenseId` (a source snapshot with a corrupted or non-SPDX license field)
+    /// simply fails to match anything on the allowlist and `license_gate` fails closed, which is
+    /// the correct outcome for a value that was never a valid SPDX identifier to begin with.
     pub fn spdx_matches(&self, other: &LicenseId) -> bool {
         self.0.trim().eq_ignore_ascii_case(other.0.trim())
     }

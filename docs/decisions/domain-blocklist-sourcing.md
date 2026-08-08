@@ -715,6 +715,17 @@ cadence. It is folded into the next bulk rebuild and drained, never a second per
 list living outside the reviewed bulk pipeline — see [the plan](../components/domain-blocklist/plan.md)
 module 8 for the entry shape, size caps, and folding mechanics.
 
+**A removal is not just an additional entry; it changes query-time control flow.** The overlay is
+consulted before the bulk FST specifically so it can represent state the bulk artifact doesn't have
+yet, and a removal is exactly such a case: an entry the bulk FST still blocks that this artifact
+exists to urgently unblock. A matching removal therefore must terminate the lookup at the overlay
+tier rather than falling through to the bulk FST — a fall-through would silently re-apply the block
+the removal exists to lift, indistinguishable from the removal never having published at all. This
+holds regardless of the eventual lookup implementation (in-memory map, a second mmap, or an
+overlay-first cache-through structure ahead of the bulk FST, none yet measured); it does not change
+the precedence of device-local rules or explicit `net-shield` rules, which still outrank the overlay
+the same way they outrank the bulk FST — see the plan's module 6 precedence table.
+
 **This does not weaken the opt-in-only stance above, or reintroduce it by another name.** The overlay
 is fetched on the exact same user-consented check as the bulk artifact; nothing here adds a
 background poll or a push channel. What changes is what that check costs: today, a user who checks

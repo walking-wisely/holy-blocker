@@ -169,6 +169,12 @@ impl FalsePositiveHit {
     /// identical domain is far less likely, *unless* they share upstream provenance for that
     /// entry, which this heuristic cannot detect and does not claim to — an accepted limitation,
     /// not a guarantee of independence.
+    ///
+    /// The fixed count of 2 is deliberately not a fraction of `SourceId`'s current cardinality —
+    /// at today's 3 sources it *is* effectively "most sources agree," but the two facts happen to
+    /// coincide rather than one deriving from the other. If `SourceId` grows past roughly 5–10
+    /// variants, revisit this as a percentage of the total source count instead: 2 agreeing out of
+    /// 15 is much weaker corroboration than 2 out of 3, and a fixed count stops tracking that.
     pub fn is_corroborated(&self) -> bool {
         self.sources.len() >= 2
     }

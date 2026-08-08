@@ -462,7 +462,13 @@ the bottom, not on top:
 
 The FST is consulted only after levels 1–3 miss, so loading a multi-million-entry blocklist can
 never change the behavior of an existing explicit rule, an existing test, or an in-flight overlay
-entry.
+entry. **A matching level-3 `OverlayAction::Remove` terminates lookup right there**: it resolves to
+`DomainFilter`'s default action (`Proxy`) at the matched `RuleScope`, and level 4 is never consulted
+for that domain — a `Remove` entry exists specifically to unblock a domain the bulk FST still blocks,
+so falling through to level 4 after matching one would silently keep the domain blocked. This is
+strictly lower priority than levels 1–2: an explicit `net-shield` `Block`/`Allow` or the device-local
+allowlist still wins over an overlay `Remove` the same way they win over the bulk FST. See module 8's
+"On-device precedence and lookup" for the full contract.
 
 **Normalization.** The query side must normalize **identically** to the build side. Both consume
 `packages/domain-normalize` (module 0); neither reimplements it. Reimplementing it in `net-shield`
@@ -545,7 +551,12 @@ already avoids by never doing it (see the decision doc's rejected alternatives).
 - `OverlayEntry { domain: String, scope: RuleScope, action: OverlayAction, categories: Vec<Category>, added_at: Timestamp }`,
   where `OverlayAction { Add, Remove }` — `Remove` is what makes an urgent takedown of a wrongly-block
   domain possible without waiting for the next bulk rebuild, the same way the bulk FST's `Apex`/
-  `ExactHost` distinction already exists for `Add`.
+  `ExactHost` distinction already exists for `Add`. **A `Remove` entry that matches at its declared
+  `RuleScope` unblocks the domain and stops lookup there** — it resolves to `DomainFilter`'s default
+  action rather than falling through to the bulk FST, which still carries the rule this entry exists
+  to override. It does not touch levels 1–2 of module 6's precedence table: a device-local allowlist
+  entry or an explicit `net-shield` rule at higher priority still wins over a `Remove`, the same way
+  either already wins over the bulk FST. See module 6's precedence table for the full ordering.
 - `OverlaySet { entries: Vec<OverlayEntry> }`, capped at a **starting value of 5,000 entries** — an
   order of magnitude of headroom over what "urgent, between bulk rebuilds" should ever need, kept
   small on purpose so the whole set stays cheap to hold in memory unindexed (module 6's lookup-budget
@@ -594,7 +605,12 @@ covert channel.
 **On-device precedence and lookup.** Specified in module 6 above (priority 3, between `net-shield`'s
 explicit rule set and the bulk FST) — checked before the bulk FST specifically because it exists to
 cover exactly the domains the bulk artifact doesn't have yet, and held as a plain in-memory map since
-its capped size makes mmap's page-fault tradeoff unnecessary.
+its capped size makes mmap's page-fault tradeoff unnecessary. A matching `OverlayAction::Remove`
+terminates the lookup at level 3 rather than falling through to level 4 — see module 6's precedence
+table for why a fall-through would silently re-block a domain this entry exists to unblock. This
+holds regardless of how the map itself is implemented (plain `HashMap`, a second mmap, or a
+cache-through structure in front of the bulk FST); the storage choice is unmeasured and open, the
+termination behavior is not.
 
 **Reference documents**
 
