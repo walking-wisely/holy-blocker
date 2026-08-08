@@ -56,3 +56,49 @@ pub struct MergedEntry {
     pub sources: Vec<SourceId>,
     pub categories: Vec<Category>,
 }
+
+/// SPDX-style identifier for a source's license (e.g. `"CC0-1.0"`, `"MIT"`). A newtype rather
+/// than a closed enum: the license identifiers a real source can carry are an open external set
+/// (SPDX itself grows), and what constrains them — the checked-in allowlist `gates::license_gate`
+/// checks against — is configuration, not something this crate's type system should try to
+/// enumerate exhaustively.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct LicenseId(pub String);
+
+impl LicenseId {
+    /// SPDX license identifiers are compared case-insensitively; this also trims surrounding
+    /// whitespace, which a value freshly read from a `LICENSE` file or an upstream API response
+    /// can carry. `derive(PartialEq)` above stays exact-string, byte-identity equality — this is
+    /// the separate, deliberately looser comparison `gates::license_gate` uses against its
+    /// allowlist, so `"MIT"` and `"mit"` (or `"MIT "`) aren't treated as different licenses. See
+    /// <https://spdx.org/licenses/> for the identifier registry this project's allowlist draws
+    /// from.
+    ///
+    /// `eq_ignore_ascii_case` folds only ASCII case, which is deliberate here rather than an
+    /// oversight: the SPDX License List's short identifiers this crate compares against are
+    /// specified as ASCII strings, so there is no legitimate identifier this would compare wrong.
+    /// A non-ASCII `LicenseId` (a source snapshot with a corrupted or non-SPDX license field)
+    /// simply fails to match anything on the allowlist and `license_gate` fails closed, which is
+    /// the correct outcome for a value that was never a valid SPDX identifier to begin with.
+    pub fn spdx_matches(&self, other: &LicenseId) -> bool {
+        self.0.trim().eq_ignore_ascii_case(other.0.trim())
+    }
+}
+
+/// Seconds since the Unix epoch. A plain alias rather than a wrapping type or a `chrono`/`time`
+/// dependency: nothing in this crate does date arithmetic on it yet, only records and compares it.
+pub type Timestamp = u64;
+
+/// Provenance for one source's fetch, independent of the entries it produced. Module 1's
+/// per-source fetcher produces one of these alongside its `RawEntry`s; `fst_build`'s manifest
+/// (module 4) carries it forward, and `gates::license_gate` (module 5) checks its `license`
+/// against a checked-in allowlist. Defined here, ahead of `sources` (module 1, unbuilt) — the
+/// same reason `RawEntry`/`MergedEntry` live here rather than in `merge.rs`: the modules that
+/// construct and gate on this type need somewhere to import it from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceSnapshot {
+    pub source: SourceId,
+    pub revision: String,
+    pub license: LicenseId,
+    pub fetched_at: Timestamp,
+}

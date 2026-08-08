@@ -5,8 +5,18 @@
 //!
 //! Runs as a periodic offline batch job, never on an end-user device.
 
+pub mod gates;
 pub mod merge;
 pub mod types;
 
-pub use merge::{MergeOutput, MergeReport, filter_by_category, flag_personal_name, merge as merge_entries, resolve_scope};
-pub use types::{Category, MergedEntry, RawEntry, ScopeHint, SourceId};
+pub use gates::{
+    FalsePositiveHit, GateResult, PreviousBuild, false_positive_gate, false_positive_hits,
+    growth_gate, license_gate, review_queue, shrinkage_gate, size_gate,
+};
+pub use merge::{
+    MergeOutput, MergeReport, filter_by_category, flag_personal_name, merge as merge_entries,
+    resolve_scope,
+};
+pub use types::{
+    Category, LicenseId, MergedEntry, RawEntry, ScopeHint, SourceId, SourceSnapshot, Timestamp,
+};

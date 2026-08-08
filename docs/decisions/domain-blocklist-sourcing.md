@@ -290,14 +290,52 @@ Every build therefore evaluates the merged list against a **known-good negative 
 refuses to publish if it fails:
 
 - The control is the **[Tranco](https://tranco-list.eu/) top-N list**, pinned to a specific daily
-  release like any other source, minus a small **reviewed, checked-in exclusion file** of control
-  entries that are legitimately adult (there are a handful in any top-10k list, and leaving them in
-  would make the metric meaningless).
-- The gate is the fraction of the remaining control set that the merged list blocks. **Starting
-  threshold: 0.5%** — deliberately a starting value, to be re-derived from the first real
-  measurement rather than defended as correct. A build exceeding it does not publish.
-- The build also reports *which* control entries were hit and under which provenance ID, so a
-  regression names the source that caused it.
+  release like any other source. Tranco (and its near-equivalents — Cisco Umbrella's popularity
+  list, Majestic, Chrome's CrUX) is a pure traffic ranking with **no content-category metadata at
+  all**; that isn't a Tranco-specific gap, it's structural to what a popularity ranking measures.
+  Because of that, Tranco's top-N genuinely contains adult sites at real traffic volume — measured
+  at roughly **1–2.5% density depending on N** (e.g. ~250 in a top-10k slice), not "a handful," and
+  the design below accounts for that density rather than assuming it away.
+- **What "legitimately adult" means here is decided by cross-source corroboration, not a
+  hand-maintained exclusion file measured against Tranco alone.** Every domain that could ever
+  register as a control-set hit is, by construction, already present in at least one source's raw
+  fetch (`MergedEntry` only exists for domains some `RawEntry` produced), and each source's
+  category tag is assigned at the file/directory level, not per domain — see the plan's module 1
+  input-shape notes: StevenBlack's `porn` extension, hagezi's NSFW list, and UT1's `adult`
+  directory are each fetched as a single trusted unit, so one source's tag can be that source's own
+  curation mistake (a domain the file shouldn't have included). Two *independently maintained*
+  sources agreeing on the same domain is a much stronger signal than either one alone, without
+  needing any classification beyond what the pipeline already fetches:
+  - A control-set hit corroborated by **two or more** sources is treated as correctly blocked and
+    never counts toward the rate — no review needed.
+  - A hit backed by only **one** source lands in a bounded **review queue** — this is the actual
+    manual-triage surface, and it is small by construction: the extremely well-known adult sites
+    that dominate Tranco's top ranks (the ones any curated list independently includes) clear the
+    2-of-3 bar automatically, leaving only the domains a single project happened to flag alone,
+    which is both the smaller set and the more plausible place for an actual misclassification to
+    live. A small, reviewed, checked-in exclusion file still exists for domains a human has
+    confirmed are legitimately sensitive despite lacking corroboration — its expected size shrinks
+    to that residual set, not "every adult site Tranco ranks."
+  - **Accepted limitation, stated plainly rather than assumed away:** corroboration only helps if
+    the sources are genuinely independent. If two of the three sources share upstream provenance
+    for a given entry (blocklist projects do sometimes cross-pollinate from each other or from
+    shared community submissions), a shared mistake would not be caught this way. This has not been
+    verified either way for StevenBlack/hagezi/UT1's adult lists specifically, and is worth checking
+    before leaning on the mechanism harder than "reduces the review burden," not "eliminates it."
+  - A genuinely independent third-party check remains available as a future strengthening layer,
+    specifically because the set needing it is now small: for just the single-source review-queue
+    domains (not the full million-entry control set — the earlier obstacle to using a rate-limited
+    API at all), a real third-party categorization service could cross-check before a human does.
+    Not required for the mechanism above to work; not built.
+- The gate is the fraction of the checked control set landing in the review queue (uncorroborated
+  and not already excluded) that the merged list blocks. **Starting threshold: 0.5%** — deliberately
+  a starting value, to be re-derived from the first real measurement rather than defended as
+  correct. A build exceeding it does not publish.
+- **A control set that comes back empty or suspiciously small fails outright**, rather than
+  measuring a 0% rate against nothing — a truncated download, a parse bug, or a maintenance page
+  standing in for Tranco's real list must never look identical to "measured, and clean."
+- The build also reports *which* control entries were hit and under which sources, so a regression
+  names the source that caused it.
 
 This mirrors `machine-learning`'s `gate.py` release guardrail: the project already refuses to ship a
 classifier with no measured quality signal, and a blocklist with no measured false-positive rate is
@@ -335,7 +373,7 @@ set; it does not require all of a domain's categories to match. The exact type
 ### Publish gates
 
 Signing proves an artifact came from this pipeline. It says nothing about whether the pipeline
-produced a *sane* artifact. Four checks stand between a completed build and a published bundle, and
+produced a *sane* artifact. Six checks stand between a completed build and a published bundle, and
 **each one requires explicit human sign-off to override — never an automatic publish**:
 
 | Gate | Refuses to publish when | Why |
@@ -343,8 +381,9 @@ produced a *sane* artifact. Four checks stand between a completed build and a pu
 | Liveness canary | any canary domain returns anything but its expected verdict | a filtering or hijacking resolver would otherwise prune the list to nothing |
 | Shrinkage | entry count drops **>10%** below the previous published build, or below an absolute floor | catches a bad sweep, a source that silently emptied, a parser regression |
 | Growth | *added* entries exceed **10%** of the previous published build | catches a compromised or mis-bumped upstream injecting bulk entries |
-| False-positive rate | control-set FP rate exceeds its threshold | catches noise amplification across the union |
+| False-positive rate | the uncorroborated, unreviewed review-queue rate against the control set exceeds its threshold, or the control set itself is suspiciously small | catches noise amplification across the union, and a broken control-set fetch masquerading as a clean measurement |
 | Artifact size | the built `.fst` exceeds its size budget | catches unbounded growth before a device pays for it |
+| License | any source that contributed entries has no license snapshot, an ambiguous (duplicated) one, or one off the allowlist | re-checks the [fetch-time license gate](#license-gate) at publish time so it can't be bypassed or weakened in between |
 
 The percentages are starting values chosen to be tight enough to catch a category error and loose
 enough not to fire on ordinary churn; like every other constant here they are to be re-derived once
@@ -653,6 +692,49 @@ Mechanics:
 numbers — including how to force genuine kernel-level eviction rather than measuring a warm cache
 and calling it a fault — is in [the plan](../components/domain-blocklist/plan.md).
 
+### A fast-cadence overlay tier, so an update need not wait for the next bulk rebuild
+
+Two costs are easy to conflate and need separating. **Rebuilding** the FST when the domain set
+changes is cheap — it runs on the pipeline's own build machine, on the existing monthly cadence, with
+no device-side resource pressure at all. **Distributing** an update is not free at any size: every
+client update, no matter how small the actual change, still costs a full-artifact download and a
+full sequential hash-verify (verification reads every byte, by design — see the mmap section above).
+Making the bulk cadence tighter to propagate an urgent single-domain fix faster would mean paying
+that full cost on every device far more often than the bulk gates (canary, shrinkage, growth,
+false-positive) actually need to run, and it would not make the FST itself faster to update: `fst::
+Map` has no incremental-edit API, and mutating a live mmap that lookups may be concurrently reading
+is a correctness hazard this design already avoids elsewhere (see the mmap section's atomic
+`rename()`-only update rule). Rebuilding from the complete sorted key set is the only way the format
+supports, whether one domain changed or a million did.
+
+The fix is not to make the bulk artifact patchable. It's a **second, much smaller artifact** — a
+capped list of recent additions and removals, reusing the bulk manifest's exact trust contract
+(monotonic `version`, signature list, digest-bound payload, current/previous atomic slot swap) at a
+fraction of the size, and therefore cheap enough to re-fetch and re-verify in full on a much shorter
+cadence. It is folded into the next bulk rebuild and drained, never a second permanent copy of the
+list living outside the reviewed bulk pipeline — see [the plan](../components/domain-blocklist/plan.md)
+module 8 for the entry shape, size caps, and folding mechanics.
+
+**A removal is not just an additional entry; it changes query-time control flow.** The overlay is
+consulted before the bulk FST specifically so it can represent state the bulk artifact doesn't have
+yet, and a removal is exactly such a case: an entry the bulk FST still blocks that this artifact
+exists to urgently unblock. A matching removal therefore must terminate the lookup at the overlay
+tier rather than falling through to the bulk FST — a fall-through would silently re-apply the block
+the removal exists to lift, indistinguishable from the removal never having published at all. This
+holds regardless of the eventual lookup implementation (in-memory map, a second mmap, or an
+overlay-first cache-through structure ahead of the bulk FST, none yet measured); it does not change
+the precedence of device-local rules or explicit `net-shield` rules, which still outrank the overlay
+the same way they outrank the bulk FST — see the plan's module 6 precedence table.
+
+**This does not weaken the opt-in-only stance above, or reintroduce it by another name.** The overlay
+is fetched on the exact same user-consented check as the bulk artifact; nothing here adds a
+background poll or a push channel. What changes is what that check costs: today, a user who checks
+between monthly bulk releases gets nothing for it — there is no smaller update to fetch. With the
+overlay, the same check picks up a few-KB, sub-second update instead. "Faster" here means "cheap
+enough that the user's own chosen cadence already delivers it," not a new covert channel — the
+opt-in stance is unchanged, and remains a decision revisited only with a stated privacy tradeoff, not
+one incidentally weakened by a distribution optimization.
+
 ### Distribution
 
 The FST file *is* the signed, distributed artifact — no separate transform happens on the client.
@@ -736,6 +818,13 @@ choice; staleness they can't is a defect.
 
 ## Rejected alternatives
 
+- **A continuously mutable/patchable on-device FST** — considered as an alternative to the overlay
+  tier above, to avoid shipping a second artifact type. Rejected on two independent grounds, either
+  one sufficient alone: the `fst` crate provides no incremental-edit API (the format's compression is
+  a function of the whole sorted key set, not something a local patch can preserve), and mutating a
+  file backing a live mmap that lookups may be concurrently reading is a correctness hazard this
+  design otherwise avoids entirely via atomic `rename()`-only updates. A second, small, append-then-
+  drain artifact reuses the existing trust contract instead of inventing an unsafe one.
 - **A single source** — no single list has both good coverage and reliable pruning; the union with
   provenance is what makes a low-quality or disappearing source cheap to back out.
 - **Auto-fetching each source's branch HEAD** — convenient, and it turns any upstream compromise or
