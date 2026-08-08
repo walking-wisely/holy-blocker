@@ -514,10 +514,31 @@ Responsibilities:
    surprise never look like the same event. `filter_by_category()` is a pure any-of filter over the
    plan's "adult-only build still ships a gambling-flagged domain" rule. `flag_personal_name()`
    matches the plan's own named cases exactly (`red-panda` flagged, `janedoe` missed) — 2–4
-   alphabetic tokens split on `-`/`.`/`_`. 26 tests, including the plan's named cases: a domain
-   flagged `adult` by one source and `gambling` by another keeps both categories; the bare
-   `example.com`/`www.example.com` pair stays two distinct entries with distinct scopes. Not yet
-   consumed by `sources`, `gates`, or `fst_build` (modules 1, 3, 4 — all still unbuilt).
+   alphabetic tokens split on `-`/`.`/`_`. **An adversarial (Opus) review of this module found four
+   real gaps, all fixed:** (1) `merge()` normalizes `shared_hosting_denylist` once up front —
+   `classify_scope`'s contract assumes its denylist entries are already normalized, and a
+   hand-authored checked-in file is exactly where a stray trailing dot, capitalization, or a
+   Unicode-typed IDN would otherwise silently fail to match and reopen the shared-hosting hole the
+   parameter exists to close; (2) IP-literal entries (`"0.0.0.0"`) are dropped and counted
+   (`dropped_ip_literal`) rather than passed through as an ordinary domain rule — DNS labels are
+   digit-legal so `normalize()` accepts an IP literal as itself, and the plan assigns dropping these
+   to the unbuilt `sources` module, so this is defense in depth, not a redundant check; (3)
+   `merge()`'s output `sources`/`categories` are sorted before returning, since both are logical
+   sets and an input-order-dependent `Vec` would make the eventually-signed artifact
+   non-reproducible across a source-fetch order CI makes no promises about — `merge_output_does_not_
+   depend_on_raw_entry_order` pins this; (4) `flag_personal_name()` rejects any `xn--`-prefixed
+   (RFC 3492 §5 ACE) label outright — post-`normalize()` punycode fragments like `xn--mller-kva`
+   (`müller`) tokenize into three all-alphabetic pieces and would otherwise systematically
+   false-positive across the entire IDN corpus. The review's fifth claim — that `resolve_scope`
+   should grant `Apex` to any plain entry that is literally eTLD+1, not just wildcard-hinted ones —
+   was investigated and **rejected**: the plan's module 2 text states outright that "merging two
+   entries with different scopes takes the wider scope," which is only meaningful if a plain entry's
+   individual scope *can* differ from a wildcard entry's for the same domain — exactly what the
+   current `ScopeHint`-gated implementation does. 36 tests, including the plan's named cases (a
+   domain flagged `adult` by one source and `gambling` by another keeps both categories; the bare
+   `example.com`/`www.example.com` pair stays two distinct entries with distinct scopes) and the
+   review-driven regression tests above. Not yet consumed by `sources`, `gates`, or `fst_build`
+   (modules 1, 3, 4 — all still unbuilt).
 3. `gates.rs` — pure functions against synthetic counts and key sets. Built early precisely because
    they are cheap, pure, and are what stops every category of bad build; leaving them for last means
    the first real run has no guardrail.

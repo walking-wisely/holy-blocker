@@ -6,6 +6,7 @@
 //! (module 3) and `fst_build` (module 4), both still unbuilt.
 
 use std::collections::BTreeMap;
+use std::net::IpAddr;
 
 use domain_normalize::{RuleScope, classify_scope, normalize};
 
@@ -52,6 +53,12 @@ pub struct MergeReport {
     /// shared-hosting denylist. This is the counter that would otherwise black-hole an entire
     /// hosting provider if it went unnoticed.
     pub dropped_public_suffix_or_denylisted: u64,
+    /// The normalized domain parses as an IPv4 or IPv6 literal. The plan's module 1 input-shape
+    /// table assigns dropping these to the source parsers ("IP-based blocking is out of scope for
+    /// a domain-keyed artifact"), but that module doesn't exist yet — this is defense in depth so
+    /// a mis-split hosts-file line (or any future parser bug) can never land an IP string as a key
+    /// in a domain-keyed FST.
+    pub dropped_ip_literal: u64,
 }
 
 /// The result of a `merge` run: the deduplicated entries plus the drop counters.
@@ -71,7 +78,23 @@ pub struct MergeOutput {
 ///
 /// Output order is the sorted normalized-domain order — a side effect of using a `BTreeMap` to
 /// dedupe, and convenient (not required) for `fst_build`'s own sorted-insertion need downstream.
+/// `sources` and `categories` within each entry are sorted too, independent of the order
+/// `raw_entries` arrived in — both are logical sets (see the plan's "categories is a set, not a
+/// single value"), and an input-order-dependent `Vec` would make the eventual signed artifact
+/// non-reproducible across a source fetch order CI makes no promises about.
+///
+/// `shared_hosting_denylist` is normalized once here, up front — `classify_scope`'s contract
+/// assumes its `normalized` parameter is already `normalize()`'s output, and the denylist is a
+/// hand-authored, checked-in file exactly where a stray trailing dot, capitalization, or a
+/// Unicode-typed IDN would otherwise silently fail to match and reopen the shared-hosting hole
+/// this parameter exists to close.
 pub fn merge(raw_entries: &[RawEntry], shared_hosting_denylist: &[&str]) -> MergeOutput {
+    let normalized_denylist: Vec<String> = shared_hosting_denylist
+        .iter()
+        .filter_map(|raw| normalize(raw).ok())
+        .collect();
+    let denylist_refs: Vec<&str> = normalized_denylist.iter().map(String::as_str).collect();
+
     let mut by_domain: BTreeMap<String, MergedEntry> = BTreeMap::new();
     let mut report = MergeReport::default();
 
@@ -84,7 +107,14 @@ pub fn merge(raw_entries: &[RawEntry], shared_hosting_denylist: &[&str]) -> Merg
             }
         };
 
-        let scope = match resolve_scope(&normalized, entry.scope_hint, shared_hosting_denylist) {
+        if normalized.parse::<IpAddr>().is_ok() {
+            // DNS labels are digit-legal (RFC 1035 §2.3.1), so an IP literal like "0.0.0.0"
+            // survives normalize() as itself rather than erroring — it must be caught here.
+            report.dropped_ip_literal += 1;
+            continue;
+        }
+
+        let scope = match resolve_scope(&normalized, entry.scope_hint, &denylist_refs) {
             Some(scope) => scope,
             None => {
                 report.dropped_public_suffix_or_denylisted += 1;
@@ -113,6 +143,11 @@ pub fn merge(raw_entries: &[RawEntry], shared_hosting_denylist: &[&str]) -> Merg
             });
     }
 
+    for merged in by_domain.values_mut() {
+        merged.sources.sort();
+        merged.categories.sort();
+    }
+
     MergeOutput {
         entries: by_domain.into_values().collect(),
         report,
@@ -139,16 +174,24 @@ pub fn filter_by_category(entries: &[MergedEntry], allowed: &[Category]) -> Vec<
 /// `-`, `.`, or `_`, in any order. This is a triage filter, not a completeness guarantee: it
 /// flags `red-panda` and misses `janedoe`, and per the plan both are the accepted, documented
 /// behavior rather than bugs to fix.
+///
+/// A label carrying the `xn--` ACE prefix (RFC 3492 §5) — what `normalize()` produces for any
+/// non-ASCII label — is never flagged. Its hyphen-delimited fragments are punycode encoding
+/// artifacts, not human-readable name parts, and treating them as tokens would systematically
+/// false-positive across the entire IDN corpus (`xn--mller-kva`, i.e. `müller`, splits into the
+/// three all-alphabetic tokens `xn`, `mller`, `kva` and would otherwise be flagged).
 pub fn flag_personal_name(second_level_label: &str) -> bool {
+    if second_level_label.starts_with("xn--") {
+        return false;
+    }
+
     let tokens: Vec<&str> = second_level_label
         .split(['-', '.', '_'])
         .filter(|token| !token.is_empty())
         .collect();
 
     (2..=4).contains(&tokens.len())
-        && tokens
-            .iter()
-            .all(|token| !token.is_empty() && token.chars().all(|c| c.is_ascii_alphabetic()))
+        && tokens.iter().all(|token| token.chars().all(|c| c.is_ascii_alphabetic()))
 }
 
 #[cfg(test)]
@@ -358,6 +401,135 @@ mod tests {
             let out = merge(&[], &[]);
             assert_eq!(out, MergeOutput::default());
         }
+
+        #[test]
+        fn an_ip_literal_is_dropped_and_counted_separately() {
+            // RFC 1035 labels are digit-legal, so "0.0.0.0" normalizes as itself rather than
+            // erroring — it must be caught by its own check, not conflated with either drop
+            // reason above.
+            let out = merge(
+                &[entry("0.0.0.0", SourceId::StevenBlack, Category::Adult, ScopeHint::None)],
+                &[],
+            );
+            assert!(out.entries.is_empty());
+            assert_eq!(out.report.dropped_ip_literal, 1);
+            assert_eq!(out.report.dropped_normalization_failed, 0);
+            assert_eq!(out.report.dropped_public_suffix_or_denylisted, 0);
+        }
+
+        #[test]
+        fn shared_hosting_denylist_matches_despite_case_and_a_trailing_dot() {
+            // The denylist is a hand-authored, checked-in file — exactly where a stray
+            // capitalization or trailing dot would otherwise silently fail to match and reopen
+            // the shared-hosting hole this parameter exists to close.
+            let out = merge(
+                &[entry(
+                    "shared-host.example",
+                    SourceId::Ut1,
+                    Category::Adult,
+                    ScopeHint::Apex,
+                )],
+                &["Shared-Host.example."],
+            );
+            assert!(out.entries.is_empty());
+            assert_eq!(out.report.dropped_public_suffix_or_denylisted, 1);
+        }
+
+        #[test]
+        fn a_domain_that_fails_normalization_and_would_also_be_denylisted_counts_only_once() {
+            // Precedence: an entry that can't be normalized at all never reaches classify_scope,
+            // so only the normalization counter moves, never both.
+            let over_long_label = "a".repeat(64);
+            let unnormalizable = format!("{over_long_label}.com");
+            let out = merge(
+                &[entry(&unnormalizable, SourceId::Ut1, Category::Adult, ScopeHint::None)],
+                &[unnormalizable.as_str()],
+            );
+            assert_eq!(out.report.dropped_normalization_failed, 1);
+            assert_eq!(out.report.dropped_public_suffix_or_denylisted, 0);
+        }
+
+        #[test]
+        fn three_sources_for_the_same_domain_union_all_three() {
+            let out = merge(
+                &[
+                    entry("example.com", SourceId::StevenBlack, Category::Adult, ScopeHint::Apex),
+                    entry("example.com", SourceId::Hagezi, Category::Gambling, ScopeHint::Apex),
+                    entry("example.com", SourceId::Ut1, Category::Dating, ScopeHint::Apex),
+                ],
+                &[],
+            );
+            assert_eq!(out.entries.len(), 1);
+            assert_eq!(
+                out.entries[0].sources,
+                vec![SourceId::StevenBlack, SourceId::Hagezi, SourceId::Ut1]
+            );
+            assert_eq!(
+                out.entries[0].categories,
+                vec![Category::Adult, Category::Gambling, Category::Dating]
+            );
+        }
+
+        #[test]
+        fn the_same_source_and_category_repeated_three_times_dedupes_to_one() {
+            let raw = entry("example.com", SourceId::Ut1, Category::Adult, ScopeHint::Apex);
+            let out = merge(&[raw.clone(), raw.clone(), raw], &[]);
+            assert_eq!(out.entries.len(), 1);
+            assert_eq!(out.entries[0].sources, vec![SourceId::Ut1]);
+            assert_eq!(out.entries[0].categories, vec![Category::Adult]);
+        }
+
+        #[test]
+        fn mixed_case_and_a_trailing_dot_normalize_onto_the_same_merged_entry() {
+            // This is the entire reason merge() normalizes before keying: two spellings of the
+            // same domain must collapse into one MergedEntry, not survive as two.
+            let out = merge(
+                &[
+                    entry("EXAMPLE.COM", SourceId::Ut1, Category::Adult, ScopeHint::Apex),
+                    entry("example.com.", SourceId::Hagezi, Category::Gambling, ScopeHint::Apex),
+                ],
+                &[],
+            );
+            assert_eq!(out.entries.len(), 1);
+            assert_eq!(out.entries[0].domain, "example.com");
+            assert_eq!(out.entries[0].sources, vec![SourceId::Hagezi, SourceId::Ut1]);
+            assert_eq!(
+                out.entries[0].categories,
+                vec![Category::Adult, Category::Gambling]
+            );
+        }
+
+        #[test]
+        fn scope_reconciliation_is_independent_of_which_entry_arrives_first() {
+            // The mirror of merging_apex_and_exact_host_for_the_same_domain_takes_the_wider_scope
+            // above: feeding the Apex-hinted (wildcard) entry FIRST must not let a later plain
+            // entry downgrade it back to ExactHost.
+            let out = merge(
+                &[
+                    entry("example.com", SourceId::Hagezi, Category::Adult, ScopeHint::Apex),
+                    entry("example.com", SourceId::StevenBlack, Category::Adult, ScopeHint::None),
+                ],
+                &[],
+            );
+            assert_eq!(out.entries.len(), 1);
+            assert_eq!(out.entries[0].scope, RuleScope::Apex);
+        }
+
+        #[test]
+        fn merge_output_does_not_depend_on_raw_entry_order() {
+            let forward = vec![
+                entry("example.com", SourceId::StevenBlack, Category::Adult, ScopeHint::Apex),
+                entry("example.com", SourceId::Hagezi, Category::Gambling, ScopeHint::Apex),
+                entry("example.com", SourceId::Ut1, Category::Dating, ScopeHint::Apex),
+            ];
+            let mut reversed = forward.clone();
+            reversed.reverse();
+
+            let forward_out = merge(&forward, &[]);
+            let reversed_out = merge(&reversed, &[]);
+
+            assert_eq!(forward_out, reversed_out);
+        }
     }
 
     mod filter_by_category_tests {
@@ -391,6 +563,15 @@ mod tests {
         fn empty_allowed_set_excludes_everything() {
             let entries = vec![merged("example.com", vec![Category::Adult])];
             let out = filter_by_category(&entries, &[]);
+            assert!(out.is_empty());
+        }
+
+        #[test]
+        fn an_entry_with_no_categories_is_never_included() {
+            // Not reachable through merge() today (every RawEntry carries exactly one category),
+            // but filter_by_category is pub — its own degenerate case should hold on its own.
+            let entries = vec![merged("example.com", vec![])];
+            let out = filter_by_category(&entries, &[Category::Adult, Category::Gambling, Category::Dating]);
             assert!(out.is_empty());
         }
     }
@@ -440,6 +621,15 @@ mod tests {
         #[test]
         fn empty_label_is_not_flagged() {
             assert!(!flag_personal_name(""));
+        }
+
+        #[test]
+        fn a_punycode_ace_label_is_never_flagged() {
+            // "xn--mller-kva" is the A-label normalize() produces for "müller" — its hyphenated
+            // fragments (xn, mller, kva) are encoding artifacts, not name tokens, and must never
+            // be treated as if they were.
+            assert!(!flag_personal_name("xn--mller-kva"));
+            assert!(!flag_personal_name("xn--nxasmq6b")); // an ACE label with no interior hyphen
         }
     }
 }
