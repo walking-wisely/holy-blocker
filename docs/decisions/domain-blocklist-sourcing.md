@@ -447,13 +447,25 @@ OpenDNS FamilyShield, and a great many corporate and CI-provider networks — re
 sink address for essentially every domain on this list. Every entry reads as `Dead`. The pipeline
 prunes the list to near-zero, signs the result, and ships it. Nothing in the process looks broken.
 
-Two mechanisms, both required:
+Three mechanisms, all required:
 
 **A named, non-filtering resolver.** The pipeline is configured with an explicit resolver address
 and does not use the host's system resolver, which on a CI runner is whatever the provider
 happens to supply. The default is Cloudflare's unfiltered `1.1.1.1` / `2606:4700:4700::1111`,
 explicitly *not* the `1.1.1.2` (malware) or `1.1.1.3` (family) variants. Any substitute must be
 documented and canary-verified the same way.
+
+**Two-resolver corroboration before pruning.** A `Dead` verdict from a single resolver is never
+sufficient on its own — a domain is only actually pruned once a *second*, independently-configured
+resolver (a different operator, a different anycast network) also produces `Dead` for it. An
+earlier design tried to establish that same trust from DNSSEC authentication (the AD bit) on a
+single resolver's own answer instead, and that was measured, live, to be the wrong mechanism: most
+large TLDs — `.com`/`.net`/`.org`/`.xxx` included — sign with NSEC3 opt-out, under which a
+validating resolver cannot construct an authenticated proof of non-existence for an unsigned
+delegation at all, so requiring it made `Dead` nearly unreachable rather than safer to reach. See
+[`packages/domain-blocklist`'s `liveness::corroboration`
+module](../../packages/domain-blocklist/src/liveness/corroboration.rs) for the implementation and
+the full reasoning.
 
 **A canary check before every sweep**, over a small fixed set of control domains that has nothing to
 do with adult content, checked in both directions:
@@ -463,7 +475,13 @@ do with adult content, checked in both directions:
 - At least one **reserved name guaranteed not to resolve** (RFC 2606 / RFC 6761 — `invalid.` and a
   name under `test.`) must return `Dead`. This second direction catches the resolver that
   NXDOMAIN-rewrites to a wildcard sink, which would produce the *opposite* failure: nothing ever
-  prunes, and the list quietly stops being maintained.
+  prunes, and the list quietly stops being maintained. A real deployment should also mix in a
+  **per-run random-nonce control** under a real, currently-registered zone (`nonce_dead_control` in
+  the same module) — but never a zone hosted behind a provider that answers a nonexistent name with
+  NODATA rather than NXDOMAIN ("compact denial of existence"; Cloudflare-hosted zones, including
+  `example.com`, do this and were measured to break this exact control). See
+  `nonce_dead_control`'s doc comment for the full trap and how to verify a candidate zone before
+  using it.
 
 **If any canary returns anything other than its expected verdict, the entire sweep aborts.** Every
 verdict from that run is treated as untrusted and discarded — not merged, not cached, not written

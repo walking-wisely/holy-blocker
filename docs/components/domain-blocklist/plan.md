@@ -271,6 +271,34 @@ Responsibilities:
   Erring toward keeping an entry is the intended direction — false negatives are the budget, false
   positives are the price — which is why only an unambiguous NXDOMAIN prunes.
 
+**Done.** Built as `src/liveness/{mod,lookup,cache,canary,corroboration}.rs`, then hardened across
+three review rounds. The load-bearing correction from the third round: an earlier version of this
+module required DNSSEC authentication (the AD bit) on both address families before trusting an
+NXDOMAIN as `Dead`, and that requirement was measured live to be **the wrong design**, not a
+stricter-but-safer one — most large TLDs sign with NSEC3 opt-out (RFC 5155 §6), under which a
+validating resolver cannot construct authenticated denial-of-existence for an unsigned delegation
+at all, so the gate made `Dead` almost unreachable rather than safer to reach, and the module's own
+canary didn't catch it (`invalid.`/`test.` sit under the root zone, which uses plain NSEC rather
+than NSEC3 opt-out, so they authenticated cleanly while the real sweep quietly pruned nothing). The
+fix
+is `liveness::corroboration::corroborate`/`check_corroborated`: pruning now requires **two
+independently-configured resolvers** to each independently produce `Dead`, replacing the
+DNSSEC-authentication requirement as the actual defence against a lying or hijacking resolver;
+`authenticated` is kept as loggable evidence but no longer gates anything. `should_prune`/
+`should_prune_with_hysteresis` (`cache.rs`) now require the corroborated verdict, not a single
+resolver's own `check()` result. Also fixed in the same round: `is_filtering_ede` broadened to
+cover RFC 8914 codes 13 (Cached Error) and 18 (Prohibited) alongside 19 (Stale NXDOMAIN Answer);
+`nonce_dead_control`'s worked example and this file's own tests, which used the Cloudflare-hosted
+`example.com` — measured to answer a nonexistent subdomain with NODATA ("compact denial of
+existence") rather than NXDOMAIN, which broke the dead control and aborted every sweep
+permanently — renamed away from it, with the trap now documented explicitly; the apparent tension
+between `should_prune` (a `Dead` verdict on `.invalid`/`.test` proves nothing about registration)
+and `canary_check` (the same verdict on the same names proves the resolver is honest) resolved with
+cross-referencing doc comments explaining these are different questions about the same verdict, not
+a contradiction; and the `DnsLookup` trait's contract doc now states explicitly that an
+implementation must set the DNSSEC OK bit and read the AD/EDE evidence off the wire, ruling out a
+`getaddrinfo`-style high-level resolver API for module 7.
+
 (See [Reference documents](#reference-documents) below for the DNS response codes this matrix is
 built from.)
 
