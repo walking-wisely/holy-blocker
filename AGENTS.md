@@ -97,3 +97,22 @@ Before finishing a code change, run the narrowest relevant checks:
 - Native daemon changes: build with CMake and run any added unit tests
 
 If a relevant check cannot be run, report the reason clearly.
+
+## Before And After The Code
+
+Two skills bracket implementation work, and they exist because of a measured pattern: modules here
+rest on claims about the outside world, and when those claims go unverified they are wrong often
+enough to invalidate the module rather than a detail of it.
+
+- **Before implementing a plan step**, run the `assumption-audit` skill. It enumerates the external
+  facts the step depends on, attaches one falsifying command to each, runs them, and reports before
+  any code is written.
+- **After writing code**, run the `adversarial-review` skill on the diff, branch, or PR. Its
+  catalogue is this repository's own recurring failure modes, ordered by frequency, with two rules
+  that make a review trustworthy: reproduce or label, and cite or omit.
+
+**Any change that alters what a layer covers updates
+[`docs/engineering/coverage.md`](docs/engineering/coverage.md) in the same PR.** Each component here
+is scoped narrowly and honestly and records its own narrowing; the ledger is the only place the
+union is computed, and the union is the product. `Unverified` is promoted to `Covered` by an
+observation, never by an argument.
