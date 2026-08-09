@@ -31,6 +31,7 @@
 //!   is unregistered.
 
 use crate::types::Timestamp;
+use std::net::IpAddr;
 
 /// A control-set failure message stops naming individual mismatches past this many, mirroring
 /// `gates::MAX_NAMED_HITS` — canary control sets are expected to be tiny (a handful of domains),
@@ -63,10 +64,23 @@ pub enum UnknownReason {
 
 /// The outcome of one [`DnsLookup::lookup`] call — one QTYPE, one domain. Never conflated with
 /// [`Verdict`], which is what two of these (A and AAAA) combine into.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// Not `Copy` — [`LookupResult::Resolved`] owns a `Vec<IpAddr>`, so this type is `Clone` only.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LookupResult {
-    /// An address record, or a CNAME chain that resolved to one.
-    Resolved,
+    /// An address record, or a CNAME chain that resolved to one — carrying the resolved
+    /// addresses themselves, not just the fact of resolution. [`combine`] today only asks
+    /// *whether* this variant appears, but a bare unit variant would foreclose the addresses
+    /// permanently, and three things this module wants later all need them: sink detection
+    /// mid-sweep (a hijacking resolver answering every unrelated domain with the same parking IP
+    /// still combines to [`Verdict::Alive`] — the safe direction — but nothing could ever notice
+    /// 40,000 domains sharing one address without the address being kept); `0.0.0.0` /
+    /// `127.0.0.1` / `::` null-route answers (several upstream sources are hosts-format, and some
+    /// operators genuinely null-route a retired domain — those resolve today with no way to say
+    /// so); and RFC 8767 serve-stale detection (a suspiciously uniform stale-answer pattern is
+    /// only visible in the addresses, never in the outcome alone). Keeping the addresses costs
+    /// nothing now and avoids a breaking change later.
+    Resolved(Vec<IpAddr>),
     /// An unambiguous negative answer for the **queried name's own** RCODE (RFC 1035 §4.1.1 RCODE
     /// 3) — no CNAME chain was involved. This is the only `LookupResult` [`combine`] will ever read
     /// as proof of non-registration.
@@ -119,7 +133,7 @@ pub enum Verdict {
 /// rather than forking the one piece of genuinely subtle policy in this module.
 pub fn combine(a: LookupResult, aaaa: LookupResult) -> Verdict {
     match (a, aaaa) {
-        (LookupResult::Resolved, _) | (_, LookupResult::Resolved) => Verdict::Alive,
+        (LookupResult::Resolved(_), _) | (_, LookupResult::Resolved(_)) => Verdict::Alive,
         (LookupResult::NxDomain, LookupResult::NxDomain) => Verdict::Dead,
         (LookupResult::NxDomainViaCname, _) | (_, LookupResult::NxDomainViaCname) => {
             Verdict::Unknown(UnknownReason::CnameToDeadTarget)
@@ -380,10 +394,13 @@ mod tests {
             self
         }
 
-        /// Both A and AAAA resolve for `domain`.
+        /// Both A and AAAA resolve for `domain`, to a fixed RFC 5737 §3 TEST-NET-1 documentation
+        /// address (`192.0.2.1`) — the specific value never matters to any test built on this
+        /// helper, since `combine` only asks whether a lookup resolved, not what it resolved to.
         fn with_alive(self, domain: &str) -> Self {
-            self.with(domain, RecordType::A, LookupResult::Resolved)
-                .with(domain, RecordType::Aaaa, LookupResult::Resolved)
+            let addr = IpAddr::V4(std::net::Ipv4Addr::new(192, 0, 2, 1));
+            self.with(domain, RecordType::A, LookupResult::Resolved(vec![addr]))
+                .with(domain, RecordType::Aaaa, LookupResult::Resolved(vec![addr]))
         }
 
         /// Both A and AAAA come back NXDOMAIN for `domain`.
@@ -397,7 +414,7 @@ mod tests {
         fn lookup(&self, domain: &str, record: RecordType) -> LookupResult {
             self.answers
                 .get(&(domain.to_string(), record))
-                .copied()
+                .cloned()
                 .unwrap_or(LookupResult::Unknown(UnknownReason::NoData))
         }
     }
@@ -477,7 +494,11 @@ mod tests {
         fn one_resolving_and_the_other_nxdomain_is_alive() {
             // One working address family is enough for the domain to be reachable.
             let resolver = FakeResolver::new()
-                .with("example.com", RecordType::A, LookupResult::Resolved)
+                .with(
+                    "example.com",
+                    RecordType::A,
+                    LookupResult::Resolved(vec![IpAddr::V4(std::net::Ipv4Addr::new(192, 0, 2, 1))]),
+                )
                 .with("example.com", RecordType::Aaaa, LookupResult::NxDomain);
             assert_eq!(check(&resolver, "example.com"), Verdict::Alive);
         }
@@ -485,7 +506,11 @@ mod tests {
         #[test]
         fn one_resolving_and_the_other_unknown_is_alive() {
             let resolver = FakeResolver::new()
-                .with("example.com", RecordType::A, LookupResult::Resolved)
+                .with(
+                    "example.com",
+                    RecordType::A,
+                    LookupResult::Resolved(vec![IpAddr::V4(std::net::Ipv4Addr::new(192, 0, 2, 1))]),
+                )
                 .with(
                     "example.com",
                     RecordType::Aaaa,
@@ -543,11 +568,7 @@ mod tests {
             // name, so a name that resolved via a chain whose target is now NXDOMAIN in both
             // families is not proven unregistered — it must not be pruned as Dead.
             let resolver = FakeResolver::new()
-                .with(
-                    "example.com",
-                    RecordType::A,
-                    LookupResult::NxDomainViaCname,
-                )
+                .with("example.com", RecordType::A, LookupResult::NxDomainViaCname)
                 .with(
                     "example.com",
                     RecordType::Aaaa,
@@ -564,11 +585,7 @@ mod tests {
             // A direct NXDOMAIN on one family plus a CNAME-chain NXDOMAIN on the other is still
             // not two direct NXDOMAINs on the queried name — only that combination is Dead.
             let resolver = FakeResolver::new()
-                .with(
-                    "example.com",
-                    RecordType::A,
-                    LookupResult::NxDomainViaCname,
-                )
+                .with("example.com", RecordType::A, LookupResult::NxDomainViaCname)
                 .with("example.com", RecordType::Aaaa, LookupResult::NxDomain);
             assert_eq!(
                 check(&resolver, "example.com"),
@@ -580,13 +597,45 @@ mod tests {
         fn nxdomain_via_cname_paired_with_resolved_is_alive() {
             // An alive family wins regardless of what the other side reports.
             let resolver = FakeResolver::new()
+                .with("example.com", RecordType::A, LookupResult::NxDomainViaCname)
                 .with(
                     "example.com",
-                    RecordType::A,
-                    LookupResult::NxDomainViaCname,
-                )
-                .with("example.com", RecordType::Aaaa, LookupResult::Resolved);
+                    RecordType::Aaaa,
+                    LookupResult::Resolved(vec![IpAddr::V4(std::net::Ipv4Addr::new(192, 0, 2, 1))]),
+                );
             assert_eq!(check(&resolver, "example.com"), Verdict::Alive);
+        }
+
+        #[test]
+        fn resolved_addresses_are_not_discarded() {
+            // The whole point of LookupResult::Resolved carrying a Vec<IpAddr> rather than being
+            // a unit variant: the addresses a lookup actually returned must still be readable by
+            // a caller, even though combine()/check() only care whether the variant is Resolved
+            // at all right now.
+            let addr = IpAddr::V4(std::net::Ipv4Addr::new(198, 51, 100, 7));
+            let resolver = FakeResolver::new().with(
+                "example.com",
+                RecordType::A,
+                LookupResult::Resolved(vec![addr]),
+            );
+            match resolver.lookup("example.com", RecordType::A) {
+                LookupResult::Resolved(addrs) => assert_eq!(addrs, vec![addr]),
+                other => panic!("expected Resolved, got {other:?}"),
+            }
+        }
+
+        #[test]
+        fn resolved_with_no_addresses_still_combines_to_alive() {
+            // combine() only asks whether a side is Resolved at all, never inspects the address
+            // list itself — an empty Vec (a lookup that reports "resolved" but couldn't attach
+            // any address, e.g. a synthetic or partially-decoded answer) must still count.
+            assert_eq!(
+                combine(
+                    LookupResult::Resolved(vec![]),
+                    LookupResult::Unknown(UnknownReason::Timeout)
+                ),
+                Verdict::Alive
+            );
         }
 
         #[test]
