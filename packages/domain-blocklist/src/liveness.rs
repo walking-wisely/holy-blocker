@@ -20,7 +20,7 @@
 //!   and AAAA queries into one; there is no shortcut, hence [`RecordType`] has exactly two values.
 //! - [RFC 2606](https://www.rfc-editor.org/rfc/rfc2606) and
 //!   [RFC 6761](https://www.rfc-editor.org/rfc/rfc6761) — the reserved, guaranteed-never-to-resolve
-//!   names [`CanaryConfig::dead_control`] is meant to be drawn from.
+//!   names [`CanaryConfig::dead_controls`] is meant to be drawn from.
 
 use crate::types::Timestamp;
 
@@ -144,13 +144,21 @@ pub fn due_for_check(cache_entry: Option<&CacheEntry>, now: Timestamp, ttl_secon
     }
 }
 
-/// The fixed control set `canary_check` verifies before trusting any real sweep result, per the
-/// plan: several known-always-alive, definitely-non-adult domains, plus at least one RFC
-/// 2606/6761 reserved name guaranteed never to resolve.
+/// A fixed set of domains with a **known** expected [`Verdict`] (never `Unknown`), used to sanity
+/// check the resolver itself before trusting anything it says about the real sweep. The two lists
+/// are deliberately the same shape — both are "domains this build already knows the answer for" —
+/// because a resolver can misbehave in either direction: a content-filtering resolver NXDOMAINs
+/// real sites it blocks (caught by `alive_controls`, several known-always-alive, definitely-non-
+/// adult domains), and a wildcard-sink resolver resolves everything, including names that must
+/// never resolve (caught by `dead_controls`, drawn from the RFC 2606/6761 reserved, guaranteed-
+/// never-to-resolve names). `dead_controls` takes more than one for the same reason
+/// `alive_controls` does: a single control is one resolver quirk away from a false pass — e.g. a
+/// resolver that only mis-answers under `test.` and not `invalid.` — and `canary_check` runs the
+/// full set either way, so there is no cost to including more than one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CanaryConfig {
     pub alive_controls: Vec<String>,
-    pub dead_control: String,
+    pub dead_controls: Vec<String>,
 }
 
 /// The result of one [`canary_check`] run. `Failed` names which control domain misbehaved and
@@ -163,11 +171,12 @@ pub enum CanaryResult {
     Failed { detail: String },
 }
 
-/// Runs the control set in `config` against `resolver` and reports whether every control answered
-/// as expected. Per the plan, **any** canary result other than expected must abort the entire
-/// sweep — this function only reports that; discarding the sweep's verdicts and refusing to write
-/// the cache back is the caller's (`cli`, module 7, unbuilt) responsibility, since there is no way
-/// to know at which query a lying resolver started lying and so no partial sweep to salvage.
+/// Runs every control in `config` — both `alive_controls` and `dead_controls` — against `resolver`
+/// and reports whether each answered as expected. Per the plan, **any** canary result other than
+/// expected must abort the entire sweep — this function only reports that; discarding the sweep's
+/// verdicts and refusing to write the cache back is the caller's (`cli`, module 7, unbuilt)
+/// responsibility, since there is no way to know at which query a lying resolver started lying and
+/// so no partial sweep to salvage.
 pub fn canary_check<R: DnsLookup + ?Sized>(resolver: &R, config: &CanaryConfig) -> CanaryResult {
     for domain in &config.alive_controls {
         let verdict = check(resolver, domain);
@@ -180,14 +189,13 @@ pub fn canary_check<R: DnsLookup + ?Sized>(resolver: &R, config: &CanaryConfig) 
         }
     }
 
-    let dead_verdict = check(resolver, &config.dead_control);
-    if dead_verdict != Verdict::Dead {
-        return CanaryResult::Failed {
-            detail: format!(
-                "dead control {:?} expected Verdict::Dead, got {:?}",
-                config.dead_control, dead_verdict
-            ),
-        };
+    for domain in &config.dead_controls {
+        let verdict = check(resolver, domain);
+        if verdict != Verdict::Dead {
+            return CanaryResult::Failed {
+                detail: format!("dead control {domain:?} expected Verdict::Dead, got {verdict:?}"),
+            };
+        }
     }
 
     CanaryResult::Passed
@@ -413,8 +421,10 @@ mod tests {
         fn config() -> CanaryConfig {
             CanaryConfig {
                 alive_controls: vec!["example.com".to_string(), "iana.org".to_string()],
-                // RFC 2606 §2 reserves "invalid." as guaranteed never to resolve.
-                dead_control: "invalid.".to_string(),
+                // RFC 2606 §2 reserves "invalid." as guaranteed never to resolve; RFC 6761 §6.2
+                // reserves a "test." name the same way. Two dead controls, not one, so a resolver
+                // that only mis-answers one reserved name still fails the canary.
+                dead_controls: vec!["invalid.".to_string(), "example.test.".to_string()],
             }
         }
 
@@ -423,7 +433,8 @@ mod tests {
             let resolver = FakeResolver::new()
                 .with_alive("example.com")
                 .with_alive("iana.org")
-                .with_dead("invalid.");
+                .with_dead("invalid.")
+                .with_dead("example.test.");
             assert_eq!(canary_check(&resolver, &config()), CanaryResult::Passed);
         }
 
@@ -434,7 +445,8 @@ mod tests {
             let resolver = FakeResolver::new()
                 .with_dead("example.com")
                 .with_alive("iana.org")
-                .with_dead("invalid.");
+                .with_dead("invalid.")
+                .with_dead("example.test.");
             match canary_check(&resolver, &config()) {
                 CanaryResult::Failed { detail } => {
                     assert!(detail.contains("example.com"));
@@ -451,10 +463,30 @@ mod tests {
             let resolver = FakeResolver::new()
                 .with_alive("example.com")
                 .with_alive("iana.org")
-                .with_alive("invalid.");
+                .with_alive("invalid.")
+                .with_alive("example.test.");
             match canary_check(&resolver, &config()) {
                 CanaryResult::Failed { detail } => {
                     assert!(detail.contains("invalid."));
+                    assert!(detail.contains("Dead"));
+                }
+                CanaryResult::Passed => panic!("expected the canary to fail"),
+            }
+        }
+
+        #[test]
+        fn a_resolver_that_only_mis_answers_the_second_dead_control_still_fails() {
+            // The named reason dead_controls holds more than one entry: a resolver could pass a
+            // single dead control by coincidence (or a narrowly scoped rewrite rule) while still
+            // resolving other reserved names to a sink.
+            let resolver = FakeResolver::new()
+                .with_alive("example.com")
+                .with_alive("iana.org")
+                .with_dead("invalid.")
+                .with_alive("example.test.");
+            match canary_check(&resolver, &config()) {
+                CanaryResult::Failed { detail } => {
+                    assert!(detail.contains("example.test."));
                     assert!(detail.contains("Dead"));
                 }
                 CanaryResult::Passed => panic!("expected the canary to fail"),
@@ -478,7 +510,8 @@ mod tests {
                     LookupResult::Unknown(UnknownReason::Timeout),
                 )
                 .with_alive("iana.org")
-                .with_dead("invalid.");
+                .with_dead("invalid.")
+                .with_dead("example.test.");
             assert!(matches!(
                 canary_check(&resolver, &config()),
                 CanaryResult::Failed { .. }

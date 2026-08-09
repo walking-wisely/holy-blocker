@@ -786,16 +786,19 @@ decision doc's [Distribution](../../decisions/domain-blocklist-sourcing.md#distr
    before `last_checked`) as "just checked" rather than underflowing into a bogus multi-decade gap
    that would read as due regardless of TTL. `should_prune()` is the one-line rule "only `Dead`
    prunes," tested separately for first-seen-`Unknown` vs. previously-cached-`Unknown` per the
-   plan's own split. `canary_check()` runs every `alive_controls` entry then the `dead_control`
-   through `check()` and returns `CanaryResult::Failed { detail }` naming which control domain
-   misbehaved and what was expected — distinguishing a family-filtering resolver (an alive control
-   comes back `Dead`), a wildcard-sink resolver (the dead control comes back `Alive`), and an
-   inconclusive resolver (a control comes back `Unknown`, which fails the canary even though a
+   plan's own split. `canary_check()` runs every `alive_controls` entry then every `dead_controls`
+   entry through `check()` and returns `CanaryResult::Failed { detail }` naming which control
+   domain misbehaved and what was expected — distinguishing a family-filtering resolver (an alive
+   control comes back `Dead`), a wildcard-sink resolver (a dead control comes back `Alive`), and
+   an inconclusive resolver (a control comes back `Unknown`, which fails the canary even though a
    real sweep would keep an `Unknown` domain, since the control set is supposed to be
    unambiguous) as three distinct, separately tested failures; it reports the mismatch only —
    discarding the sweep and refusing to write the cache back on any canary failure is `cli`'s job,
-   per the plan. 19 tests. Not yet consumed by `fst_build` or `cli` (modules 4, 7 — both still
-   unbuilt).
+   per the plan. **`dead_controls` is a `Vec`, symmetric with `alive_controls`**, not a single
+   `String` — a lone dead control is one resolver quirk away from a false pass (e.g. a rewrite
+   rule scoped to one reserved name and not another), and running the full set costs nothing extra
+   since `canary_check` already loops. 20 tests (119 total). Not yet consumed by `fst_build` or
+   `cli` (modules 4, 7 — both still unbuilt).
 6. `fst_build.rs` — pin against a small hand-built key set first (a handful of domains sharing
    prefixes and suffixes, mixed `Apex` and `ExactHost`) and assert exact-match, label-boundary
    scoping, and **anchored** prefix-streaming behavior before building the real list.
