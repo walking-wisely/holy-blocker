@@ -51,7 +51,7 @@ mod cache;
 mod canary;
 mod lookup;
 
-pub use cache::{CacheEntry, due_for_check, should_prune};
+pub use cache::{CacheEntry, due_for_check, is_special_use_domain, should_prune};
 pub use canary::{CanaryConfig, CanaryConfigError, CanaryResult, canary_check, nonce_dead_control};
 pub use lookup::{DnsLookup, LookupResult, RecordType, UnknownReason, Verdict, check, combine};
 
