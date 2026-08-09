@@ -211,6 +211,28 @@ const MAX_NAME_OCTETS: usize = 255;
 /// availability cliff: whoever configures `base_domain` must keep it wildcard-free for as long as
 /// it's used this way.
 ///
+/// **Second trap, measured live and just as fatal: `base_domain` must not sit behind a zone that
+/// answers a genuinely nonexistent name with NODATA instead of NXDOMAIN.** Several major DNS
+/// providers — Cloudflare foremost among them — answer an unregistered subdomain of a zone they
+/// host with RCODE 0 NODATA rather than RCODE 3 NXDOMAIN, a technique called "compact denial of
+/// existence" (an NSEC3 white-lie synthesis meant to prevent zone enumeration, distinct from the
+/// aggressive-caching NODATA case [`UnknownReason::NoData`](super::lookup::UnknownReason::NoData)
+/// documents). [`combine`](super::lookup::combine) never treats NODATA as `Dead` — that's the
+/// correct call for [`UnknownReason::NoData`]'s own documented case (a `www`-only zone's apex),
+/// but it means a `base_domain` hosted this way makes `<nonce>.base_domain` read `Unknown`, not
+/// `Dead`, on *every* nonce — the dead control fails on every run exactly like the wildcard trap
+/// above, and the sweep aborts, permanently, on a configuration mistake rather than a real
+/// resolver problem.
+///
+/// **`example.com` is Cloudflare-hosted and exhibits exactly this behavior, measured live — do not
+/// use it as a `base_domain`, including as a copy-pasted illustrative example**, which an earlier
+/// version of this doc comment and this file's own tests did (the tests below build purely
+/// syntactic strings and never resolve anything, so they were not themselves broken by this — but
+/// they read as an implicit recommendation and have been renamed away from `example.com` to remove
+/// that appearance). Before configuring any real `base_domain`, verify with `dig +dnssec
+/// <random-label>.<base_domain>` (or equivalent) that the answer is a clean NXDOMAIN, not a
+/// NOERROR/empty NODATA response.
+///
 /// # Validation
 ///
 /// Returns `Err` rather than a bare `String` when the constructed name would violate [RFC 1035
@@ -320,6 +342,16 @@ pub enum CanaryResult {
 /// it periodically (e.g. every few thousand queries) through the sweep loop with the current
 /// `now`, and use each [`CanaryResult::checked_at`](CanaryResult) to discard verdicts collected
 /// back to the last passing canary rather than either the whole sweep or nothing.
+///
+/// # Not the same claim [`should_prune`](super::should_prune) makes about the same control names
+///
+/// `dead_controls` is typically `invalid.`/a name under `test.` — the exact special-use names
+/// [`should_prune`](super::should_prune) refuses to trust a `Dead` verdict on, with the doc-
+/// comment claim that such a verdict "proves nothing." Using them here as proof the resolver is
+/// honest is not a contradiction; see [`should_prune`](super::should_prune)'s doc comment for why
+/// the two functions are asking different questions of the same verdict — one about what it
+/// proves about *the domain's registration state*, the other about what it proves about *the
+/// resolver's behavior against a known-correct answer*.
 pub fn canary_check<R: DnsLookup + ?Sized>(
     resolver: &R,
     config: &CanaryConfig,
@@ -406,29 +438,29 @@ mod tests {
             // prefix is allowlistable by pattern almost as easily as a fixed nonce, and it would
             // brand every probe with a project-identifying label sent to a third-party zone.
             assert_eq!(
-                nonce_dead_control("example.com", "abc123"),
-                Ok("abc123.example.com".to_string())
+                nonce_dead_control("registrar-controlled.net", "abc123"),
+                Ok("abc123.registrar-controlled.net".to_string())
             );
         }
 
         #[test]
         fn different_nonces_produce_different_domains() {
-            let first = nonce_dead_control("example.com", "aaaa").unwrap();
-            let second = nonce_dead_control("example.com", "bbbb").unwrap();
+            let first = nonce_dead_control("registrar-controlled.net", "aaaa").unwrap();
+            let second = nonce_dead_control("registrar-controlled.net", "bbbb").unwrap();
             assert_ne!(first, second);
         }
 
         #[test]
         fn different_base_domains_produce_different_domains() {
-            let first = nonce_dead_control("example.com", "abc123").unwrap();
-            let second = nonce_dead_control("example.org", "abc123").unwrap();
+            let first = nonce_dead_control("registrar-controlled.net", "abc123").unwrap();
+            let second = nonce_dead_control("second-registrar.net", "abc123").unwrap();
             assert_ne!(first, second);
         }
 
         #[test]
         fn empty_nonce_is_rejected() {
             assert_eq!(
-                nonce_dead_control("example.com", ""),
+                nonce_dead_control("registrar-controlled.net", ""),
                 Err(NonceDomainError::EmptyNonce)
             );
         }
@@ -447,11 +479,11 @@ mod tests {
             // the nonce would either be silently mangled by a real client or smuggle an extra
             // label boundary into what is supposed to be one opaque label.
             assert_eq!(
-                nonce_dead_control("example.com", "abc_123"),
+                nonce_dead_control("registrar-controlled.net", "abc_123"),
                 Err(NonceDomainError::NonceNotLdh)
             );
             assert_eq!(
-                nonce_dead_control("example.com", "abc.123"),
+                nonce_dead_control("registrar-controlled.net", "abc.123"),
                 Err(NonceDomainError::NonceNotLdh)
             );
         }
@@ -459,16 +491,17 @@ mod tests {
         #[test]
         fn a_base_domain_with_non_ldh_characters_is_rejected() {
             assert_eq!(
-                nonce_dead_control("exa mple.com", "abc123"),
+                nonce_dead_control("reg controlled.net", "abc123"),
                 Err(NonceDomainError::BaseDomainNotLdh)
             );
         }
 
         #[test]
         fn a_base_domain_with_an_empty_label_is_rejected() {
-            // "example..com" splits into an empty middle label, which is not a valid LDH label.
+            // "registrar-controlled..net" splits into an empty middle label, which is not a
+            // valid LDH label.
             assert_eq!(
-                nonce_dead_control("example..com", "abc123"),
+                nonce_dead_control("registrar-controlled..net", "abc123"),
                 Err(NonceDomainError::BaseDomainNotLdh)
             );
         }
@@ -482,7 +515,7 @@ mod tests {
                 Err(NonceDomainError::LabelTooLong)
             );
             assert_eq!(
-                nonce_dead_control("example.com", &long_label),
+                nonce_dead_control("registrar-controlled.net", &long_label),
                 Err(NonceDomainError::LabelTooLong)
             );
         }

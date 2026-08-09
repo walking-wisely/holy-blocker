@@ -126,6 +126,31 @@ pub fn is_special_use_domain(domain: &str) -> bool {
 /// defence in depth; rejecting these entries earlier (merge time, a different crate/module) is the
 /// primary control, and this guard is what makes the failure this reviewer flagged impossible
 /// rather than merely prevented upstream.
+///
+/// **`verdict` MUST be a *corroborated* verdict** — the output of
+/// [`corroborate`](super::corroborate) (or [`check_corroborated`](super::check_corroborated))
+/// applied across two independently-configured resolvers, never a single resolver's own
+/// [`check`](super::lookup::check) result. See [`corroborate`](super::corroborate)'s doc comment
+/// for why a lone resolver's `Dead` is no longer sufficient proof on its own.
+///
+/// # This is not the same claim [`canary_check`](super::canary_check) makes about the same names
+///
+/// It can look contradictory that this function treats a `Dead` verdict on `.invalid`/`.test` as
+/// proof of nothing, while [`canary_check`](super::canary_check) uses exactly those names —
+/// expecting `Dead` from them — as its evidence the resolver is behaving honestly. They are not in
+/// tension: the two functions are asking different questions about the same `Dead` verdict. This
+/// function asks "does a `Dead` verdict *for this specific domain* prove that domain is
+/// unregistered?" — and for a special-use name the answer is no, because every honest resolver is
+/// specified to answer `Dead` for it regardless of what's actually registered, so the verdict
+/// carries zero information about registration state. `canary_check` asks a different question
+/// entirely: "does the resolver's *behavior* on a name whose correct answer is known in advance
+/// match that known-correct answer?" — for a name specified to always be `Dead`, an honest
+/// resolver reporting anything else (`Alive`, most dangerously) is exactly what identifies a
+/// wildcard-sink resolver, regardless of whether the domain itself is "really" registered. Put
+/// another way: this function is about what a verdict proves *about a domain*; `canary_check` is
+/// about what a verdict proves *about a resolver*. A `Dead` result on `.invalid` is uninformative
+/// evidence for the first question and definitive evidence for the second, simultaneously and
+/// without contradiction.
 pub fn should_prune(domain: &str, verdict: Verdict) -> bool {
     if is_special_use_domain(domain) {
         return false;
@@ -160,6 +185,24 @@ pub fn should_prune(domain: &str, verdict: Verdict) -> bool {
 /// `quarantine_seconds` is caller-supplied, not hardcoded, matching `due_for_check`'s
 /// `ttl_seconds` convention — this module keeps thresholds as parameters. ~35 days (past the
 /// Redemption Grace Period's 30+5-day window) is the recommended value a caller might pass.
+///
+/// Like [`should_prune`], **`verdict` (and, transitively, every `Dead` read that ever set
+/// `entry.first_dead_at`) MUST be a corroborated verdict** — see
+/// [`corroborate`](super::corroborate). This matters for a class of cause this hysteresis window
+/// does not, by itself, cover: a *deterministic* false-`Dead` cause specific to one resolver's own
+/// implementation (e.g. an over-aggressive QNAME-minimization implementation misbehaving against
+/// an authoritative server that predates [RFC 8020](https://www.rfc-editor.org/rfc/rfc8020))
+/// reproduces the same wrong answer on every sweep against that resolver, so a domain affected by
+/// it would eventually age past any quarantine window and be pruned regardless of how long that
+/// window is — this hysteresis mechanism only protects against causes that are transient in time
+/// (a registrar hold, an RGP window, a transfer), not causes that are constant in time but
+/// specific to one resolver's software. Tracking `first_dead_at` off the *corroborated* verdict
+/// closes that gap: a domain that a buggy resolver reads `Dead` forever, but a second,
+/// differently-implemented resolver never agrees with, never becomes `Dead` in the corroborated
+/// verdict in the first place, so `first_dead_at` is never set and this quarantine logic never
+/// even engages for it — the two mechanisms are complementary, covering time-bounded and
+/// resolver-specific-deterministic causes respectively, and neither substitutes for the other. See
+/// `corroboration`'s test module for a regression test pinning this composition down directly.
 pub fn should_prune_with_hysteresis(
     entry: &CacheEntry,
     domain: &str,
