@@ -290,14 +290,36 @@ pub trait DnsLookup {
     fn lookup(&self, domain: &str, record: RecordType) -> LookupResult;
 }
 
-/// Looks up `domain`'s liveness: one A and one AAAA query, combined per [`combine`]'s ordering.
-/// Relies on the caller's [`DnsLookup`] impl to distinguish a direct NXDOMAIN on `domain` itself
-/// from one reached via a dead-ended CNAME or DNAME chain ([`LookupResult::NxDomainViaChain`], RFC
-/// 6604 §3 / RFC 6672) — only the former can ever combine into [`Verdict::Dead`]. See
-/// [`DnsLookup`]'s doc comment for the truncation-retry and chain-loop/depth-limit contract a real
-/// implementation must satisfy.
+/// Looks up `domain`'s liveness: one A query, and — **only if the A query did not already
+/// resolve** — one AAAA query, combined per [`combine`]'s ordering. Relies on the caller's
+/// [`DnsLookup`] impl to distinguish a direct NXDOMAIN on `domain` itself from one reached via a
+/// dead-ended CNAME or DNAME chain ([`LookupResult::NxDomainViaChain`], RFC 6604 §3 / RFC 6672) —
+/// only the former can ever combine into [`Verdict::Dead`]. See [`DnsLookup`]'s doc comment for
+/// the truncation-retry and chain-loop/depth-limit contract a real implementation must satisfy.
+///
+/// # The AAAA short-circuit
+///
+/// [`combine`]'s rule 1 is `(Resolved, _) | (_, Resolved) => Alive` — either side resolving wins
+/// outright, regardless of what the other side is. That means once the A lookup comes back
+/// [`LookupResult::Resolved`], no possible AAAA answer can change the verdict away from `Alive`:
+/// every arm of `combine`'s match that would produce anything other than `Alive` requires the A
+/// side to be *not* `Resolved`. So this function skips the AAAA query entirely in that case and
+/// returns `Verdict::Alive` directly, rather than issuing a second query whose answer is already
+/// known to be irrelevant.
+///
+/// ~97% of the list is alive today, so this roughly halves the sweep's total query volume — the
+/// plan's 23 qps / 24-hour budget is derived from "~2,000,000 queries" (one A + one AAAA per
+/// domain); skipping AAAA whenever A resolves brings that closer to ~1,050,000, with no change to
+/// any verdict.
+///
+/// When A does *not* resolve, AAAA is still always issued — an AAAA-only address, or AAAA-side
+/// evidence (a different `Unknown` reason, a different NXDOMAIN authentication/EDE combination)
+/// can still change the outcome per [`combine`]'s remaining rules, so nothing is skippable there.
 pub fn check<R: DnsLookup + ?Sized>(resolver: &R, domain: &str) -> Verdict {
     let a = resolver.lookup(domain, RecordType::A);
+    if matches!(a, LookupResult::Resolved(_)) {
+        return Verdict::Alive;
+    }
     let aaaa = resolver.lookup(domain, RecordType::Aaaa);
     combine(a, aaaa)
 }
@@ -664,5 +686,96 @@ mod tests {
             check(&resolver, "unconfigured.example"),
             Verdict::Unknown(UnknownReason::NoData)
         );
+    }
+
+    /// A resolver that panics if its AAAA side is ever queried, and otherwise answers A with a
+    /// fixed [`LookupResult`]. Exists solely to prove `check()`'s short-circuit actually skips the
+    /// second query rather than merely happening to produce the right verdict — a test that only
+    /// asserts on the final `Verdict` wouldn't catch a regression back to always-querying-both,
+    /// since `combine()` would still compute `Alive` from a real AAAA answer.
+    struct PanicsOnAaaaResolver {
+        a_result: LookupResult,
+    }
+
+    impl DnsLookup for PanicsOnAaaaResolver {
+        fn lookup(&self, _domain: &str, record: RecordType) -> LookupResult {
+            match record {
+                RecordType::A => self.a_result.clone(),
+                RecordType::Aaaa => {
+                    panic!("AAAA lookup must not be issued when A already resolved")
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn check_never_issues_the_aaaa_lookup_when_a_already_resolved() {
+        let resolver = PanicsOnAaaaResolver {
+            a_result: LookupResult::Resolved(vec![IpAddr::V4(std::net::Ipv4Addr::new(
+                192, 0, 2, 1,
+            ))]),
+        };
+        // Would panic inside PanicsOnAaaaResolver::lookup if check() queried AAAA at all.
+        assert_eq!(check(&resolver, "example.com"), Verdict::Alive);
+    }
+
+    /// A resolver that counts how many times each record type was queried, so a test can assert
+    /// on call counts directly rather than only inferring them from a lack of panic.
+    #[derive(Default)]
+    struct CountingResolver {
+        a_calls: std::cell::Cell<u32>,
+        aaaa_calls: std::cell::Cell<u32>,
+        a_result: Option<LookupResult>,
+        aaaa_result: Option<LookupResult>,
+    }
+
+    impl DnsLookup for CountingResolver {
+        fn lookup(&self, _domain: &str, record: RecordType) -> LookupResult {
+            match record {
+                RecordType::A => {
+                    self.a_calls.set(self.a_calls.get() + 1);
+                    self.a_result
+                        .clone()
+                        .unwrap_or(LookupResult::Unknown(UnknownReason::NoData))
+                }
+                RecordType::Aaaa => {
+                    self.aaaa_calls.set(self.aaaa_calls.get() + 1);
+                    self.aaaa_result
+                        .clone()
+                        .unwrap_or(LookupResult::Unknown(UnknownReason::NoData))
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn check_counts_exactly_one_query_when_a_resolves() {
+        let resolver = CountingResolver {
+            a_result: Some(LookupResult::Resolved(vec![IpAddr::V4(
+                std::net::Ipv4Addr::new(192, 0, 2, 1),
+            )])),
+            ..Default::default()
+        };
+        assert_eq!(check(&resolver, "example.com"), Verdict::Alive);
+        assert_eq!(resolver.a_calls.get(), 1);
+        assert_eq!(resolver.aaaa_calls.get(), 0);
+    }
+
+    #[test]
+    fn check_still_counts_two_queries_when_a_does_not_resolve() {
+        let resolver = CountingResolver {
+            a_result: Some(LookupResult::NxDomain {
+                authenticated: true,
+                extended_error: None,
+            }),
+            aaaa_result: Some(LookupResult::NxDomain {
+                authenticated: true,
+                extended_error: None,
+            }),
+            ..Default::default()
+        };
+        assert_eq!(check(&resolver, "example.invalid"), Verdict::Dead);
+        assert_eq!(resolver.a_calls.get(), 1);
+        assert_eq!(resolver.aaaa_calls.get(), 1);
     }
 }
