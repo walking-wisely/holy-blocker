@@ -27,8 +27,13 @@
 //!   is the equivalent NXDOMAIN negative-caching definition.
 //! - [RFC 6604 §3](https://www.rfc-editor.org/rfc/rfc6604#section-3) — when a query is answered via
 //!   a CNAME chain, the RCODE describes the **last** name in the chain, not the queried name; why
-//!   [`LookupResult::NxDomainViaCname`] exists and is never treated as proof the queried name itself
+//!   [`LookupResult::NxDomainViaChain`] exists and is never treated as proof the queried name itself
 //!   is unregistered.
+//! - [RFC 6672](https://www.rfc-editor.org/rfc/rfc6672) — DNAME redirection, which shares RFC
+//!   6604 §3's "the RCODE describes the target" property identically (a DNAME is itself resolved
+//!   via a synthesized CNAME) and so is folded into the same [`LookupResult::NxDomainViaChain`]
+//!   variant; §2.2 also defines YXDOMAIN (RCODE 6), returned when a DNAME substitution would exceed
+//!   255 octets.
 //! - [RFC 8914](https://www.rfc-editor.org/rfc/rfc8914) — Extended DNS Errors. §4 defines the code
 //!   registry [`LookupResult::NxDomain::extended_error`] stores raw values from; codes 4 (Forged
 //!   Answer), 6 (DNSSEC Bogus), 15 (Blocked), 16 (Censored) and 17 (Filtered) are "this negative
@@ -37,6 +42,10 @@
 //!   variant reflects the DNSSEC AD bit (a validating resolver's own claim that NSEC/NSEC3 proved
 //!   the name doesn't exist) rather than a spec this module parses a wire format against — the AD
 //!   bit itself is defined by [RFC 4035 §3.2.3](https://www.rfc-editor.org/rfc/rfc4035#section-3.2.3).
+//! - [RFC 1035 §4.2.1](https://www.rfc-editor.org/rfc/rfc1035#section-4.2.1) and [RFC
+//!   7766](https://www.rfc-editor.org/rfc/rfc7766) — TC=1 truncation and the mandatory TCP retry; see
+//!   [`DnsLookup`]'s doc comment for the implementation contract this module cannot enforce through
+//!   its return type alone.
 
 mod cache;
 mod canary;

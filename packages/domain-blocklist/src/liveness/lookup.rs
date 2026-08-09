@@ -43,14 +43,33 @@ pub enum UnknownReason {
     ServFail,
     /// RFC 1035 §4.1.1 RCODE 5 — the resolver declined to answer at all.
     Refused,
+    /// RFC 1035 §4.1.1 RCODE 1 — the query itself couldn't be interpreted (a malformed request, or
+    /// a middlebox mangling it in flight). Distinct from [`UnknownReason::Malformed`], which is
+    /// about an unparseable *response*: this is the resolver's own claim that the *request* made no
+    /// sense, and conflating the two would misreport which end of the exchange the evidence points
+    /// at.
+    FormErr,
+    /// RFC 1035 §4.1.1 RCODE 4 — the resolver understood the query but does not support the
+    /// requested kind of lookup. Some middleboxes and older resolvers answer AAAA this way instead
+    /// of a clean NODATA or NXDOMAIN; kept distinct from [`UnknownReason::Refused`] (RCODE 5, a
+    /// deliberate policy refusal) since a log line naming the RCODE should say which one fired.
+    NotImp,
     /// No response arrived within the resolver client's deadline.
     Timeout,
-    /// A response arrived but could not be parsed as a valid DNS message.
+    /// A response arrived but could not be parsed as a valid DNS message. **Never the right home
+    /// for an unretried TC=1 (truncated) response** — see [`DnsLookup::lookup`]'s doc comment: an
+    /// implementation that doesn't retry over TCP per RFC 1035 §4.2.1 / RFC 7766 must not surface
+    /// truncation this way, since it permanently strands the entry in `Verdict::Unknown`.
     Malformed,
-    /// The queried name resolved via a CNAME chain whose terminal target came back NXDOMAIN (RFC
-    /// 6604 §3) — see [`LookupResult::NxDomainViaCname`]. Named so a log line stating this reason
-    /// says exactly what evidence was seen, not just that the answer was inconclusive.
-    CnameToDeadTarget,
+    /// The queried name resolved via a CNAME (RFC 1035 §3.3.1) or DNAME (RFC 6672) chain whose
+    /// terminal target came back NXDOMAIN — see [`LookupResult::NxDomainViaChain`]. Named so a log
+    /// line stating this reason says exactly what evidence was seen, not just that the answer was
+    /// inconclusive. DNAME redirection carries the identical "the RCODE describes the target, not
+    /// the queried name" property CNAME does (RFC 6604 §3), plus its own RFC 6672 §2.2 negative
+    /// answer, YXDOMAIN (RCODE 6), returned when expanding the substitution would exceed 255
+    /// octets — that case is folded into this same variant rather than given its own, since the
+    /// evidentiary status ("not proof the queried name is dead") is identical either way.
+    ChainToDeadTarget,
     /// Both sides answered `NxDomain`, but at least one carried an RFC 8914 Extended DNS Error
     /// code signalling the negative answer is policy-driven rather than a fact about the registry
     /// (4 Forged Answer, 6 DNSSEC Bogus, 15 Blocked, 16 Censored, 17 Filtered). One filtered
@@ -107,13 +126,18 @@ pub enum LookupResult {
         authenticated: bool,
         extended_error: Option<u16>,
     },
-    /// The queried name resolved via a CNAME chain, but the chain's **terminal target** came back
-    /// NXDOMAIN. Per [RFC 6604 §3](https://www.rfc-editor.org/rfc/rfc6604#section-3), the RCODE in
-    /// that response describes the last name in the chain, not the queried name itself — so this is
-    /// evidence the *target* doesn't currently resolve, not that the queried name is unregistered.
-    /// The queried name can still be a live registration that gets repointed tomorrow, so this must
-    /// never combine into [`Verdict::Dead`] the way a direct [`LookupResult::NxDomain`] can.
-    NxDomainViaCname,
+    /// The queried name resolved via a CNAME ([RFC 1035
+    /// §3.3.1](https://www.rfc-editor.org/rfc/rfc1035#section-3.3.1)) or DNAME ([RFC
+    /// 6672](https://www.rfc-editor.org/rfc/rfc6672)) chain, but the chain's **terminal target**
+    /// came back NXDOMAIN (or, for a DNAME substitution overflowing 255 octets, RFC 6672 §2.2's own
+    /// YXDOMAIN). Per [RFC 6604 §3](https://www.rfc-editor.org/rfc/rfc6604#section-3) — a property
+    /// DNAME redirection shares identically, since a DNAME is itself resolved via a synthesized
+    /// CNAME — the RCODE in that response describes the last name in the chain, not the queried
+    /// name itself, so this is evidence the *target* doesn't currently resolve, not that the
+    /// queried name is unregistered. The queried name can still be a live registration that gets
+    /// repointed tomorrow, so this must never combine into [`Verdict::Dead`] the way a direct
+    /// [`LookupResult::NxDomain`] can.
+    NxDomainViaChain,
     Unknown(UnknownReason),
 }
 
@@ -142,13 +166,14 @@ pub enum Verdict {
 ///      exactly what a hijacking resolver forges;
 ///    - only when both conditions above are satisfied — no filtering EDE, both authenticated —
 ///      is the result `Dead`, the only case that proves non-registration.
-/// 3. Otherwise, if either side is [`LookupResult::NxDomainViaCname`], the result is
-///    `Unknown(CnameToDeadTarget)`, never `Dead`. Per [RFC 6604
-///    §3](https://www.rfc-editor.org/rfc/rfc6604#section-3), an NXDOMAIN reached through a CNAME
-///    chain describes the chain's terminal target, not the queried name — so a queried name that
-///    resolved via a dead-ended CNAME chain (whether paired with a plain `NxDomain`, another
-///    `NxDomainViaCname`, or an `Unknown`) is not proven unregistered and must be kept, per this
-///    module's "false negatives are the budget, false positives are the price" rule.
+/// 3. Otherwise, if either side is [`LookupResult::NxDomainViaChain`], the result is
+///    `Unknown(ChainToDeadTarget)`, never `Dead`. Per [RFC 6604
+///    §3](https://www.rfc-editor.org/rfc/rfc6604#section-3) (and identically for DNAME redirection,
+///    [RFC 6672](https://www.rfc-editor.org/rfc/rfc6672)), an NXDOMAIN reached through a CNAME or
+///    DNAME chain describes the chain's terminal target, not the queried name — so a queried name
+///    that resolved via a dead-ended CNAME or DNAME chain (whether paired with a plain `NxDomain`,
+///    another `NxDomainViaChain`, or an `Unknown`) is not proven unregistered and must be kept, per
+///    this module's "false negatives are the budget, false positives are the price" rule.
 /// 4. Otherwise, at least one side is `Unknown` and neither is `Resolved` — the result is
 ///    `Unknown`. This is the mixed `NxDomain`/`Unknown` case: one family failing to resolve while
 ///    the other is merely inconclusive must never be conflated with both families cleanly saying
@@ -182,8 +207,8 @@ pub fn combine(a: LookupResult, aaaa: LookupResult) -> Verdict {
                 Verdict::Unknown(UnknownReason::UnauthenticatedNxDomain)
             }
         }
-        (LookupResult::NxDomainViaCname, _) | (_, LookupResult::NxDomainViaCname) => {
-            Verdict::Unknown(UnknownReason::CnameToDeadTarget)
+        (LookupResult::NxDomainViaChain, _) | (_, LookupResult::NxDomainViaChain) => {
+            Verdict::Unknown(UnknownReason::ChainToDeadTarget)
         }
         (LookupResult::Unknown(reason), _) => Verdict::Unknown(reason),
         (_, LookupResult::Unknown(reason)) => Verdict::Unknown(reason),
@@ -203,14 +228,40 @@ pub enum RecordType {
 /// — an explicitly configured resolver (defaulting to `1.1.1.1` / `2606:4700:4700::1111`, never
 /// the filtering `1.1.1.2`/`1.1.1.3` variants, and never the host's system resolver), per the
 /// plan.
+///
+/// # Implementation contract
+///
+/// This trait's return type cannot enforce the following on its own — they are properties of how
+/// `lookup` talks to the wire, not of the [`LookupResult`] it hands back — so a real implementation
+/// (module 7, unbuilt) MUST satisfy them, or the invariants the rest of this module is built on
+/// silently stop holding:
+///
+/// - **Truncation MUST be retried over TCP before returning.** A `TC=1` response (RFC 1035
+///   §4.2.1) means the UDP answer was cut short, and [RFC 7766](https://www.rfc-editor.org/rfc/rfc7766)
+///   requires a compliant client to redo the query over TCP rather than trust the truncated
+///   payload. An implementation that returns on the truncated UDP response anyway must not surface
+///   that as [`UnknownReason::Malformed`] — a `Malformed` verdict is exactly as untrustworthy as any
+///   other `Unknown` and so never prunes on its own, but an entry that is *always* truncated for
+///   this resolver would then be permanently stuck in `Verdict::Unknown` on every sweep, forever,
+///   with nothing to say why. Retry over TCP first; only report `Malformed` for a response that
+///   still can't be parsed as a valid DNS message after that retry.
+/// - **CNAME/DNAME chain following MUST detect loops and bound depth.** Nothing in [`LookupResult`]
+///   stops an implementation from following an indirection chain (CNAME, RFC 1035 §3.3.1; DNAME,
+///   RFC 6672) forever if two names point at each other, or from following an attacker-lengthened
+///   chain until it overflows some internal buffer. An implementation MUST detect a chain loop and
+///   MUST bound how many indirections it will follow, returning [`UnknownReason::Malformed`] (or,
+///   when the terminal answer is itself evidence — e.g. the chain's last hop came back NXDOMAIN —
+///   [`LookupResult::NxDomainViaChain`]) rather than looping forever or overflowing.
 pub trait DnsLookup {
     fn lookup(&self, domain: &str, record: RecordType) -> LookupResult;
 }
 
 /// Looks up `domain`'s liveness: one A and one AAAA query, combined per [`combine`]'s ordering.
 /// Relies on the caller's [`DnsLookup`] impl to distinguish a direct NXDOMAIN on `domain` itself
-/// from one reached via a dead-ended CNAME chain ([`LookupResult::NxDomainViaCname`], RFC 6604
-/// §3) — only the former can ever combine into [`Verdict::Dead`].
+/// from one reached via a dead-ended CNAME or DNAME chain ([`LookupResult::NxDomainViaChain`], RFC
+/// 6604 §3 / RFC 6672) — only the former can ever combine into [`Verdict::Dead`]. See
+/// [`DnsLookup`]'s doc comment for the truncation-retry and chain-loop/depth-limit contract a real
+/// implementation must satisfy.
 pub fn check<R: DnsLookup + ?Sized>(resolver: &R, domain: &str) -> Verdict {
     let a = resolver.lookup(domain, RecordType::A);
     let aaaa = resolver.lookup(domain, RecordType::Aaaa);
@@ -423,20 +474,85 @@ mod tests {
     }
 
     #[test]
+    fn formerr_is_unknown_not_malformed() {
+        // RFC 1035 §4.1.1 RCODE 1 — a middlebox that mangles or refuses AAAA still returns
+        // FORMERR, which has its own home distinct from a wire-parse failure (Malformed) or a
+        // deliberate policy refusal (Refused).
+        let resolver = FakeResolver::new()
+            .with(
+                "example.com",
+                RecordType::A,
+                LookupResult::Unknown(UnknownReason::FormErr),
+            )
+            .with(
+                "example.com",
+                RecordType::Aaaa,
+                LookupResult::Unknown(UnknownReason::FormErr),
+            );
+        assert_eq!(
+            check(&resolver, "example.com"),
+            Verdict::Unknown(UnknownReason::FormErr)
+        );
+    }
+
+    #[test]
+    fn notimp_is_unknown_not_refused() {
+        // RFC 1035 §4.1.1 RCODE 4 — "not implemented" is a different diagnosis than a deliberate
+        // RCODE 5 refusal, and a log line naming the RCODE must be able to say which one fired.
+        let resolver = FakeResolver::new()
+            .with(
+                "example.com",
+                RecordType::A,
+                LookupResult::Unknown(UnknownReason::NotImp),
+            )
+            .with(
+                "example.com",
+                RecordType::Aaaa,
+                LookupResult::Unknown(UnknownReason::NotImp),
+            );
+        assert_eq!(
+            check(&resolver, "example.com"),
+            Verdict::Unknown(UnknownReason::NotImp)
+        );
+    }
+
+    #[test]
+    fn formerr_paired_with_notimp_keeps_the_a_sides_reason() {
+        // Mirrors nxdomain_paired_with_unknown_is_unknown / unknown_paired_with_unknown_is_unknown:
+        // two distinct Unknown reasons on either side still combine to Unknown, keeping the A
+        // side's reason per combine()'s documented tie-break.
+        let resolver = FakeResolver::new()
+            .with(
+                "example.com",
+                RecordType::A,
+                LookupResult::Unknown(UnknownReason::FormErr),
+            )
+            .with(
+                "example.com",
+                RecordType::Aaaa,
+                LookupResult::Unknown(UnknownReason::NotImp),
+            );
+        assert_eq!(
+            check(&resolver, "example.com"),
+            Verdict::Unknown(UnknownReason::FormErr)
+        );
+    }
+
+    #[test]
     fn both_families_nxdomain_via_cname_is_unknown_not_dead() {
         // RFC 6604 §3: the RCODE describes the CNAME chain's terminal target, not the queried
         // name, so a name that resolved via a chain whose target is now NXDOMAIN in both
         // families is not proven unregistered — it must not be pruned as Dead.
         let resolver = FakeResolver::new()
-            .with("example.com", RecordType::A, LookupResult::NxDomainViaCname)
+            .with("example.com", RecordType::A, LookupResult::NxDomainViaChain)
             .with(
                 "example.com",
                 RecordType::Aaaa,
-                LookupResult::NxDomainViaCname,
+                LookupResult::NxDomainViaChain,
             );
         assert_eq!(
             check(&resolver, "example.com"),
-            Verdict::Unknown(UnknownReason::CnameToDeadTarget)
+            Verdict::Unknown(UnknownReason::ChainToDeadTarget)
         );
     }
 
@@ -445,7 +561,7 @@ mod tests {
         // A direct NXDOMAIN on one family plus a CNAME-chain NXDOMAIN on the other is still
         // not two direct NXDOMAINs on the queried name — only that combination is Dead.
         let resolver = FakeResolver::new()
-            .with("example.com", RecordType::A, LookupResult::NxDomainViaCname)
+            .with("example.com", RecordType::A, LookupResult::NxDomainViaChain)
             .with(
                 "example.com",
                 RecordType::Aaaa,
@@ -456,7 +572,7 @@ mod tests {
             );
         assert_eq!(
             check(&resolver, "example.com"),
-            Verdict::Unknown(UnknownReason::CnameToDeadTarget)
+            Verdict::Unknown(UnknownReason::ChainToDeadTarget)
         );
     }
 
@@ -464,7 +580,7 @@ mod tests {
     fn nxdomain_via_cname_paired_with_resolved_is_alive() {
         // An alive family wins regardless of what the other side reports.
         let resolver = FakeResolver::new()
-            .with("example.com", RecordType::A, LookupResult::NxDomainViaCname)
+            .with("example.com", RecordType::A, LookupResult::NxDomainViaChain)
             .with(
                 "example.com",
                 RecordType::Aaaa,
