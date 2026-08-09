@@ -75,11 +75,56 @@ impl CanaryConfig {
     }
 }
 
+/// Why [`nonce_dead_control`] refused to build a domain. Named per this module's "name the
+/// evidence" convention rather than a bare unit error — see [`CanaryConfigError`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NonceDomainError {
+    /// `nonce` was empty.
+    EmptyNonce,
+    /// `base_domain` was empty.
+    EmptyBaseDomain,
+    /// `nonce` contained a byte outside RFC 1035's LDH alphabet (letters, digits, hyphen) — see
+    /// [`nonce_dead_control`]'s doc comment for why this is checked here rather than left to fail
+    /// opaquely as an `Unknown` canary result.
+    NonceNotLdh,
+    /// A label of `base_domain` (split on `.`) contained a byte outside RFC 1035's LDH alphabet,
+    /// or was empty (e.g. a `..` in the input).
+    BaseDomainNotLdh,
+    /// A single label — `nonce`, or one label of `base_domain` — exceeded the 63-octet cap RFC
+    /// 1035 §2.3.4 places on every label.
+    LabelTooLong,
+    /// The fully constructed `<nonce>.<base_domain>` name exceeded the 255-octet cap RFC 1035
+    /// §2.3.4 places on a whole domain name (label octets, label-length octets, and the
+    /// terminating root label together).
+    NameTooLong,
+}
+
+/// A label is valid per RFC 1035's LDH convention (letters, digits, hyphen) if it is non-empty
+/// and every byte is ASCII alphanumeric or `-`. RFC 1035 itself defines the wire-format label
+/// syntax more permissively (`§2.3.4`); the LDH restriction is the convention actual DNS
+/// deployments — and any real client library — enforce for host names, and this label is about to
+/// be sent as one, so validating against what a real client will actually accept (rather than the
+/// bare wire-format grammar) is what avoids the "fails closed on a real client, but not until the
+/// opaque `Unknown` canary result" failure this validation exists to move earlier.
+fn is_ldh_label(label: &str) -> bool {
+    !label.is_empty()
+        && label
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+}
+
+/// RFC 1035 §2.3.4 caps a single label at this many octets.
+const MAX_LABEL_OCTETS: usize = 63;
+
+/// RFC 1035 §2.3.4 caps a whole domain name — label octets, one length octet per label, plus the
+/// terminating zero-length root label — at this many octets.
+const MAX_NAME_OCTETS: usize = 255;
+
 /// Builds a nonce dead-control domain — a random label under a real, currently-registered base
-/// domain, e.g. `hb-canary-<nonce>.example.com`. This function is **pure and deterministic**: it
-/// does not generate the nonce itself. `cli` (module 7, unbuilt) is responsible for generating a
-/// fresh random nonce per sweep run and calling this to build the actual dead-control domain
-/// string before constructing a [`CanaryConfig`].
+/// domain, e.g. `<nonce>.example.com`. This function is **pure and deterministic**: it does not
+/// generate the nonce itself. `cli` (module 7, unbuilt) is responsible for generating a fresh
+/// random nonce per sweep run and calling this to build the actual dead-control domain string
+/// before constructing a [`CanaryConfig`].
 ///
 /// # Why this control exists
 ///
@@ -93,18 +138,89 @@ impl CanaryConfig {
 ///
 /// A nonce label under a real, currently-registered base domain closes that gap: an unregistered
 /// `<nonce>.base_domain` genuinely NXDOMAINs on an honest resolver, so a resolver that rewrites it
-/// to a sink address is caught regardless of how it treats reserved TLDs. This is the same
-/// technique Chrome has long used for captive-portal/hijack detection, and there is no substitute
-/// for it. **It must be random per run** — a fixed, checked-in nonce could simply be allowlisted
-/// by a sink operator, defeating the control.
+/// to a sink address is caught regardless of how it treats reserved TLDs. **It must be random per
+/// run** — a fixed, checked-in nonce could simply be allowlisted by a sink operator, defeating the
+/// control. This function deliberately emits the **bare nonce as the whole label**, with no fixed
+/// project-identifying prefix: a stable, distinctive prefix (e.g. a checked-in `"hb-canary-"`) is
+/// allowlistable by *pattern* almost as cheaply as a fixed nonce is allowlistable by value, and it
+/// would additionally brand every probe — a project-identifying label sent, on every sweep, to a
+/// third-party base domain's authoritative servers and to whatever resolver operator is between
+/// them and the caller — which a local-first project has no reason to broadcast. A caller that
+/// wants its own stable debugging convention can still prepend one to the `nonce` it passes in;
+/// this function has no opinion on that, it only refuses to hardcode one.
+///
+/// This is the same general technique Chrome has long used for captive-portal/hijack detection —
+/// with one structural difference that is what makes this design still viable where Chrome's
+/// stopped being: Chrome's probes were **single-label** names with no registered parent, resolved
+/// directly against the root/TLD servers, and Chrome removed that check in M87 because too many
+/// enterprise/ISP resolvers legitimately intercept unqualified single-label lookups (e.g. to
+/// support search-suggestion or intranet conventions) for the signal to stay reliable. This
+/// function's nonce is instead a label **under a real, currently-registered zone**, resolved
+/// against that zone's own authoritative servers, never the root — so it doesn't trigger the
+/// single-label interception behavior Chrome's probes did, and the failure mode that killed
+/// Chrome's version doesn't apply here.
 ///
 /// `base_domain` must be a real, currently-registered domain the caller controls or trusts to
 /// always answer honestly for random subdomains (i.e., a domain where an unregistered
 /// `<nonce>.base_domain` genuinely NXDOMAINs). This module has no way to verify that property —
-/// it's a `cli`-level configuration responsibility, same as the non-empty invariant above only
-/// enforces cardinality, never content.
-pub fn nonce_dead_control(base_domain: &str, nonce: &str) -> String {
-    format!("hb-canary-{nonce}.{base_domain}")
+/// it's a `cli`-level configuration responsibility, same as [`CanaryConfig::new`]'s non-empty
+/// invariant only enforces cardinality, never content.
+///
+/// **Trap for module 7 (`cli`, unbuilt): `base_domain` must never gain a wildcard DNS record.**
+/// If it ever does, `<nonce>.base_domain` resolves for *every* nonce, so the dead control always
+/// reports `Alive`, the canary fails on every run, and every sweep aborts — permanently, and
+/// silently in the sense that nothing about the failure looks different from a genuinely hijacked
+/// resolver. This is a fail-closed outcome, not a fail-open one, but it is a non-obvious
+/// availability cliff: whoever configures `base_domain` must keep it wildcard-free for as long as
+/// it's used this way.
+///
+/// # Validation
+///
+/// Returns `Err` rather than a bare `String` when the constructed name would violate [RFC 1035
+/// §2.3.4](https://www.rfc-editor.org/rfc/rfc1035#section-2.3.4) (a label over [`MAX_LABEL_OCTETS`]
+/// octets, or a whole name over [`MAX_NAME_OCTETS`] octets) or when `nonce`/`base_domain` contain a
+/// byte outside RFC 1035's LDH alphabet (letters, digits, hyphen). A real DNS client library
+/// rejects a label or name violating either constraint, so accepting arbitrary bytes here would
+/// only defer that rejection to canary time — where it surfaces as an opaque `Verdict::Unknown` on
+/// the dead control and the whole sweep aborts with no indication *why*. Catching it at
+/// construction time turns that into an immediate, specific [`NonceDomainError`].
+pub fn nonce_dead_control(base_domain: &str, nonce: &str) -> Result<String, NonceDomainError> {
+    if nonce.is_empty() {
+        return Err(NonceDomainError::EmptyNonce);
+    }
+    if base_domain.is_empty() {
+        return Err(NonceDomainError::EmptyBaseDomain);
+    }
+    if !is_ldh_label(nonce) {
+        return Err(NonceDomainError::NonceNotLdh);
+    }
+    if nonce.len() > MAX_LABEL_OCTETS {
+        return Err(NonceDomainError::LabelTooLong);
+    }
+    for label in base_domain.split('.') {
+        if !is_ldh_label(label) {
+            return Err(NonceDomainError::BaseDomainNotLdh);
+        }
+        if label.len() > MAX_LABEL_OCTETS {
+            return Err(NonceDomainError::LabelTooLong);
+        }
+    }
+
+    let domain = format!("{nonce}.{base_domain}");
+
+    // RFC 1035 §2.3.4: total wire-format length is every label's length octet plus its content
+    // octets, plus the terminating zero-length root label — not just the presentation-format
+    // string length, which omits the length octets and the root label entirely.
+    let wire_octets: usize = domain
+        .split('.')
+        .map(|label| label.len() + 1)
+        .sum::<usize>()
+        + 1;
+    if wire_octets > MAX_NAME_OCTETS {
+        return Err(NonceDomainError::NameTooLong);
+    }
+
+    Ok(domain)
 }
 
 /// The result of one [`canary_check`] run. `Failed` collects **every** control that mismatched,
@@ -212,25 +328,109 @@ mod tests {
         use super::*;
 
         #[test]
-        fn builds_the_expected_label_format() {
+        fn builds_the_expected_label_format_with_no_project_branding() {
+            // The label is the bare nonce — no "hb-canary-" prefix, since a stable, distinctive
+            // prefix is allowlistable by pattern almost as easily as a fixed nonce, and it would
+            // brand every probe with a project-identifying label sent to a third-party zone.
             assert_eq!(
                 nonce_dead_control("example.com", "abc123"),
-                "hb-canary-abc123.example.com"
+                Ok("abc123.example.com".to_string())
             );
         }
 
         #[test]
         fn different_nonces_produce_different_domains() {
-            let first = nonce_dead_control("example.com", "aaaa");
-            let second = nonce_dead_control("example.com", "bbbb");
+            let first = nonce_dead_control("example.com", "aaaa").unwrap();
+            let second = nonce_dead_control("example.com", "bbbb").unwrap();
             assert_ne!(first, second);
         }
 
         #[test]
         fn different_base_domains_produce_different_domains() {
-            let first = nonce_dead_control("example.com", "abc123");
-            let second = nonce_dead_control("example.org", "abc123");
+            let first = nonce_dead_control("example.com", "abc123").unwrap();
+            let second = nonce_dead_control("example.org", "abc123").unwrap();
             assert_ne!(first, second);
+        }
+
+        #[test]
+        fn empty_nonce_is_rejected() {
+            assert_eq!(
+                nonce_dead_control("example.com", ""),
+                Err(NonceDomainError::EmptyNonce)
+            );
+        }
+
+        #[test]
+        fn empty_base_domain_is_rejected() {
+            assert_eq!(
+                nonce_dead_control("", "abc123"),
+                Err(NonceDomainError::EmptyBaseDomain)
+            );
+        }
+
+        #[test]
+        fn a_nonce_with_non_ldh_characters_is_rejected() {
+            // RFC 1035 labels are letters/digits/hyphen only; an underscore or a dot embedded in
+            // the nonce would either be silently mangled by a real client or smuggle an extra
+            // label boundary into what is supposed to be one opaque label.
+            assert_eq!(
+                nonce_dead_control("example.com", "abc_123"),
+                Err(NonceDomainError::NonceNotLdh)
+            );
+            assert_eq!(
+                nonce_dead_control("example.com", "abc.123"),
+                Err(NonceDomainError::NonceNotLdh)
+            );
+        }
+
+        #[test]
+        fn a_base_domain_with_non_ldh_characters_is_rejected() {
+            assert_eq!(
+                nonce_dead_control("exa mple.com", "abc123"),
+                Err(NonceDomainError::BaseDomainNotLdh)
+            );
+        }
+
+        #[test]
+        fn a_base_domain_with_an_empty_label_is_rejected() {
+            // "example..com" splits into an empty middle label, which is not a valid LDH label.
+            assert_eq!(
+                nonce_dead_control("example..com", "abc123"),
+                Err(NonceDomainError::BaseDomainNotLdh)
+            );
+        }
+
+        #[test]
+        fn a_label_over_63_octets_is_rejected() {
+            // RFC 1035 §2.3.4 caps each label at 63 octets.
+            let long_label = "a".repeat(64);
+            assert_eq!(
+                nonce_dead_control(&format!("{long_label}.com"), "abc123"),
+                Err(NonceDomainError::LabelTooLong)
+            );
+            assert_eq!(
+                nonce_dead_control("example.com", &long_label),
+                Err(NonceDomainError::LabelTooLong)
+            );
+        }
+
+        #[test]
+        fn a_label_of_exactly_63_octets_is_accepted() {
+            let max_label = "a".repeat(63);
+            assert!(nonce_dead_control(&format!("{max_label}.com"), "abc123").is_ok());
+        }
+
+        #[test]
+        fn a_name_over_255_octets_is_rejected() {
+            // RFC 1035 §2.3.4 caps the whole name (label octets + label length octets, plus the
+            // root label) at 255 octets — build a base domain made of several max-length labels
+            // to push the constructed name over that limit.
+            let label = "a".repeat(63);
+            let base_domain = format!("{label}.{label}.{label}.{label}");
+            assert_eq!(
+                nonce_dead_control(&base_domain, "abc123"),
+                Err(NonceDomainError::NameTooLong)
+            );
         }
     }
 

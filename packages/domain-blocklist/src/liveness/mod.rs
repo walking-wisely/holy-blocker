@@ -54,7 +54,10 @@ mod lookup;
 pub use cache::{
     CacheEntry, due_for_check, is_special_use_domain, should_prune, should_prune_with_hysteresis,
 };
-pub use canary::{CanaryConfig, CanaryConfigError, CanaryResult, canary_check, nonce_dead_control};
+pub use canary::{
+    CanaryConfig, CanaryConfigError, CanaryResult, NonceDomainError, canary_check,
+    nonce_dead_control,
+};
 pub use lookup::{DnsLookup, LookupResult, RecordType, UnknownReason, Verdict, check, combine};
 
 /// Test-only fixtures shared by [`lookup`]'s and [`canary`]'s test modules — kept here, one level
