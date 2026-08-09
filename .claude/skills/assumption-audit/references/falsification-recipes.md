@@ -12,13 +12,20 @@ believed, built on, and then measured.
 
 `packages/domain-blocklist`, `packages/net-shield`, `apps/mobile`'s `NetworkGuardService`.
 
+**Check the query itself succeeded before reading its output.** A `dig | grep` that finds nothing
+is not evidence a flag is absent — it is equally consistent with a timeout, `SERVFAIL`, or a dropped
+UDP packet, none of which say anything about the claim. Run `dig` un-piped first, confirm a real
+answer came back (a `status:` line and a nonzero query time, not `;; connection timed out`), and
+only then look for the flag. A transport failure falsifies nothing — mark the claim `UNVERIFIED`
+and retry against a different resolver rather than recording the missing match as a finding.
+
 | Claim shape | Falsifier |
 |---|---|
-| A TLD supports authenticated denial of existence (`AD=1` on NXDOMAIN) | `dig +dnssec nonexistent-$RANDOM.com @1.1.1.1 \| grep -E '^;; flags'` — look for `ad`. Repeat per TLD; do **not** generalise from one. |
-| A zone returns NXDOMAIN for a nonexistent subdomain | `dig nonexistent-$RANDOM.example.com @1.1.1.1 \| grep -E 'status:'` — Cloudflare-hosted zones return `NOERROR` with no answer (compact denial / "black lies"), not `NXDOMAIN`. |
+| A TLD supports authenticated denial of existence (`AD=1` on NXDOMAIN) | `dig +dnssec nonexistent-$RANDOM.com @1.1.1.1`; confirm the reply arrived (`status: NXDOMAIN`, not a timeout), then check `;; flags:` for `ad`. Repeat per TLD; do **not** generalise from one. |
+| A zone returns NXDOMAIN for a nonexistent subdomain | `dig nonexistent-$RANDOM.example.com @1.1.1.1`; confirm the reply arrived, then read `status:` — Cloudflare-hosted zones return `NOERROR` with no answer (compact denial / "black lies"), not `NXDOMAIN`. |
 | A resolver is not filtering the swept category | Resolve a known-live in-category control. If the repo cannot hold such a control (it cannot — see the content-fixture rule in `CLAUDE.md`), the canary is structurally blind and the plan must say so. |
-| A resolver returns the same answer as another | Query at least three independent resolvers (`1.1.1.1`, `8.8.8.8`, `9.9.9.9`) and diff. A single-resolver measurement is a measurement of that resolver. |
-| Extended DNS Errors are or are not present | `dig +dnssec blocked.example @1.1.1.3 \| grep -i 'EDE'` (RFC 8914). Filtering resolvers frequently self-declare with EDE 15/16/17. |
+| A resolver returns the same answer as another | Query at least three independent resolvers (`1.1.1.1`, `8.8.8.8`, `9.9.9.9`), confirm each replied, and diff. A single-resolver measurement is a measurement of that resolver. |
+| Extended DNS Errors are or are not present | `dig +dnssec blocked.example @1.1.1.3`; confirm the reply arrived, then check for an `EDE` line (RFC 8914). Filtering resolvers frequently self-declare with EDE 15/16/17. |
 | A response arrives only from the queried resolver | Not a DNS question — a socket question. `connect()` the socket, then verify the transaction ID and question section. An unconnected `DatagramSocket` accepts a datagram from any source. |
 
 Rate limits and ToS are also claims: check the published policy for Tranco, the list sources, and
@@ -32,7 +39,7 @@ any API before building a sweep cadence around an assumed one.
 |---|---|
 | An `Info.plist` usage-description key exists for a capability | `strings /System/Library/PrivateFrameworks/TCC.framework/Support/tccd \| grep UsageDescription` — the shipped binary is the authority. Blog posts and older docs list keys that do not exist. |
 | A grant belongs to our process | Never test from a shell. A CLI launched from a terminal has its grant attributed to the terminal, so it appears to work, covers every other tool run from that shell, and evaporates under `launchd`. Run under `launchd` or the measurement is void. |
-| A bundle is signed the way we think | `codesign -dvv <bundle> 2>&1` — **`-dvv` writes to stderr**; without the redirect every bundle reads as unsigned. Add `codesign --verify --deep --strict`. |
+| A bundle is signed the way we think | `codesign -dvv <bundle> 2>&1` — **`-dvv` writes to stderr**; without the redirect every bundle reads as unsigned. Verify with `codesign --verify --strict <bundle>`, **not** `--deep`: `--deep` can report a bundle valid while a nested code object inside it is not (see `macos.md`), so verify each nested dylib/framework the same way individually, e.g. `codesign --verify --strict <bundle>/Contents/Frameworks/*.dylib`. |
 | A grant survives a rebuild | Replace the bundle, then re-run the process's own preflight check (`AXIsProcessTrusted()`, `CGPreflightScreenCaptureAccess()`). Reading System Settings is not a falsifier — a hand-added TCC entry can read ON while the running process is untrusted. |
 | A capture stream delivers a given pixel format | Set the format explicitly and log `CVPixelBufferGetPixelFormatType` plus `bytesPerRow` against `width * 4`. Never rely on the default. |
 | A display dimension is in pixels | `CGDisplayCopyDisplayMode(...).pixelWidth` vs `SCDisplay.width`. `SCDisplay.width` is in points. |

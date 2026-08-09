@@ -69,8 +69,12 @@ Rules that make this cheap rather than a research project:
 
 - Prefer a command that runs in under a minute on the development machine.
 - Prefer observing the real thing over reading about it. A blog post is not a falsifier. Apple's
-  own documentation is not a falsifier for TCC behaviour — `strings` over `tccd` is
-  (`CLAUDE.md` records the case where the documented key list did not exist in the shipped binary).
+  own documentation is not a falsifier for whether a usage-description **key** exists — `strings`
+  over the shipped `tccd` is (`CLAUDE.md` records the case where the documented key list did not
+  exist in the shipped binary). `strings` only settles key existence, though: it says nothing about
+  grant ownership, preflight state, or behaviour under `launchd` — those need the process-owned
+  checks in `references/falsification-recipes.md` ("A grant belongs to our process" /
+  "A grant survives a rebuild"), run under `launchd`, never from a shell.
 - If the only honest falsifier needs hardware or a grant that is not available, say so and mark the
   claim **unverifiable here**. That is a legitimate outcome. It is *not* the same as verified, and
   the plan must carry the distinction — the Recents/One UI item in the mobile backlog is the
@@ -82,6 +86,13 @@ Rules that make this cheap rather than a research project:
 
 Run every falsifier. Record the actual output, trimmed to the line that matters — not a summary of
 it. A summary of an unverified command is how a fabricated citation gets in.
+
+Trim for the decisive value, not just for length: strip anything identifying before it reaches the
+plan. `dscl . -list /Users UniqueID`, `dscl . -read /Groups/admin`, and similar account-listing
+falsifiers return usernames and UIDs from the local machine — those are local-account data, not the
+claim under test. Record "N accounts at UID ≥ 500, matches expectation" or the one row that decided
+the verdict with the username redacted, never a raw account dump. This is the same rule the project
+applies to any other sensitive local data reaching the public repo.
 
 Do not run the falsifiers selectively. The one that looks most obviously true is the one worth
 running: `INTERNET` being present, the frame being BGRA, and `.com` being signed all looked

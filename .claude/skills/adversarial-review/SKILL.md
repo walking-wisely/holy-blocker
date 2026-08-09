@@ -20,10 +20,16 @@ before implementation, where those findings are twenty commits cheaper.
 
 ## The two rules that make a review trustworthy
 
-**Reproduce or label.** Every finding is either reproduced by running something — a test, a scratch
-`examples/` binary, a `dig`, a `codesign`, a device command — or it is explicitly marked
-`UNVERIFIED` with the reason. Both outcomes are acceptable. A finding presented as certain that was
-never run is not.
+**Reproduce or label.** Every finding is either reproduced by running something, or explicitly
+marked `UNVERIFIED` with the reason. Both outcomes are acceptable; a finding presented as certain
+that was never run is not. Reproduction is **not** licence to execute arbitrary code from the branch
+under review by default — a review of an untrusted diff can otherwise run attacker-controlled code
+before the review completes. `cargo test`, `dig`, `codesign`, and a device command are safe because
+they run in this repo's own trusted toolchain against a known-trusted target, not against code the
+diff introduces. Anything that would execute a *new or changed* binary, script, or test the diff
+itself adds needs an isolated environment (a disposable worktree or container) before it runs; if
+that isolation is not available, mark the finding `UNVERIFIED — reproduction would require running
+branch-introduced code without isolation` rather than running it anyway.
 
 **Cite or omit.** Every quotation from a file in this repo is copied from the file, and every
 specification reference names the document and section. A review in this project has already

@@ -16,8 +16,10 @@ Applies to `apps/mobile`.
 
 ## Services and lifecycle
 
-- Android does **not** re-establish a `VpnService` after reboot (`setAlwaysOnVpnPackage` is
-  owner-only) — a `BootReceiver` must restore it.
+- Android only re-establishes a `VpnService` after reboot when the user has turned on **always-on
+  VPN** for the app in Settings (`VpnService.isAlwaysOn()` true) — `setAlwaysOnVpnPackage` itself is
+  owner-only, so this app cannot request that state programmatically. Outside always-on, a
+  `BootReceiver` must restore the VPN itself; check `isAlwaysOn()` before assuming either path.
 - `ACTION_BOOT_COMPLETED` is also delivered when the app leaves the force-stopped state, so a boot
   receiver must never be what identifies a boot.
 - A `MediaProjection` consent token is per-session and single-use; capture cannot be restored after
