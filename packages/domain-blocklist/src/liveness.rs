@@ -29,6 +29,14 @@
 //!   a CNAME chain, the RCODE describes the **last** name in the chain, not the queried name; why
 //!   [`LookupResult::NxDomainViaCname`] exists and is never treated as proof the queried name itself
 //!   is unregistered.
+//! - [RFC 8914](https://www.rfc-editor.org/rfc/rfc8914) — Extended DNS Errors. §4 defines the code
+//!   registry [`LookupResult::NxDomain::extended_error`] stores raw values from; codes 4 (Forged
+//!   Answer), 6 (DNSSEC Bogus), 15 (Blocked), 16 (Censored) and 17 (Filtered) are "this negative
+//!   answer is policy, not fact" signals [`combine`] reads as proof the resolver itself is not to
+//!   be trusted for this domain, never as proof of non-registration. `authenticated` on the same
+//!   variant reflects the DNSSEC AD bit (a validating resolver's own claim that NSEC/NSEC3 proved
+//!   the name doesn't exist) rather than a spec this module parses a wire format against — the AD
+//!   bit itself is defined by [RFC 4035 §3.2.3](https://www.rfc-editor.org/rfc/rfc4035#section-3.2.3).
 
 use crate::types::Timestamp;
 use std::net::IpAddr;
@@ -38,6 +46,31 @@ use std::net::IpAddr;
 /// so this cap will rarely matter in practice, but it keeps the convention consistent across the
 /// crate rather than assuming it away here.
 const MAX_NAMED_HITS: usize = 20;
+
+/// RFC 8914 §4 Extended DNS Error `INFO-CODE`s that mark a negative answer as policy-driven
+/// rather than a fact about the registry — see [`LookupResult::NxDomain::extended_error`] and
+/// [`is_filtering_ede`].
+const EDE_FORGED_ANSWER: u16 = 4;
+const EDE_DNSSEC_BOGUS: u16 = 6;
+const EDE_BLOCKED: u16 = 15;
+const EDE_CENSORED: u16 = 16;
+const EDE_FILTERED: u16 = 17;
+
+/// Whether an RFC 8914 Extended DNS Error code (if any) signals that a negative answer is
+/// policy-driven — a resolver-side decision, not a fact about whether the name is registered.
+/// [`combine`] treats any of these on either side of a paired `NxDomain`/`NxDomain` as proof the
+/// resolver itself is not to be trusted for this domain, per that RFC's §4 definitions of Forged
+/// Answer, DNSSEC Bogus, Blocked, Censored and Filtered.
+fn is_filtering_ede(extended_error: Option<u16>) -> bool {
+    matches!(
+        extended_error,
+        Some(EDE_FORGED_ANSWER)
+            | Some(EDE_DNSSEC_BOGUS)
+            | Some(EDE_BLOCKED)
+            | Some(EDE_CENSORED)
+            | Some(EDE_FILTERED)
+    )
+}
 
 /// Why a single-QTYPE lookup could not be read as a definite answer. Never used to prune a
 /// domain on its own — see [`Verdict::Unknown`] and the plan's "a resolver hiccup or a transient
@@ -60,6 +93,18 @@ pub enum UnknownReason {
     /// 6604 §3) — see [`LookupResult::NxDomainViaCname`]. Named so a log line stating this reason
     /// says exactly what evidence was seen, not just that the answer was inconclusive.
     CnameToDeadTarget,
+    /// Both sides answered `NxDomain`, but at least one carried an RFC 8914 Extended DNS Error
+    /// code signalling the negative answer is policy-driven rather than a fact about the registry
+    /// (4 Forged Answer, 6 DNSSEC Bogus, 15 Blocked, 16 Censored, 17 Filtered). One filtered
+    /// answer means the resolver filters, so this must never combine into [`Verdict::Dead`] — and
+    /// per the plan, the caller should treat it as a reason to abort the sweep entirely, not just
+    /// skip this one domain.
+    FilteredByResolver,
+    /// Both sides answered `NxDomain` with no EDE-signalled filtering, but at least one was not
+    /// DNSSEC-authenticated (the AD bit, RFC 4035 §3.2.3, was not set). An unauthenticated
+    /// NXDOMAIN is exactly what a hijacking resolver forges to evade the canary — see
+    /// [`LookupResult::NxDomain`] — so it is not proof of non-registration on its own.
+    UnauthenticatedNxDomain,
 }
 
 /// The outcome of one [`DnsLookup::lookup`] call — one QTYPE, one domain. Never conflated with
@@ -82,9 +127,28 @@ pub enum LookupResult {
     /// nothing now and avoids a breaking change later.
     Resolved(Vec<IpAddr>),
     /// An unambiguous negative answer for the **queried name's own** RCODE (RFC 1035 §4.1.1 RCODE
-    /// 3) — no CNAME chain was involved. This is the only `LookupResult` [`combine`] will ever read
-    /// as proof of non-registration.
-    NxDomain,
+    /// 3) — no CNAME chain was involved. This is the only `LookupResult` [`combine`] can ever read
+    /// as proof of non-registration, and even then only conditionally — a bare NXDOMAIN carries no
+    /// evidence of *why* it should be trusted, and two real mechanisms exist to supply that
+    /// evidence (RFC 8914 §4):
+    ///
+    /// - `authenticated` is the resolver's DNSSEC AD bit (RFC 4035 §3.2.3) on this answer. `.com`,
+    ///   `.net`, `.org` and most ccTLDs are signed, so authenticated denial-of-existence via
+    ///   NSEC/NSEC3 is available for the overwhelming majority of entries even though the domains
+    ///   *themselves* are unsigned — a validating resolver setting `AD=1` on an NXDOMAIN is
+    ///   cryptographic proof the name is not delegated. [`combine`] requires `authenticated: true`
+    ///   on **both** sides before it will ever produce [`Verdict::Dead`]; otherwise the result is
+    ///   [`UnknownReason::UnauthenticatedNxDomain`]. This makes the canary-evasion attack of a
+    ///   resolver simply forging NXDOMAIN for gTLD names essentially impossible.
+    /// - `extended_error` is the raw RFC 8914 EDE `INFO-CODE`, if the answer carried one. Codes 4
+    ///   (Forged Answer), 6 (DNSSEC Bogus), 15 (Blocked), 16 (Censored) and 17 (Filtered) are
+    ///   exactly the "this negative answer is policy, not fact" signal this module needs; public
+    ///   resolvers including Cloudflare emit them. [`combine`] treats any of those codes on either
+    ///   side as [`UnknownReason::FilteredByResolver`], never [`Verdict::Dead`].
+    NxDomain {
+        authenticated: bool,
+        extended_error: Option<u16>,
+    },
     /// The queried name resolved via a CNAME chain, but the chain's **terminal target** came back
     /// NXDOMAIN. Per [RFC 6604 §3](https://www.rfc-editor.org/rfc/rfc6604#section-3), the RCODE in
     /// that response describes the last name in the chain, not the queried name itself — so this is
@@ -110,8 +174,16 @@ pub enum Verdict {
 ///
 /// 1. Either lookup resolving is enough — one working address family means the domain is
 ///    reachable, regardless of what the other side says.
-/// 2. Otherwise, both sides unambiguously `NxDomain` **on the queried name's own RCODE** is `Dead`
-///    — the only case that proves non-registration.
+/// 2. Otherwise, if both sides are `NxDomain` **on the queried name's own RCODE**:
+///    - if either side's [`LookupResult::NxDomain::extended_error`] is an RFC 8914 code that
+///      signals policy-driven filtering (see [`is_filtering_ede`]), the result is
+///      `Unknown(FilteredByResolver)` — one filtered answer means the resolver filters, never
+///      that the domain is dead;
+///    - otherwise, `Dead` requires **both** sides to be DNSSEC-`authenticated`; if either is not,
+///      the result is `Unknown(UnauthenticatedNxDomain)`, since an unauthenticated NXDOMAIN is
+///      exactly what a hijacking resolver forges;
+///    - only when both conditions above are satisfied — no filtering EDE, both authenticated —
+///      is the result `Dead`, the only case that proves non-registration.
 /// 3. Otherwise, if either side is [`LookupResult::NxDomainViaCname`], the result is
 ///    `Unknown(CnameToDeadTarget)`, never `Dead`. Per [RFC 6604
 ///    §3](https://www.rfc-editor.org/rfc/rfc6604#section-3), an NXDOMAIN reached through a CNAME
@@ -134,7 +206,24 @@ pub enum Verdict {
 pub fn combine(a: LookupResult, aaaa: LookupResult) -> Verdict {
     match (a, aaaa) {
         (LookupResult::Resolved(_), _) | (_, LookupResult::Resolved(_)) => Verdict::Alive,
-        (LookupResult::NxDomain, LookupResult::NxDomain) => Verdict::Dead,
+        (
+            LookupResult::NxDomain {
+                authenticated: a_authenticated,
+                extended_error: a_ede,
+            },
+            LookupResult::NxDomain {
+                authenticated: aaaa_authenticated,
+                extended_error: aaaa_ede,
+            },
+        ) => {
+            if is_filtering_ede(a_ede) || is_filtering_ede(aaaa_ede) {
+                Verdict::Unknown(UnknownReason::FilteredByResolver)
+            } else if a_authenticated && aaaa_authenticated {
+                Verdict::Dead
+            } else {
+                Verdict::Unknown(UnknownReason::UnauthenticatedNxDomain)
+            }
+        }
         (LookupResult::NxDomainViaCname, _) | (_, LookupResult::NxDomainViaCname) => {
             Verdict::Unknown(UnknownReason::CnameToDeadTarget)
         }
@@ -403,10 +492,37 @@ mod tests {
                 .with(domain, RecordType::Aaaa, LookupResult::Resolved(vec![addr]))
         }
 
-        /// Both A and AAAA come back NXDOMAIN for `domain`.
+        /// Both A and AAAA come back a clean, DNSSEC-authenticated NXDOMAIN for `domain` — an
+        /// honest resolver's answer, and the only combination [`combine`] will ever call `Dead`.
         fn with_dead(self, domain: &str) -> Self {
-            self.with(domain, RecordType::A, LookupResult::NxDomain)
-                .with(domain, RecordType::Aaaa, LookupResult::NxDomain)
+            self.with_dead_as(domain, true, None)
+        }
+
+        /// Both A and AAAA come back NXDOMAIN for `domain`, with the given DNSSEC-authentication
+        /// and RFC 8914 Extended DNS Error fields — the general form the authentication/EDE tests
+        /// build on, and that `with_dead` is just the "honest resolver" special case of.
+        fn with_dead_as(
+            self,
+            domain: &str,
+            authenticated: bool,
+            extended_error: Option<u16>,
+        ) -> Self {
+            self.with(
+                domain,
+                RecordType::A,
+                LookupResult::NxDomain {
+                    authenticated,
+                    extended_error,
+                },
+            )
+            .with(
+                domain,
+                RecordType::Aaaa,
+                LookupResult::NxDomain {
+                    authenticated,
+                    extended_error,
+                },
+            )
         }
     }
 
@@ -499,7 +615,14 @@ mod tests {
                     RecordType::A,
                     LookupResult::Resolved(vec![IpAddr::V4(std::net::Ipv4Addr::new(192, 0, 2, 1))]),
                 )
-                .with("example.com", RecordType::Aaaa, LookupResult::NxDomain);
+                .with(
+                    "example.com",
+                    RecordType::Aaaa,
+                    LookupResult::NxDomain {
+                        authenticated: true,
+                        extended_error: None,
+                    },
+                );
             assert_eq!(check(&resolver, "example.com"), Verdict::Alive);
         }
 
@@ -526,12 +649,127 @@ mod tests {
         }
 
         #[test]
+        fn both_sides_authenticated_nxdomain_is_dead() {
+            // Named separately from both_nxdomain_is_dead to pin the exact rule down explicitly:
+            // Dead requires DNSSEC authentication on BOTH sides, not just "both NxDomain".
+            let resolver = FakeResolver::new().with_dead_as("example.invalid", true, None);
+            assert_eq!(check(&resolver, "example.invalid"), Verdict::Dead);
+        }
+
+        #[test]
+        fn both_sides_unauthenticated_nxdomain_is_unknown_not_dead() {
+            // An unauthenticated NXDOMAIN on both families is exactly what a hijacking resolver
+            // forges to evade the canary — it must never combine into Dead on its own.
+            let resolver = FakeResolver::new().with_dead_as("example.invalid", false, None);
+            assert_eq!(
+                check(&resolver, "example.invalid"),
+                Verdict::Unknown(UnknownReason::UnauthenticatedNxDomain)
+            );
+        }
+
+        #[test]
+        fn one_authenticated_and_one_unauthenticated_nxdomain_is_unknown_not_dead() {
+            // Dead requires BOTH sides authenticated; one side being honest does not vouch for
+            // the other.
+            let resolver = FakeResolver::new()
+                .with(
+                    "example.invalid",
+                    RecordType::A,
+                    LookupResult::NxDomain {
+                        authenticated: true,
+                        extended_error: None,
+                    },
+                )
+                .with(
+                    "example.invalid",
+                    RecordType::Aaaa,
+                    LookupResult::NxDomain {
+                        authenticated: false,
+                        extended_error: None,
+                    },
+                );
+            assert_eq!(
+                check(&resolver, "example.invalid"),
+                Verdict::Unknown(UnknownReason::UnauthenticatedNxDomain)
+            );
+        }
+
+        #[test]
+        fn nxdomain_with_blocked_ede_is_unknown_regardless_of_authentication() {
+            // RFC 8914 EDE 15 (Blocked) on an otherwise-authenticated NXDOMAIN must still read as
+            // resolver-side filtering, never as proof of non-registration — the filtering check
+            // takes priority over the authentication check.
+            let resolver = FakeResolver::new().with_dead_as("example.invalid", true, Some(15));
+            assert_eq!(
+                check(&resolver, "example.invalid"),
+                Verdict::Unknown(UnknownReason::FilteredByResolver)
+            );
+        }
+
+        #[test]
+        fn nxdomain_with_blocked_ede_and_unauthenticated_is_still_filtered_not_unauthenticated() {
+            // When both an EDE-filtering signal and a missing authentication are present, the
+            // more specific "the resolver is filtering" diagnosis wins over the generic
+            // "unauthenticated" one.
+            let resolver = FakeResolver::new().with_dead_as("example.invalid", false, Some(15));
+            assert_eq!(
+                check(&resolver, "example.invalid"),
+                Verdict::Unknown(UnknownReason::FilteredByResolver)
+            );
+        }
+
+        #[test]
+        fn nxdomain_with_censored_ede_on_only_one_side_is_unknown() {
+            // Only one side needs to carry a filtering EDE code for the pair to be untrusted —
+            // "one filtered answer means the resolver filters."
+            let resolver = FakeResolver::new()
+                .with(
+                    "example.invalid",
+                    RecordType::A,
+                    LookupResult::NxDomain {
+                        authenticated: true,
+                        extended_error: Some(16), // RFC 8914 §4 — Censored.
+                    },
+                )
+                .with(
+                    "example.invalid",
+                    RecordType::Aaaa,
+                    LookupResult::NxDomain {
+                        authenticated: true,
+                        extended_error: None,
+                    },
+                );
+            assert_eq!(
+                check(&resolver, "example.invalid"),
+                Verdict::Unknown(UnknownReason::FilteredByResolver)
+            );
+        }
+
+        #[test]
+        fn nxdomain_with_a_non_filtering_ede_code_still_requires_authentication() {
+            // A non-filtering EDE code (e.g. 3, Stale Answer) must not be mistaken for a
+            // filtering one — the authentication rule still applies normally.
+            let resolver = FakeResolver::new().with_dead_as("example.invalid", false, Some(3));
+            assert_eq!(
+                check(&resolver, "example.invalid"),
+                Verdict::Unknown(UnknownReason::UnauthenticatedNxDomain)
+            );
+        }
+
+        #[test]
         fn nxdomain_paired_with_unknown_is_unknown_not_dead() {
             // The named mixed-verdict case from the plan: one family cleanly failing to resolve
             // while the other is merely inconclusive must never be conflated with both families
             // agreeing the domain doesn't exist.
             let resolver = FakeResolver::new()
-                .with("example.com", RecordType::A, LookupResult::NxDomain)
+                .with(
+                    "example.com",
+                    RecordType::A,
+                    LookupResult::NxDomain {
+                        authenticated: true,
+                        extended_error: None,
+                    },
+                )
                 .with(
                     "example.com",
                     RecordType::Aaaa,
@@ -586,7 +824,14 @@ mod tests {
             // not two direct NXDOMAINs on the queried name — only that combination is Dead.
             let resolver = FakeResolver::new()
                 .with("example.com", RecordType::A, LookupResult::NxDomainViaCname)
-                .with("example.com", RecordType::Aaaa, LookupResult::NxDomain);
+                .with(
+                    "example.com",
+                    RecordType::Aaaa,
+                    LookupResult::NxDomain {
+                        authenticated: true,
+                        extended_error: None,
+                    },
+                );
             assert_eq!(
                 check(&resolver, "example.com"),
                 Verdict::Unknown(UnknownReason::CnameToDeadTarget)
