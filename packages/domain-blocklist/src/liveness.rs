@@ -21,6 +21,10 @@
 //! - [RFC 2606](https://www.rfc-editor.org/rfc/rfc2606) and
 //!   [RFC 6761](https://www.rfc-editor.org/rfc/rfc6761) — the reserved, guaranteed-never-to-resolve
 //!   names [`CanaryConfig::dead_controls`] is meant to be drawn from.
+//! - [RFC 2308 §2.2](https://www.rfc-editor.org/rfc/rfc2308#section-2.2) — NODATA and negative-
+//!   caching semantics; RFC 1035 §4.1.1 defines the RCODE field itself but not the NODATA case
+//!   (RCODE 0, no matching record), which is what [`UnknownReason::NoData`] models. RFC 2308 §2.1
+//!   is the equivalent NXDOMAIN negative-caching definition.
 
 use crate::types::Timestamp;
 
@@ -29,7 +33,9 @@ use crate::types::Timestamp;
 /// SERVFAIL must never be able to silently shrink the blocklist" rule.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnknownReason {
-    /// A response with no error but no matching record (RFC 1035 §4.1.1 RCODE 0, empty answer).
+    /// A response with no error but no matching record (RCODE 0, empty answer) — the NODATA case,
+    /// whose semantics come from RFC 2308 §2.2, not RFC 1035 §4.1.1 (which defines only the RCODE
+    /// field, not what an empty-answer/RCODE-0 response means).
     NoData,
     /// RFC 1035 §4.1.1 RCODE 2.
     ServFail,
@@ -111,7 +117,11 @@ pub fn check<R: DnsLookup + ?Sized>(resolver: &R, domain: &str) -> Verdict {
 /// Only a `Dead` verdict ever prunes a domain from the next build's output — an `Unknown` domain,
 /// first-seen or previously cached, is always kept. See the plan's "erring toward keeping an
 /// entry is the intended direction — false negatives are the budget, false positives are the
-/// price" rule.
+/// price" rule. Note this function only ever sees the current verdict, not the prior one: an
+/// `Unknown` is always "keep," which is *not* the same as the plan's "left exactly as it was" for
+/// a domain that was previously pruned as `Dead` — that domain is re-included here, since this
+/// signature has no visibility into what a past build did. Still the safe direction: a wrongly
+/// resurrected domain costs a wasted slot, a wrongly kept one is the intended failure mode.
 pub fn should_prune(verdict: Verdict) -> bool {
     matches!(verdict, Verdict::Dead)
 }

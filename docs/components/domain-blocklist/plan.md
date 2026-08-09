@@ -798,7 +798,30 @@ decision doc's [Distribution](../../decisions/domain-blocklist-sourcing.md#distr
    `String` — a lone dead control is one resolver quirk away from a false pass (e.g. a rewrite
    rule scoped to one reserved name and not another), and running the full set costs nothing extra
    since `canary_check` already loops. 20 tests (119 total). Not yet consumed by `fst_build` or
-   `cli` (modules 4, 7 — both still unbuilt).
+   `cli` (modules 4, 7 — both still unbuilt). **Five items are explicitly deferred design decisions
+   for `cli` (module 7, still unbuilt), not gaps silently dropped from this module.** An
+   interleaved canary — the canary only runs once at t=0 before a ~24h sweep, and proving the
+   resolver was honest at t=0 doesn't prove it stayed honest for the whole window — is deferred
+   because `CanaryResult` has no timestamp field for `cli` to build the interleaving on top of yet,
+   and that's worth deciding before module 7 rather than patching in here. RFC 8914 Extended DNS
+   Errors (https://www.rfc-editor.org/rfc/rfc8914) — a filtering resolver often self-declares via
+   EDE 15/16/17 (Blocked/Censored/Filtered) alongside its NXDOMAIN, the strongest available signal
+   for exactly the threat `canary_check` guards against — is deferred because `LookupResult` has no
+   variant for it yet. An aggregate "Unknown rate" health signal is deferred: at sustained
+   real-world query rates a public resolver may start rate-limiting, turning every rate-limited
+   query into `Unknown(Timeout)` (kept, by design), which could let a whole sweep silently become a
+   no-op with nothing in `gates.rs` positioned to catch it, since `gates.rs`'s shrinkage gate
+   watches entry counts, not per-domain Unknown rate. Keeping `DnsLookup` synchronous versus
+   switching it to async is deferred as a real API-stability tradeoff — it's `pub`, re-exported
+   from `lib.rs`, and both `check`/`canary_check` take `&R: DnsLookup` — that should be decided
+   deliberately before module 7 is built rather than discovered mid-implementation, given the
+   plan's own pacing design (many in-flight concurrent queries at a target qps, above) points
+   toward an async-first client like hickory-resolver. RFC 8020
+   (https://www.rfc-editor.org/rfc/rfc8020, "NXDOMAIN: There Really Is Nothing Underneath") — an
+   NXDOMAIN at `example.com` implies every `*.example.com` entry is also dead, with zero extra
+   queries — is deferred because nothing in this module's shape expresses shared context between
+   per-domain `check()` calls, which a real optimization lever for module 7's per-domain sweep
+   would need.
 6. `fst_build.rs` — pin against a small hand-built key set first (a handful of domains sharing
    prefixes and suffixes, mixed `Apex` and `ExactHost`) and assert exact-match, label-boundary
    scoping, and **anchored** prefix-streaming behavior before building the real list.
