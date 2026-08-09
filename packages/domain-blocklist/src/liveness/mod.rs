@@ -36,19 +36,35 @@
 //!   255 octets.
 //! - [RFC 8914](https://www.rfc-editor.org/rfc/rfc8914) — Extended DNS Errors. §4 defines the code
 //!   registry [`LookupResult::NxDomain::extended_error`] stores raw values from; codes 4 (Forged
-//!   Answer), 6 (DNSSEC Bogus), 15 (Blocked), 16 (Censored) and 17 (Filtered) are "this negative
-//!   answer is policy, not fact" signals [`combine`] reads as proof the resolver itself is not to
-//!   be trusted for this domain, never as proof of non-registration. `authenticated` on the same
-//!   variant reflects the DNSSEC AD bit (a validating resolver's own claim that NSEC/NSEC3 proved
-//!   the name doesn't exist) rather than a spec this module parses a wire format against — the AD
-//!   bit itself is defined by [RFC 4035 §3.2.3](https://www.rfc-editor.org/rfc/rfc4035#section-3.2.3).
+//!   Answer), 6 (DNSSEC Bogus), 13 (Cached Error), 15 (Blocked), 16 (Censored), 17 (Filtered), 18
+//!   (Prohibited) and 19 (Stale NXDOMAIN Answer) are all signals [`combine`] reads as proof this
+//!   resolver's answer for this domain cannot be trusted at face value, never as proof of
+//!   non-registration — see [`is_filtering_ede`](lookup) for why each one qualifies. `authenticated`
+//!   on the same variant reflects the DNSSEC AD bit — defined by [RFC 4035
+//!   §3.2.3](https://www.rfc-editor.org/rfc/rfc4035#section-3.2.3) — but as of this module's most
+//!   recent review round is evidence a caller may log, **not** a gate [`combine`] or anything built
+//!   on it reads; see [`LookupResult::NxDomain`]'s doc comment for why an authentication gate was
+//!   tried and abandoned.
+//! - [RFC 5155 §6](https://www.rfc-editor.org/rfc/rfc5155#section-6) — NSEC3 opt-out, the reason
+//!   authenticated denial-of-existence is unavailable for the overwhelming majority of unsigned
+//!   delegations under a signed TLD (`.com`, `.net`, `.org`, `.xxx` and most large TLDs), and so
+//!   the reason this module no longer gates on DNSSEC authentication at all — see
+//!   [`corroborate`](corroboration) for what replaced it.
 //! - [RFC 1035 §4.2.1](https://www.rfc-editor.org/rfc/rfc1035#section-4.2.1) and [RFC
 //!   7766](https://www.rfc-editor.org/rfc/rfc7766) — TC=1 truncation and the mandatory TCP retry; see
 //!   [`DnsLookup`]'s doc comment for the implementation contract this module cannot enforce through
 //!   its return type alone.
+//! - [RFC 3225](https://www.rfc-editor.org/rfc/rfc3225) — the DNSSEC OK (DO) bit a query must set
+//!   for a resolver to return authentication/EDE evidence at all; see [`DnsLookup`]'s doc comment
+//!   for why this rules out a `getaddrinfo`-style high-level resolver API as an implementation.
+//! - [RFC 8020](https://www.rfc-editor.org/rfc/rfc8020) — "NXDOMAIN really means there is nothing
+//!   underneath"; named in [`corroborate`](corroboration)'s doc comment as one concrete source of
+//!   the deterministic, resolver-implementation-specific false-NXDOMAIN causes corroboration (not
+//!   hysteresis) is what actually covers.
 
 mod cache;
 mod canary;
+mod corroboration;
 mod lookup;
 
 pub use cache::{
@@ -58,6 +74,7 @@ pub use canary::{
     CanaryConfig, CanaryConfigError, CanaryResult, NonceDomainError, canary_check,
     nonce_dead_control,
 };
+pub use corroboration::{check_corroborated, corroborate};
 pub use lookup::{DnsLookup, LookupResult, RecordType, UnknownReason, Verdict, check, combine};
 
 /// Test-only fixtures shared by [`lookup`]'s and [`canary`]'s test modules — kept here, one level
