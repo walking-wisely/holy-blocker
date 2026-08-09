@@ -4,6 +4,7 @@
 //! the reference documents this file's citations draw from.
 
 use super::lookup::{DnsLookup, Verdict, check};
+use crate::types::Timestamp;
 
 /// A control-set failure message stops naming individual mismatches past this many, mirroring
 /// `gates::MAX_NAMED_HITS` — canary control sets are expected to be tiny (a handful of domains),
@@ -232,18 +233,30 @@ pub fn nonce_dead_control(base_domain: &str, nonce: &str) -> Result<String, Nonc
 /// the same "name the evidence" convention `gates::GateResult::Fail` uses, one
 /// `"{kind} control {domain:?} expected Verdict::X, got {verdict:?}"` string per mismatched
 /// control, capped at [`MAX_NAMED_HITS`] the same way `gates.rs` caps its own hit lists.
+///
+/// Both variants carry `checked_at`, the `now: Timestamp` [`canary_check`] was called with. A
+/// single check at the start of a long sweep can't see a resolver that starts lying partway
+/// through — see [`canary_check`]'s doc comment for why a caller is expected to call it
+/// repeatedly across a sweep, not just once — and a caller doing that needs to know *when* each
+/// result happened to build a "discard back to the last passing canary" recovery strategy,
+/// without inventing its own timestamp-tracking wrapper around this type.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CanaryResult {
-    Passed,
-    Failed { failures: Vec<String> },
+    Passed {
+        checked_at: Timestamp,
+    },
+    Failed {
+        failures: Vec<String>,
+        checked_at: Timestamp,
+    },
 }
 
 /// Runs every control in `config` — both `alive_controls` and `dead_controls` — against `resolver`
-/// and reports whether each answered as expected. Per the plan, **any** canary result other than
-/// expected must abort the entire sweep — this function only reports that; discarding the sweep's
-/// verdicts and refusing to write the cache back is the caller's (`cli`, module 7, unbuilt)
-/// responsibility, since there is no way to know at which query a lying resolver started lying and
-/// so no partial sweep to salvage.
+/// and reports whether each answered as expected, stamping the result with `now`. Per the plan,
+/// **any** canary result other than expected must abort the entire sweep — this function only
+/// reports that; discarding the sweep's verdicts and refusing to write the cache back is the
+/// caller's (`cli`, module 7, unbuilt) responsibility, since there is no way to know at which
+/// query a lying resolver started lying and so no partial sweep to salvage.
 ///
 /// Checks the **whole** control set rather than stopping at the first mismatch, and reports every
 /// failing control together in [`CanaryResult::Failed`] — see that type's doc comment for why a
@@ -254,7 +267,28 @@ pub enum CanaryResult {
 /// exists to prevent — but this function does not assume every caller went through `new()` (a
 /// struct literal still compiles) and so simply checks whatever it's given: an empty list here
 /// contributes zero failures rather than a distinct error, exactly as an empty `for` loop does.
-pub fn canary_check<R: DnsLookup + ?Sized>(resolver: &R, config: &CanaryConfig) -> CanaryResult {
+///
+/// # Interleave this through a sweep, not just once at t=0
+///
+/// The plan justifies gating a sweep on the canary with "there is no way to know at which query a
+/// lying resolver started lying" — but that reasoning argues *for* calling this repeatedly through
+/// a long sweep, not just once before it starts. A full sweep runs for roughly 24 hours (the
+/// plan's qps budget), and over that span an anycast route can flip onto a filtering node, the
+/// runner's own network can change, a DHCP lease can renew onto a captive portal, or the resolver
+/// can start rate-limiting — none of which a single check at the start can see, since all of them
+/// can happen strictly after it passed.
+///
+/// **This function does not do that scheduling itself — pacing/interleaving a sweep is a `cli`-
+/// level (module 7, unbuilt) concern, per this module's existing split between pure decision logic
+/// and the real network loop.** What this function contributes is making that safe to build: call
+/// it periodically (e.g. every few thousand queries) through the sweep loop with the current
+/// `now`, and use each [`CanaryResult::checked_at`](CanaryResult) to discard verdicts collected
+/// back to the last passing canary rather than either the whole sweep or nothing.
+pub fn canary_check<R: DnsLookup + ?Sized>(
+    resolver: &R,
+    config: &CanaryConfig,
+    now: Timestamp,
+) -> CanaryResult {
     let mut failures = Vec::new();
 
     for domain in &config.alive_controls {
@@ -276,7 +310,7 @@ pub fn canary_check<R: DnsLookup + ?Sized>(resolver: &R, config: &CanaryConfig) 
     }
 
     if failures.is_empty() {
-        return CanaryResult::Passed;
+        return CanaryResult::Passed { checked_at: now };
     }
 
     if failures.len() > MAX_NAMED_HITS {
@@ -285,7 +319,10 @@ pub fn canary_check<R: DnsLookup + ?Sized>(resolver: &R, config: &CanaryConfig) 
         failures.push(format!("...and {more} more"));
     }
 
-    CanaryResult::Failed { failures }
+    CanaryResult::Failed {
+        failures,
+        checked_at: now,
+    }
 }
 
 #[cfg(test)]
@@ -456,7 +493,36 @@ mod tests {
                 .with_alive("iana.org")
                 .with_dead("invalid.")
                 .with_dead("example.test.");
-            assert_eq!(canary_check(&resolver, &config()), CanaryResult::Passed);
+            assert_eq!(
+                canary_check(&resolver, &config(), 1_000),
+                CanaryResult::Passed { checked_at: 1_000 }
+            );
+        }
+
+        #[test]
+        fn passed_and_failed_both_carry_the_now_they_were_checked_at() {
+            // A caller interleaving canary_check through a long sweep needs each result's
+            // timestamp to build a "discard back to the last passing canary" recovery strategy —
+            // this pins that both variants carry the exact now passed in, not just Failed.
+            let healthy = FakeResolver::new()
+                .with_alive("example.com")
+                .with_alive("iana.org")
+                .with_dead("invalid.")
+                .with_dead("example.test.");
+            assert_eq!(
+                canary_check(&healthy, &config(), 12_345),
+                CanaryResult::Passed { checked_at: 12_345 }
+            );
+
+            let sink = FakeResolver::new()
+                .with_alive("example.com")
+                .with_alive("iana.org")
+                .with_alive("invalid.")
+                .with_alive("example.test.");
+            match canary_check(&sink, &config(), 67_890) {
+                CanaryResult::Failed { checked_at, .. } => assert_eq!(checked_at, 67_890),
+                CanaryResult::Passed { .. } => panic!("expected the canary to fail"),
+            }
         }
 
         #[test]
@@ -468,13 +534,13 @@ mod tests {
                 .with_alive("iana.org")
                 .with_dead("invalid.")
                 .with_dead("example.test.");
-            match canary_check(&resolver, &config()) {
-                CanaryResult::Failed { failures } => {
+            match canary_check(&resolver, &config(), 1_000) {
+                CanaryResult::Failed { failures, .. } => {
                     assert_eq!(failures.len(), 1);
                     assert!(failures[0].contains("example.com"));
                     assert!(failures[0].contains("Alive"));
                 }
-                CanaryResult::Passed => panic!("expected the canary to fail"),
+                CanaryResult::Passed { .. } => panic!("expected the canary to fail"),
             }
         }
 
@@ -487,14 +553,14 @@ mod tests {
                 .with_alive("iana.org")
                 .with_alive("invalid.")
                 .with_alive("example.test.");
-            match canary_check(&resolver, &config()) {
-                CanaryResult::Failed { failures } => {
+            match canary_check(&resolver, &config(), 1_000) {
+                CanaryResult::Failed { failures, .. } => {
                     assert_eq!(failures.len(), 2);
                     assert!(failures.iter().any(|f| f.contains("invalid.")));
                     assert!(failures.iter().any(|f| f.contains("example.test.")));
                     assert!(failures.iter().all(|f| f.contains("Dead")));
                 }
-                CanaryResult::Passed => panic!("expected the canary to fail"),
+                CanaryResult::Passed { .. } => panic!("expected the canary to fail"),
             }
         }
 
@@ -508,13 +574,13 @@ mod tests {
                 .with_alive("iana.org")
                 .with_dead("invalid.")
                 .with_alive("example.test.");
-            match canary_check(&resolver, &config()) {
-                CanaryResult::Failed { failures } => {
+            match canary_check(&resolver, &config(), 1_000) {
+                CanaryResult::Failed { failures, .. } => {
                     assert_eq!(failures.len(), 1);
                     assert!(failures[0].contains("example.test."));
                     assert!(failures[0].contains("Dead"));
                 }
-                CanaryResult::Passed => panic!("expected the canary to fail"),
+                CanaryResult::Passed { .. } => panic!("expected the canary to fail"),
             }
         }
 
@@ -538,7 +604,7 @@ mod tests {
                 .with_dead("invalid.")
                 .with_dead("example.test.");
             assert!(matches!(
-                canary_check(&resolver, &config()),
+                canary_check(&resolver, &config(), 1_000),
                 CanaryResult::Failed { .. }
             ));
         }
@@ -553,8 +619,8 @@ mod tests {
                 .with_alive("iana.org")
                 .with_alive("invalid.")
                 .with_dead("example.test.");
-            match canary_check(&resolver, &config()) {
-                CanaryResult::Failed { failures } => {
+            match canary_check(&resolver, &config(), 1_000) {
+                CanaryResult::Failed { failures, .. } => {
                     assert_eq!(failures.len(), 2);
                     assert!(
                         failures
@@ -567,7 +633,7 @@ mod tests {
                             .any(|f| f.contains("invalid.") && f.contains("Dead"))
                     );
                 }
-                CanaryResult::Passed => panic!("expected the canary to fail"),
+                CanaryResult::Passed { .. } => panic!("expected the canary to fail"),
             }
         }
     }
