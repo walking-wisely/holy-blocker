@@ -18,6 +18,7 @@ pub use gates::{
 pub use liveness::{
     CacheEntry, CanaryConfig, CanaryResult, DnsLookup, LookupResult, RecordType, UnknownReason,
     Verdict, canary_check, check as check_liveness, combine, due_for_check, should_prune,
+    should_prune_with_hysteresis,
 };
 pub use merge::{
     MergeOutput, MergeReport, filter_by_category, flag_personal_name, merge as merge_entries,

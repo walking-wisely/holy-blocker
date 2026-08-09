@@ -10,10 +10,46 @@ use crate::types::Timestamp;
 
 /// One entry in the persistent liveness cache the plan describes (`domain → { last_checked,
 /// verdict }`, storage and load/save I/O left to `cli`, module 7 — see this module's doc comment).
+///
+/// `first_dead_at` is the hysteresis primitive: the timestamp of the **first** sweep in an
+/// unbroken run of `Dead` reads, `None` whenever the most recent sweep read anything else
+/// (`Alive` or `Unknown`). It is a "since when has this been continuously dead" timestamp rather
+/// than a raw streak counter because that composes directly with this module's TTL-based cadence
+/// (`due_for_check`'s `ttl_seconds`) — a quarantine window is just another duration compared
+/// against `now`, the same shape `due_for_check` already uses, rather than a count that would need
+/// its own separate "how many sweeps is 35 days" conversion.
+///
+/// # Why a single bad `Dead` answer must not immediately prune
+///
+/// DNS has several states where a registered, soon-to-return domain NXDOMAINs *right now*:
+///
+/// - Registrar **clientHold**/**serverHold** removes the name from the zone while the
+///   registration itself is fully intact — abuse complaints and payment disputes put adult
+///   domains on hold more than average, and holds are routinely lifted.
+/// - **Redemption Grace Period**: an expired domain leaves the zone but is restorable by the
+///   original registrant for 30 days, then sits pending-delete for a further 5. A sweep that
+///   catches it as NXDOMAIN on day 1 would otherwise drop the entry from the build outright, even
+///   though the domain can come back as late as day 20.
+/// - Registry/registrar transfer and DNS-operator migration windows, which can NXDOMAIN a
+///   perfectly live domain for the duration of the cutover.
+///
+/// At one sweep per month with a 3-cadence TTL, a single bad answer previously removed an entry
+/// for roughly 3 months with no way back short of a fresh discovery. Requiring `Dead` to persist
+/// across sweeps for a quarantine window — recommended at ~35 days, past the Redemption Grace
+/// Period above — turns that into a bounded quarantine instead of an outright, immediate removal.
+/// See [`should_prune_with_hysteresis`] for the pure decision built on this field.
+///
+/// This module only *stores* the field and exposes the pure decision over it — it performs no
+/// I/O, so it is `cli` (module 7, unbuilt) that is responsible for actually setting/clearing
+/// `first_dead_at` when it writes the cache back after each sweep: set it to `now` the first time
+/// a sweep reads `Dead` from an entry whose previous `first_dead_at` was `None`, leave it
+/// unchanged on a subsequent `Dead` read, and clear it back to `None` the moment a sweep reads
+/// anything else.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CacheEntry {
     pub last_checked: Timestamp,
     pub verdict: Verdict,
+    pub first_dead_at: Option<Timestamp>,
 }
 
 /// Whether a cached verdict is still trusted or needs a fresh lookup. `cache_entry` is `None` for
@@ -97,6 +133,49 @@ pub fn should_prune(domain: &str, verdict: Verdict) -> bool {
     matches!(verdict, Verdict::Dead)
 }
 
+/// The hysteresis-aware companion to [`should_prune`]: a domain is only pruned once it has been
+/// **continuously** `Dead` for at least `quarantine_seconds`, per [`CacheEntry::first_dead_at`]'s
+/// doc comment on why a single bad NXDOMAIN (registrar hold, Redemption Grace Period, a transfer
+/// window) must not immediately drop an entry. Composes with, rather than replaces,
+/// [`should_prune`]: the special-use guard and the "only `Dead` prunes at all" rule are identical,
+/// this just adds a minimum-duration requirement on top of them.
+///
+/// `entry` is the cache entry as read **before** this sweep updates it — `first_dead_at` reflects
+/// how long the domain has been continuously dead as of the *previous* sweep, and `verdict` is the
+/// verdict from the *current* sweep. A caller combining the two this way (rather than pre-updating
+/// `entry.first_dead_at` before calling) keeps this function pure and free of the "did I already
+/// advance the streak" bookkeeping `cli` (module 7, unbuilt) owns when it writes the cache back.
+///
+/// Three cases:
+/// - `verdict` is not `Dead`: never pruned, regardless of `entry` — a domain that resolved (or was
+///   merely `Unknown`) this sweep has its dead streak broken, full stop.
+/// - `verdict` is `Dead` and `entry.first_dead_at` is `None` (this is the first sweep to see it
+///   dead): not pruned yet — one `Dead` read alone proves nothing, per the RGP/hold reasoning
+///   above.
+/// - `verdict` is `Dead` and `entry.first_dead_at` is `Some(first)`: pruned only once
+///   `now - first >= quarantine_seconds`. Uses `saturating_sub` for the same clock-skew reason
+///   `due_for_check` does — a `first` timestamp after `now` reads as "just went dead", not as a
+///   bogus multi-decade streak.
+///
+/// `quarantine_seconds` is caller-supplied, not hardcoded, matching `due_for_check`'s
+/// `ttl_seconds` convention — this module keeps thresholds as parameters. ~35 days (past the
+/// Redemption Grace Period's 30+5-day window) is the recommended value a caller might pass.
+pub fn should_prune_with_hysteresis(
+    entry: &CacheEntry,
+    domain: &str,
+    verdict: Verdict,
+    now: Timestamp,
+    quarantine_seconds: u64,
+) -> bool {
+    if !should_prune(domain, verdict) {
+        return false;
+    }
+    match entry.first_dead_at {
+        None => false,
+        Some(first_dead_at) => now.saturating_sub(first_dead_at) >= quarantine_seconds,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -114,6 +193,7 @@ mod tests {
             let entry = CacheEntry {
                 last_checked: 1_000,
                 verdict: Verdict::Alive,
+                first_dead_at: None,
             };
             assert!(!due_for_check(Some(&entry), 1_001, 300));
         }
@@ -123,6 +203,7 @@ mod tests {
             let entry = CacheEntry {
                 last_checked: 1_000,
                 verdict: Verdict::Alive,
+                first_dead_at: None,
             };
             assert!(due_for_check(Some(&entry), 1_300, 300));
         }
@@ -132,6 +213,7 @@ mod tests {
             let entry = CacheEntry {
                 last_checked: 1_000,
                 verdict: Verdict::Alive,
+                first_dead_at: None,
             };
             assert!(!due_for_check(Some(&entry), 1_299, 300));
         }
@@ -143,6 +225,7 @@ mod tests {
             let entry = CacheEntry {
                 last_checked: 10_000,
                 verdict: Verdict::Alive,
+                first_dead_at: None,
             };
             assert!(!due_for_check(Some(&entry), 1_000, 300));
         }
@@ -157,6 +240,7 @@ mod tests {
             let entry = CacheEntry {
                 last_checked: 0,
                 verdict: Verdict::Alive,
+                first_dead_at: None,
             };
             assert!(due_for_check(Some(&entry), ninety_days, ninety_days));
             assert!(!due_for_check(Some(&entry), ninety_days - 1, ninety_days));
@@ -220,6 +304,152 @@ mod tests {
             assert!(!should_prune("site.test", Verdict::Dead));
             assert!(!should_prune("thing.invalid", Verdict::Dead));
             assert!(!should_prune("thing.example", Verdict::Dead));
+        }
+    }
+
+    mod should_prune_with_hysteresis_tests {
+        use super::*;
+
+        const THIRTY_FIVE_DAYS: u64 = 35 * 24 * 60 * 60;
+
+        #[test]
+        fn a_domain_freshly_gone_dead_with_no_prior_streak_is_not_pruned() {
+            // The entry as read before this sweep has never seen Dead before (first_dead_at is
+            // None) — one Dead read alone must not prune, per the RGP/hold reasoning.
+            let entry = CacheEntry {
+                last_checked: 1_000,
+                verdict: Verdict::Unknown(UnknownReason::Timeout),
+                first_dead_at: None,
+            };
+            assert!(!should_prune_with_hysteresis(
+                &entry,
+                "dead.example.com",
+                Verdict::Dead,
+                1_000,
+                THIRTY_FIVE_DAYS,
+            ));
+        }
+
+        #[test]
+        fn a_domain_freshly_gone_dead_where_first_dead_at_equals_now_is_not_pruned() {
+            // The other legitimate shape of "just went dead": first_dead_at was already set to
+            // now by the caller on this same sweep. Zero elapsed time is still under any
+            // meaningful quarantine window.
+            let entry = CacheEntry {
+                last_checked: 1_000,
+                verdict: Verdict::Dead,
+                first_dead_at: Some(1_000),
+            };
+            assert!(!should_prune_with_hysteresis(
+                &entry,
+                "dead.example.com",
+                Verdict::Dead,
+                1_000,
+                THIRTY_FIVE_DAYS,
+            ));
+        }
+
+        #[test]
+        fn a_domain_dead_for_less_than_the_quarantine_window_is_not_pruned() {
+            let entry = CacheEntry {
+                last_checked: 1_000,
+                verdict: Verdict::Dead,
+                first_dead_at: Some(0),
+            };
+            assert!(!should_prune_with_hysteresis(
+                &entry,
+                "dead.example.com",
+                Verdict::Dead,
+                THIRTY_FIVE_DAYS - 1,
+                THIRTY_FIVE_DAYS,
+            ));
+        }
+
+        #[test]
+        fn a_domain_dead_for_at_least_the_quarantine_window_is_pruned() {
+            let entry = CacheEntry {
+                last_checked: 1_000,
+                verdict: Verdict::Dead,
+                first_dead_at: Some(0),
+            };
+            assert!(should_prune_with_hysteresis(
+                &entry,
+                "dead.example.com",
+                Verdict::Dead,
+                THIRTY_FIVE_DAYS,
+                THIRTY_FIVE_DAYS,
+            ));
+        }
+
+        #[test]
+        fn a_domain_that_flips_back_to_alive_clears_the_dead_streak_state() {
+            // Tests the caller-facing contract: a fresh CacheEntry with verdict: Alive and no
+            // dead-streak info (first_dead_at: None) needs no special handling — passing the
+            // *current* sweep's Alive verdict is never pruned, regardless of a long-past streak
+            // still recorded in first_dead_at (which a real caller would also be clearing, but
+            // this function's own rule already makes that moot: a non-Dead verdict is never
+            // pruned no matter what entry says).
+            let entry = CacheEntry {
+                last_checked: 1_000,
+                verdict: Verdict::Dead,
+                first_dead_at: Some(0),
+            };
+            assert!(!should_prune_with_hysteresis(
+                &entry,
+                "revived.example.com",
+                Verdict::Alive,
+                THIRTY_FIVE_DAYS * 2,
+                THIRTY_FIVE_DAYS,
+            ));
+
+            // And the ordinary fresh-entry shape: Alive verdict, no dead-streak history at all.
+            let fresh = CacheEntry {
+                last_checked: 1_000,
+                verdict: Verdict::Alive,
+                first_dead_at: None,
+            };
+            assert!(!should_prune_with_hysteresis(
+                &fresh,
+                "revived.example.com",
+                Verdict::Alive,
+                1_000,
+                THIRTY_FIVE_DAYS,
+            ));
+        }
+
+        #[test]
+        fn a_dead_onion_domain_past_the_quarantine_window_is_still_never_pruned() {
+            // The special-use guard composes through should_prune, so it must still hold here.
+            let entry = CacheEntry {
+                last_checked: 1_000,
+                verdict: Verdict::Dead,
+                first_dead_at: Some(0),
+            };
+            assert!(!should_prune_with_hysteresis(
+                &entry,
+                "abcdefghijklmnop.onion",
+                Verdict::Dead,
+                THIRTY_FIVE_DAYS,
+                THIRTY_FIVE_DAYS,
+            ));
+        }
+
+        #[test]
+        fn clock_skew_where_now_precedes_first_dead_at_is_not_pruned() {
+            // saturating_sub, mirroring due_for_check's own clock-skew handling: a first_dead_at
+            // after now must read as "just went dead," not underflow into a bogus streak.
+            let entry = CacheEntry {
+                last_checked: 1_000,
+                verdict: Verdict::Dead,
+                first_dead_at: Some(10_000),
+            };
+            assert!(!should_prune_with_hysteresis(
+                &entry,
+                "dead.example.com",
+                Verdict::Dead,
+                1_000,
+                THIRTY_FIVE_DAYS,
+            ));
         }
     }
 
