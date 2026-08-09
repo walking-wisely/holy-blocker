@@ -13,15 +13,51 @@ use crate::types::Timestamp;
 const MAX_NAMED_HITS: usize = 20;
 
 /// A fixed set of domains with a **known** expected [`Verdict`] (never `Unknown`), used to sanity
-/// check the resolver itself before trusting anything it says about the real sweep. The two lists
-/// are deliberately the same shape — both are "domains this build already knows the answer for" —
-/// because a resolver can misbehave in either direction: a content-filtering resolver NXDOMAINs
-/// real sites it blocks (caught by `alive_controls`, several known-always-alive, definitely-non-
-/// adult domains), and a wildcard-sink resolver resolves everything, including names that must
-/// never resolve (caught by `dead_controls`). `dead_controls` takes more than one for the same
-/// reason `alive_controls` does: a single control is one resolver quirk away from a false pass —
-/// e.g. a resolver that only mis-answers under `test.` and not `invalid.` — and `canary_check`
-/// runs the full set either way, so there is no cost to including more than one.
+/// check the resolver itself before trusting anything it says about the real sweep.
+///
+/// # Known gap: this control set is structurally blind to a resolver that filters only this
+/// # module's own category
+///
+/// **Read this before relying on this canary to catch the failure it exists for.** Every control
+/// this type carries today is drawn from *outside* the category the real sweep is checking:
+/// `alive_controls` must be "definitely-non-adult" domains, and `dead_controls` are reserved
+/// names (`invalid.`, `test.`) or a per-run nonce. A resolver that misbehaves *indiscriminately* —
+/// sinks everything, or NXDOMAIN-rewrites everything — trips one of these lists and the canary
+/// does its job. A resolver that filters **only the category this sweep targets**, and answers
+/// everything else honestly, passes every control in this set cleanly (none of them are in that
+/// category) and then silently prunes the real sweep to near-zero. That is not a hypothetical: UK
+/// ISP-level content filtering, Italy's AGCOM blocking regime, a CI provider's "family-safe"
+/// network default, and Cloudflare's own `1.1.1.3` family-filter resolver variant all have exactly
+/// this shape, and this is the single most dangerous failure mode the whole liveness design names
+/// (see the "resolver, and the canary check that guards it" section of
+/// `docs/decisions/domain-blocklist-sourcing.md`).
+///
+/// The correct fix is well understood and not applied here: an **in-category** alive control — a
+/// domain a category-targeting filter would block, but which is safe to check into a public
+/// repository (filtering vendors publish exactly this kind of test hostname for other categories,
+/// e.g. Cisco/OpenDNS's malware/phishing test domains). This module cannot supply that value
+/// itself: this project's own conventions forbid checking adult-content domains, real or
+/// placeholder, into this public repository even as a test fixture, and a vendor-published test
+/// domain must be sourced from that vendor's *current* documentation at deployment time, never
+/// invented or recalled from memory. Both constraints make this a `cli`-level (module 7, unbuilt)
+/// deployment-time data-sourcing responsibility, not something fixable here — see the decision
+/// doc's "Open gap" subsection for the full reasoning and the recommended path forward.
+///
+/// **No type-shape change is needed to support the fix.** `alive_controls: Vec<String>` already
+/// accepts a domain from any category — nothing about this struct privileges "non-adult" domains,
+/// it is purely that no caller has ever supplied an in-category one. When `cli` is built, its
+/// operator supplies one or more current, vendor-published, category-relevant test domains through
+/// this exact parameter, alongside the existing non-adult controls.
+///
+/// The two lists are otherwise deliberately the same shape — both are "domains this build already
+/// knows the answer for" — because a resolver can misbehave in either direction: a
+/// content-filtering resolver NXDOMAINs real sites it blocks (caught by `alive_controls`, several
+/// known-always-alive, definitely-non-adult domains, and — once sourced — the in-category control
+/// above), and a wildcard-sink resolver resolves everything, including names that must never
+/// resolve (caught by `dead_controls`). `dead_controls` takes more than one for the same reason
+/// `alive_controls` does: a single control is one resolver quirk away from a false pass — e.g. a
+/// resolver that only mis-answers under `test.` and not `invalid.` — and `canary_check` runs the
+/// full set either way, so there is no cost to including more than one.
 ///
 /// A real deployment's `dead_controls` should mix **two distinct failure classes**, not just take
 /// more reserved names: at least one RFC 2606/6761 reserved name (e.g. `invalid.`), which catches

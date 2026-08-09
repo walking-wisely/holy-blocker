@@ -470,6 +470,58 @@ verdict from that run is treated as untrusted and discarded — not merged, not 
 back. Nothing is published. A partially-completed sweep is not salvaged, because there is no way to
 know at which query the resolver started lying.
 
+#### Open gap: the canary cannot see a resolver that filters only this category
+
+The control set above is deliberately drawn from **outside** the category this pipeline sweeps —
+`alive_controls` must be "definitely-non-adult", `dead_controls` are reserved names or a per-run
+nonce (see [`packages/domain-blocklist`'s `liveness::canary`
+module](../../packages/domain-blocklist/src/liveness/canary.rs) for the implementation). That
+shape catches an indiscriminate sink and an indiscriminate NXDOMAIN rewrite — a resolver that lies
+about *everything*. It cannot catch a resolver that lies about *only this category*.
+
+A resolver that filters adult content specifically, and nothing else, answers every alive control
+honestly (they're all non-adult, by construction), answers every dead control honestly (reserved
+names and a nonce aren't in the category either), and then silently NXDOMAINs the entire real
+sweep. The canary passes. The sweep prunes the list to near-zero. This is not a hypothetical
+edge case — it is the *ordinary* shape of the exact failure this mechanism exists to catch, and it
+is documented as the single most dangerous failure mode two paragraphs above this one. Concrete,
+real deployments with exactly this shape: UK ISP-level content filtering, Italy's AGCOM blocking
+regime, a CI provider's "family-safe" network default, and Cloudflare's own `1.1.1.3` family-filter
+resolver variant (already named above as the resolver this pipeline must *not* use — the canary as
+currently shaped would not detect accidentally ending up on it anyway).
+
+**The fix is a known, standard technique the canary does not yet apply:** an *in-category* alive
+control — a domain a category-targeting filter would block, but which is not itself sensitive
+content and is safe to check into a public repository. Filtering vendors publish exactly this kind
+of test hostname for other categories (Cisco/OpenDNS's malware/phishing test domains are the
+well-known pattern); an equivalent for the adult-content category, sourced from a filtering
+vendor's *current* published documentation at deployment time, would close the gap the same way.
+
+**Why this repository cannot supply that value itself, and does not attempt to:**
+
+1. This project's own conventions (`CLAUDE.md`) forbid checking adult-content domains — real or
+   placeholder — into this public repository, even as a test fixture, and even for a security
+   control whose job is to detect adult-content filtering. That rule is not relaxed for this case.
+2. A vendor-published test domain must be taken from that vendor's *current* documentation, not
+   from a model's training-data memory or an engineer's recollection — a stale or misremembered
+   hostname is worse than an honest gap, since it would silently stop testing anything the moment
+   the vendor retires or repurposes it.
+
+Both constraints point the same way: **sourcing an in-category control is a deployment-time
+operator responsibility, not something this codebase can discharge.** No code change is needed to
+*support* it — `CanaryConfig::new`'s existing `alive_controls: Vec<String>` parameter already
+accepts any number of domains from any category; there is nothing about its shape that privileges
+"non-adult" domains over any other kind of alive control. The gap is entirely in the data supplied
+at construction time, which belongs to `cli` (module 7, unbuilt). When that module is built, its
+operator should source one or more current, vendor-published, category-relevant test domains from
+the filtering vendors' own current documentation and inject them via `CanaryConfig::new`'s
+`alive_controls` parameter alongside the existing non-adult controls — never by inventing a domain
+name, and never by drawing one from any adult-content list this repository would ever check in.
+
+Until that sourcing happens, this canary catches the crude failure (indiscriminate sink,
+indiscriminate NXDOMAIN rewrite) and **not** the targeted one — record this as a known, accepted
+limitation of every sweep run before that gap is closed, not a solved problem.
+
 #### Cadence, TTL, and pacing — three separate numbers
 
 These were previously one number, which made the promised steady-state saving imaginary: if the
