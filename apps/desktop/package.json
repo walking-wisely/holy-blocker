@@ -13,7 +13,7 @@
   },
   "dependencies": {
     "@vitejs/plugin-react": "^6.0.5",
-    "electron": "^42.5.0",
+    "electron": "^43.3.0",
     "lucide-react": "^1.28.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
