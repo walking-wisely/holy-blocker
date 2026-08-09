@@ -797,7 +797,7 @@ decision doc's [Distribution](../../decisions/domain-blocklist-sourcing.md#distr
    per the plan. **`dead_controls` is a `Vec`, symmetric with `alive_controls`**, not a single
    `String` — a lone dead control is one resolver quirk away from a false pass (e.g. a rewrite
    rule scoped to one reserved name and not another), and running the full set costs nothing extra
-   since `canary_check` already loops. 20 tests (119 total). Not yet consumed by `fst_build` or
+   since `canary_check` already loops. 30 tests (129 total). Not yet consumed by `fst_build` or
    `cli` (modules 4, 7 — both still unbuilt). **Five items are explicitly deferred design decisions
    for `cli` (module 7, still unbuilt), not gaps silently dropped from this module.** An
    interleaved canary — the canary only runs once at t=0 before a ~24h sweep, and proving the
