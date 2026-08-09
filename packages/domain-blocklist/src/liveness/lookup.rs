@@ -38,6 +38,21 @@ pub enum UnknownReason {
     /// A response with no error but no matching record (RCODE 0, empty answer) — the NODATA case,
     /// whose semantics come from RFC 2308 §2.2, not RFC 1035 §4.1.1 (which defines only the RCODE
     /// field, not what an empty-answer/RCODE-0 response means).
+    ///
+    /// **For an apex-scoped entry, this is an expected, benign, and often *permanent* state, not
+    /// a sign of trouble.** A zone that only publishes addresses at `www` (with MX/TXT/etc. at the
+    /// apex) is an empty non-terminal or NODATA at the apex per [RFC 4592
+    /// §2.2.2](https://www.rfc-editor.org/rfc/rfc4592#section-2.2.2) — that domain is alive and
+    /// serving content, and will report `NoData` on the apex A/AAAA lookup on every sweep forever.
+    /// This module has no visibility into apex-vs-exact-host scope (that lives in
+    /// `domain-normalize`/`merge.rs`, a different crate), so it cannot special-case this itself —
+    /// but a caller tracking "domains stuck in `Unknown` across repeated sweeps" (per the plan)
+    /// should not treat a persistent `NoData` the same as a persistent `Timeout` or `ServFail`:
+    /// the latter two indicate resolver or network trouble worth investigating, while `NoData` at
+    /// an apex is exactly what a healthy `www`-only zone looks like and needs no attention. See
+    /// [`combine`]'s doc comment for the two unexploited levers (a `www.` secondary probe, and RFC
+    /// 8020 zero-query NXDOMAIN inference) that would resolve this class of entry rather than just
+    /// characterize it, both left as follow-up work outside this module's scope.
     NoData,
     /// RFC 1035 §4.1.1 RCODE 2.
     ServFail,
@@ -186,6 +201,25 @@ pub enum Verdict {
 /// `pub` so a caller issuing A and AAAA lookups concurrently (the obvious 2x win `check` doesn't
 /// take, since it issues them sequentially) can reuse this exact three-step evaluation order
 /// rather than forking the one piece of genuinely subtle policy in this module.
+///
+/// # A known-large, mostly-benign `Unknown` cohort
+///
+/// Case 4 above folds plain apex NODATA (see [`UnknownReason::NoData`]'s doc comment — a `www`-only
+/// zone reports this on every sweep, forever, per [RFC 4592
+/// §2.2.2](https://www.rfc-editor.org/rfc/rfc4592#section-2.2.2)) into the same `Unknown` bucket as
+/// every other inconclusive cause. This module has no visibility into apex-vs-exact-host scope to
+/// do anything about that here — that lives in `domain-normalize`/`merge.rs`, a different crate —
+/// so two real levers exist but are deliberately **not implemented** in this function:
+///
+/// - TODO: an apex-scoped entry that comes back NODATA could be resolved (not just characterized)
+///   by a secondary `www.<domain>` probe — a live `www` host would prove the apex domain is alive
+///   even though the apex itself publishes no address records. This would change `check`'s
+///   signature/behavior (it would need scope information this module doesn't have) and needs a
+///   design decision, not a guess, before it's built.
+/// - TODO: [RFC 8020](https://www.rfc-editor.org/rfc/rfc8020) ("NXDOMAIN really means there is
+///   nothing underneath") is an unexploited lever in the other direction — an authenticated
+///   NXDOMAIN at an apex proves every subdomain of it is also dead, with zero additional queries.
+///   Not implemented here either; noted as a related possibility, not a plan.
 pub fn combine(a: LookupResult, aaaa: LookupResult) -> Verdict {
     match (a, aaaa) {
         (LookupResult::Resolved(_), _) | (_, LookupResult::Resolved(_)) => Verdict::Alive,
