@@ -447,13 +447,25 @@ OpenDNS FamilyShield, and a great many corporate and CI-provider networks — re
 sink address for essentially every domain on this list. Every entry reads as `Dead`. The pipeline
 prunes the list to near-zero, signs the result, and ships it. Nothing in the process looks broken.
 
-Two mechanisms, both required:
+Three mechanisms, all required:
 
 **A named, non-filtering resolver.** The pipeline is configured with an explicit resolver address
 and does not use the host's system resolver, which on a CI runner is whatever the provider
 happens to supply. The default is Cloudflare's unfiltered `1.1.1.1` / `2606:4700:4700::1111`,
 explicitly *not* the `1.1.1.2` (malware) or `1.1.1.3` (family) variants. Any substitute must be
 documented and canary-verified the same way.
+
+**Two-resolver corroboration before pruning.** A `Dead` verdict from a single resolver is never
+sufficient on its own — a domain is only actually pruned once a *second*, independently-configured
+resolver (a different operator, a different anycast network) also produces `Dead` for it. An
+earlier design tried to establish that same trust from DNSSEC authentication (the AD bit) on a
+single resolver's own answer instead, and that was measured, live, to be the wrong mechanism: most
+large TLDs — `.com`/`.net`/`.org`/`.xxx` included — sign with NSEC3 opt-out, under which a
+validating resolver cannot construct an authenticated proof of non-existence for an unsigned
+delegation at all, so requiring it made `Dead` nearly unreachable rather than safer to reach. See
+[`packages/domain-blocklist`'s `liveness::corroboration`
+module](../../packages/domain-blocklist/src/liveness/corroboration.rs) for the implementation and
+the full reasoning.
 
 **A canary check before every sweep**, over a small fixed set of control domains that has nothing to
 do with adult content, checked in both directions:
@@ -463,12 +475,70 @@ do with adult content, checked in both directions:
 - At least one **reserved name guaranteed not to resolve** (RFC 2606 / RFC 6761 — `invalid.` and a
   name under `test.`) must return `Dead`. This second direction catches the resolver that
   NXDOMAIN-rewrites to a wildcard sink, which would produce the *opposite* failure: nothing ever
-  prunes, and the list quietly stops being maintained.
+  prunes, and the list quietly stops being maintained. A real deployment should also mix in a
+  **per-run random-nonce control** under a real, currently-registered zone (`nonce_dead_control` in
+  the same module) — but never a zone hosted behind a provider that answers a nonexistent name with
+  NODATA rather than NXDOMAIN ("compact denial of existence"; Cloudflare-hosted zones, including
+  `example.com`, do this and were measured to break this exact control). See
+  `nonce_dead_control`'s doc comment for the full trap and how to verify a candidate zone before
+  using it.
 
 **If any canary returns anything other than its expected verdict, the entire sweep aborts.** Every
 verdict from that run is treated as untrusted and discarded — not merged, not cached, not written
 back. Nothing is published. A partially-completed sweep is not salvaged, because there is no way to
 know at which query the resolver started lying.
+
+#### Open gap: the canary cannot see a resolver that filters only this category
+
+The control set above is deliberately drawn from **outside** the category this pipeline sweeps —
+`alive_controls` must be "definitely-non-adult", `dead_controls` are reserved names or a per-run
+nonce (see [`packages/domain-blocklist`'s `liveness::canary`
+module](../../packages/domain-blocklist/src/liveness/canary.rs) for the implementation). That
+shape catches an indiscriminate sink and an indiscriminate NXDOMAIN rewrite — a resolver that lies
+about *everything*. It cannot catch a resolver that lies about *only this category*.
+
+A resolver that filters adult content specifically, and nothing else, answers every alive control
+honestly (they're all non-adult, by construction), answers every dead control honestly (reserved
+names and a nonce aren't in the category either), and then silently NXDOMAINs the entire real
+sweep. The canary passes. The sweep prunes the list to near-zero. This is not a hypothetical
+edge case — it is the *ordinary* shape of the exact failure this mechanism exists to catch, and it
+is documented as the single most dangerous failure mode two paragraphs above this one. Concrete,
+real deployments with exactly this shape: UK ISP-level content filtering, Italy's AGCOM blocking
+regime, a CI provider's "family-safe" network default, and Cloudflare's own `1.1.1.3` family-filter
+resolver variant (already named above as the resolver this pipeline must *not* use — the canary as
+currently shaped would not detect accidentally ending up on it anyway).
+
+**The fix is a known, standard technique the canary does not yet apply:** an *in-category* alive
+control — a domain a category-targeting filter would block, but which is not itself sensitive
+content and is safe to check into a public repository. Filtering vendors publish exactly this kind
+of test hostname for other categories (Cisco/OpenDNS's malware/phishing test domains are the
+well-known pattern); an equivalent for the adult-content category, sourced from a filtering
+vendor's *current* published documentation at deployment time, would close the gap the same way.
+
+**Why this repository cannot supply that value itself, and does not attempt to:**
+
+1. This project's own conventions (`CLAUDE.md`) forbid checking adult-content domains — real or
+   placeholder — into this public repository, even as a test fixture, and even for a security
+   control whose job is to detect adult-content filtering. That rule is not relaxed for this case.
+2. A vendor-published test domain must be taken from that vendor's *current* documentation, not
+   from a model's training-data memory or an engineer's recollection — a stale or misremembered
+   hostname is worse than an honest gap, since it would silently stop testing anything the moment
+   the vendor retires or repurposes it.
+
+Both constraints point the same way: **sourcing an in-category control is a deployment-time
+operator responsibility, not something this codebase can discharge.** No code change is needed to
+*support* it — `CanaryConfig::new`'s existing `alive_controls: Vec<String>` parameter already
+accepts any number of domains from any category; there is nothing about its shape that privileges
+"non-adult" domains over any other kind of alive control. The gap is entirely in the data supplied
+at construction time, which belongs to `cli` (module 7, unbuilt). When that module is built, its
+operator should source one or more current, vendor-published, category-relevant test domains from
+the filtering vendors' own current documentation and inject them via `CanaryConfig::new`'s
+`alive_controls` parameter alongside the existing non-adult controls — never by inventing a domain
+name, and never by drawing one from any adult-content list this repository would ever check in.
+
+Until that sourcing happens, this canary catches the crude failure (indiscriminate sink,
+indiscriminate NXDOMAIN rewrite) and **not** the targeted one — record this as a known, accepted
+limitation of every sweep run before that gap is closed, not a solved problem.
 
 #### Cadence, TTL, and pacing — three separate numbers
 

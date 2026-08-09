@@ -271,6 +271,34 @@ Responsibilities:
   Erring toward keeping an entry is the intended direction — false negatives are the budget, false
   positives are the price — which is why only an unambiguous NXDOMAIN prunes.
 
+**Done.** Built as `src/liveness/{mod,lookup,cache,canary,corroboration}.rs`, then hardened across
+three review rounds. The load-bearing correction from the third round: an earlier version of this
+module required DNSSEC authentication (the AD bit) on both address families before trusting an
+NXDOMAIN as `Dead`, and that requirement was measured live to be **the wrong design**, not a
+stricter-but-safer one — most large TLDs sign with NSEC3 opt-out (RFC 5155 §6), under which a
+validating resolver cannot construct authenticated denial-of-existence for an unsigned delegation
+at all, so the gate made `Dead` almost unreachable rather than safer to reach, and the module's own
+canary didn't catch it (`invalid.`/`test.` sit under the root zone, which uses plain NSEC rather
+than NSEC3 opt-out, so they authenticated cleanly while the real sweep quietly pruned nothing). The
+fix
+is `liveness::corroboration::corroborate`/`check_corroborated`: pruning now requires **two
+independently-configured resolvers** to each independently produce `Dead`, replacing the
+DNSSEC-authentication requirement as the actual defence against a lying or hijacking resolver;
+`authenticated` is kept as loggable evidence but no longer gates anything. `should_prune`/
+`should_prune_with_hysteresis` (`cache.rs`) now require the corroborated verdict, not a single
+resolver's own `check()` result. Also fixed in the same round: `is_filtering_ede` broadened to
+cover RFC 8914 codes 13 (Cached Error) and 18 (Prohibited) alongside 19 (Stale NXDOMAIN Answer);
+`nonce_dead_control`'s worked example and this file's own tests, which used the Cloudflare-hosted
+`example.com` — measured to answer a nonexistent subdomain with NODATA ("compact denial of
+existence") rather than NXDOMAIN, which broke the dead control and aborted every sweep
+permanently — renamed away from it, with the trap now documented explicitly; the apparent tension
+between `should_prune` (a `Dead` verdict on `.invalid`/`.test` proves nothing about registration)
+and `canary_check` (the same verdict on the same names proves the resolver is honest) resolved with
+cross-referencing doc comments explaining these are different questions about the same verdict, not
+a contradiction; and the `DnsLookup` trait's contract doc now states explicitly that an
+implementation must set the DNSSEC OK bit and read the AD/EDE evidence off the wire, ruling out a
+`getaddrinfo`-style high-level resolver API for module 7.
+
 (See [Reference documents](#reference-documents) below for the DNS response codes this matrix is
 built from.)
 
@@ -766,12 +794,62 @@ decision doc's [Distribution](../../decisions/domain-blocklist-sourcing.md#distr
    ("the pipeline binary wires in a real HTTP client") — nothing here needs live network access to
    test. Not yet consumed by `liveness`, `fst_build`, or `cli` (modules 3, 4, 7 — all still
    unbuilt).
-5. `liveness.rs` — `due_for_check` first as a pure function against a fake clock and fake cache
+5. ~~`liveness.rs` — `due_for_check` first as a pure function against a fake clock and fake cache
    entries with cadence ≠ TTL (this is the part with the trickiest edge cases: reappeared-stale vs.
    genuinely-revived entries). Then `canary_check` against a fake resolver that simulates a
    family-filtering resolver, a wildcard-sink resolver, and a healthy one — all three must be
    distinguishable. The real DNS lookup is a thin, separately-tested edge behind a trait so none of
-   this needs live network access to test.
+   this needs live network access to test.~~ **Done, minus the real DNS client, persistent cache
+   I/O, and the qps-paced sweep loop — all left to `cli` (module 7, unbuilt), the same split
+   module 1 draws for its real HTTP fetcher.** `LookupResult`/`UnknownReason` model one
+   single-QTYPE answer; `Verdict` is the combined per-domain outcome `combine()` produces from one
+   A and one AAAA `LookupResult` via `check()`, per the plan's three-step ordering (either
+   resolving → `Alive`; both `NxDomain` → `Dead`; otherwise, at least one `Unknown` and neither
+   `Resolved` → `Unknown`, covering the named mixed `NxDomain`/`Unknown` case explicitly). Real
+   lookups go through the `DnsLookup` trait, exactly as `SourceFetcher` does for module 1's HTTP
+   fetch — nothing here needs live network access to test. `due_for_check(cache_entry, now,
+   ttl_seconds)` takes only the TTL, not a cadence parameter: cadence is the caller's coarser
+   scheduling concern, deliberately kept out of this signature so a caller can't conflate the two
+   the plan is careful to decouple; `now.saturating_sub(last_checked)` reads clock skew (`now`
+   before `last_checked`) as "just checked" rather than underflowing into a bogus multi-decade gap
+   that would read as due regardless of TTL. `should_prune()` is the one-line rule "only `Dead`
+   prunes," tested separately for first-seen-`Unknown` vs. previously-cached-`Unknown` per the
+   plan's own split. `canary_check()` runs every `alive_controls` entry then every `dead_controls`
+   entry through `check()` and returns `CanaryResult::Failed { detail }` naming which control
+   domain misbehaved and what was expected — distinguishing a family-filtering resolver (an alive
+   control comes back `Dead`), a wildcard-sink resolver (a dead control comes back `Alive`), and
+   an inconclusive resolver (a control comes back `Unknown`, which fails the canary even though a
+   real sweep would keep an `Unknown` domain, since the control set is supposed to be
+   unambiguous) as three distinct, separately tested failures; it reports the mismatch only —
+   discarding the sweep and refusing to write the cache back on any canary failure is `cli`'s job,
+   per the plan. **`dead_controls` is a `Vec`, symmetric with `alive_controls`**, not a single
+   `String` — a lone dead control is one resolver quirk away from a false pass (e.g. a rewrite
+   rule scoped to one reserved name and not another), and running the full set costs nothing extra
+   since `canary_check` already loops. 30 tests (129 total). Not yet consumed by `fst_build` or
+   `cli` (modules 4, 7 — both still unbuilt). **Five items are explicitly deferred design decisions
+   for `cli` (module 7, still unbuilt), not gaps silently dropped from this module.** An
+   interleaved canary — the canary only runs once at t=0 before a ~24h sweep, and proving the
+   resolver was honest at t=0 doesn't prove it stayed honest for the whole window — is deferred
+   because `CanaryResult` has no timestamp field for `cli` to build the interleaving on top of yet,
+   and that's worth deciding before module 7 rather than patching in here. RFC 8914 Extended DNS
+   Errors (https://www.rfc-editor.org/rfc/rfc8914) — a filtering resolver often self-declares via
+   EDE 15/16/17 (Blocked/Censored/Filtered) alongside its NXDOMAIN, the strongest available signal
+   for exactly the threat `canary_check` guards against — is deferred because `LookupResult` has no
+   variant for it yet. An aggregate "Unknown rate" health signal is deferred: at sustained
+   real-world query rates a public resolver may start rate-limiting, turning every rate-limited
+   query into `Unknown(Timeout)` (kept, by design), which could let a whole sweep silently become a
+   no-op with nothing in `gates.rs` positioned to catch it, since `gates.rs`'s shrinkage gate
+   watches entry counts, not per-domain Unknown rate. Keeping `DnsLookup` synchronous versus
+   switching it to async is deferred as a real API-stability tradeoff — it's `pub`, re-exported
+   from `lib.rs`, and both `check`/`canary_check` take `&R: DnsLookup` — that should be decided
+   deliberately before module 7 is built rather than discovered mid-implementation, given the
+   plan's own pacing design (many in-flight concurrent queries at a target qps, above) points
+   toward an async-first client like hickory-resolver. RFC 8020
+   (https://www.rfc-editor.org/rfc/rfc8020, "NXDOMAIN: There Really Is Nothing Underneath") — an
+   NXDOMAIN at `example.com` implies every `*.example.com` entry is also dead, with zero extra
+   queries — is deferred because nothing in this module's shape expresses shared context between
+   per-domain `check()` calls, which a real optimization lever for module 7's per-domain sweep
+   would need.
 6. `fst_build.rs` — pin against a small hand-built key set first (a handful of domains sharing
    prefixes and suffixes, mixed `Apex` and `ExactHost`) and assert exact-match, label-boundary
    scoping, and **anchored** prefix-streaming behavior before building the real list.
