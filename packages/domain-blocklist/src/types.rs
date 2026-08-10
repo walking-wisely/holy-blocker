@@ -8,7 +8,9 @@ use domain_normalize::RuleScope;
 
 /// The upstream list a [`RawEntry`] was read from. See the plan's module 1 for the sources this
 /// project consumes and the format each one is parsed in.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub enum SourceId {
     StevenBlack,
     Hagezi,
@@ -17,7 +19,9 @@ pub enum SourceId {
 
 /// What kind of site a source flagged a domain as. A domain can carry more than one — see
 /// [`MergedEntry::categories`] and the plan's module 2 "Don't blend categories silently" rule.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub enum Category {
     Adult,
     Gambling,
@@ -62,7 +66,9 @@ pub struct MergedEntry {
 /// (SPDX itself grows), and what constrains them — the checked-in allowlist `gates::license_gate`
 /// checks against — is configuration, not something this crate's type system should try to
 /// enumerate exhaustively.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct LicenseId(pub String);
 
 impl LicenseId {
@@ -95,7 +101,7 @@ pub type Timestamp = u64;
 /// against a checked-in allowlist. Defined here, ahead of `sources` (module 1, unbuilt) — the
 /// same reason `RawEntry`/`MergedEntry` live here rather than in `merge.rs`: the modules that
 /// construct and gate on this type need somewhere to import it from.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SourceSnapshot {
     pub source: SourceId,
     pub revision: String,
