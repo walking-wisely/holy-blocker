@@ -5,12 +5,17 @@
 //!
 //! Runs as a periodic offline batch job, never on an end-user device.
 
+pub mod fst_build;
 pub mod gates;
 pub mod liveness;
 pub mod merge;
 pub mod sources;
 pub mod types;
 
+pub use fst_build::{
+    FstArtifact, FstBuildError, FstBuildReport, KeyId, Manifest, ProvenanceEntry, Signature, build,
+    reverse_key, signable_bytes, verify_manifest,
+};
 pub use gates::{
     FalsePositiveHit, GateResult, PreviousBuild, false_positive_gate, false_positive_hits,
     growth_gate, license_gate, review_queue, shrinkage_gate, size_gate,

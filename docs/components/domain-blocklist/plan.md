@@ -850,9 +850,32 @@ decision doc's [Distribution](../../decisions/domain-blocklist-sourcing.md#distr
    queries — is deferred because nothing in this module's shape expresses shared context between
    per-domain `check()` calls, which a real optimization lever for module 7's per-domain sweep
    would need.
-6. `fst_build.rs` — pin against a small hand-built key set first (a handful of domains sharing
+6. ~~`fst_build.rs` — pin against a small hand-built key set first (a handful of domains sharing
    prefixes and suffixes, mixed `Apex` and `ExactHost`) and assert exact-match, label-boundary
-   scoping, and **anchored** prefix-streaming behavior before building the real list.
+   scoping, and **anchored** prefix-streaming behavior before building the real list.~~ **Done.**
+   `reverse_key()` reverses a normalized domain's labels (`example.com` → `com.example`), keeping
+   an `ExactHost` `www` key distinct from the apex key so the consumer's label-boundary lookup
+   never conflates them; `assign_provenance()` enumerates the distinct `{sources, categories,
+   scope}` combinations across the merged entries into a **deterministically sorted**
+   `provenance_table` and maps every reversed key to its combination's compact `u32` ID (a
+   `BTreeMap` gives the sorted, deduplicated key set `fst::MapBuilder` requires for free);
+   `build()` builds the `fst::Map` from key → provenance ID, computes the SHA-256 `fst_digest` of
+   the `.fst` bytes, assembles the `Manifest`, signs the manifest's **signable bytes** (the
+   manifest with its own `signatures` field emptied, so adding a second signature during rotation
+   can't invalidate the first) with every `(KeyId, SigningKey)` pair via `sign()`, and reports
+   measured `bytes_per_entry` in `FstBuildReport`. `FstBuildError` aborts on any FST/serialize
+   failure and refuses a build with no signing keys (`NoSigningKeys`) — a build with no signer
+   must never publish. `verify_manifest()` mirrors the decision doc's client rule (verify against
+   any one `{key_id, signature}` entry whose `key_id` is in the trusted set) and is used to
+   round-trip the output in tests. `Manifest`/`ProvenanceEntry`/`Signature` carry serde derives
+   (the 64-byte `Signature.bytes` gets a manual `Serialize`/`Deserialize`, since this serde build
+   doesn't implement the traits for `[u8; 64]`), and `RuleScope`/`SourceId`/`Category`/
+   `LicenseId`/`SourceSnapshot` gained the serde/`Ord` derives needed to encode them. 14 tests,
+   covering label-boundary scoping, a two-category domain surviving merge into one provenance
+   combination, manifest bincode round-trip, a two-signature rotation manifest verifying against
+   old-key-only/new-key-only/both clients, and tampering with `fst_digest` after signing
+   invalidating every signature entry. Not yet consumed by `cli` (module 7, unbuilt) — the
+   pipeline that would call `build` and act on the manifest doesn't exist yet.
 7. `cli` — wire the whole pipeline together; the first real run is a dry run against the three
    fixture sources, not a live fetch.
 8. `net-shield` integration — the precedence table and the shared `normalize()`, per module 6.
