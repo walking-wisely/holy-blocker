@@ -540,4 +540,76 @@ mod tests {
 
         assert_eq!(outcome.pruned_domains, ["long-dead.dropped-domain.net".to_string()].into());
     }
+
+    /// Live smoke test: runs one real sweep against the actual `1.1.1.1`/`8.8.8.8` resolvers over
+    /// real UDP/53, for a handful of domains, at a modest `qps`. Exists to answer one question
+    /// before ever committing to an all-day production sweep — does the pacing, corroboration and
+    /// canary machinery actually work against real infrastructure — without waiting 24 hours to
+    /// find out. `#[ignore]`d, per this module's own doc comment ("exercised only by `#[ignore]`d
+    /// smoke tests a caller opts into explicitly") and `liveness/net.rs`'s identical note — opt in
+    /// with `cargo test --features net --release -- --ignored live_sweep_smoke_test`.
+    ///
+    /// Controls are chosen to avoid the two traps `liveness/canary.rs`'s own doc comments record:
+    /// alive controls are well-known, definitely-non-adult, definitely-up domains (never
+    /// `example.com`, whose *subdomains* answer NODATA rather than NXDOMAIN — irrelevant to an
+    /// alive control, but avoided anyway to keep this test's domain list boringly uncontroversial);
+    /// the dead control is a fresh label under the RFC 2606/6761-reserved `.invalid` TLD, which
+    /// sits directly under the root zone (plain NSEC, no NSEC3 opt-out) and so NXDOMAINs cleanly on
+    /// every honest resolver, per module 3's own measured finding.
+    #[tokio::test]
+    #[ignore = "touches real UDP/53 against public resolvers — run explicitly, not part of `cargo test --features net`"]
+    async fn live_sweep_smoke_test_against_real_resolvers() {
+        let config = SweepConfig {
+            primary: ResolverConfig {
+                addr: "1.1.1.1:53".parse().unwrap(),
+                timeout: Duration::from_millis(3000),
+            },
+            secondary: ResolverConfig {
+                addr: "8.8.8.8:53".parse().unwrap(),
+                timeout: Duration::from_millis(3000),
+            },
+            // The knob under test, not a placeholder — this is the same `--qps` flag `main.rs`
+            // exposes, deliberately set low here rather than the plan's ~11.5 production default
+            // so this smoke test stays a few seconds long instead of racing real infrastructure.
+            qps: 5.0,
+            concurrency: 4,
+            canary_every: 1000, // fewer domains than this, so exactly one canary check runs, at the end
+            ttl_seconds: 90 * 24 * 60 * 60,
+            quarantine_seconds: 180 * 24 * 60 * 60,
+        };
+
+        let canary = CanaryConfig::new(
+            vec!["cloudflare.com".to_string(), "wikipedia.org".to_string()],
+            vec!["holy-blocker-smoke-test-canary.invalid".to_string()],
+        )
+        .expect("non-empty control lists");
+
+        let entries = vec![
+            entry("mozilla.org"),
+            entry("iana.org"),
+            entry("holy-blocker-smoke-test-dead.invalid"),
+        ];
+
+        let start = std::time::Instant::now();
+        let outcome = run_sweep(&entries, HashMap::new(), &canary, &config, 1_000_000)
+            .await
+            .expect("live sweep against real resolvers should complete without a canary failure");
+        let elapsed = start.elapsed();
+
+        assert_eq!(outcome.checked_count, entries.len());
+        assert_eq!(outcome.cache.get("mozilla.org").map(|e| e.verdict), Some(Verdict::Alive));
+        assert_eq!(outcome.cache.get("iana.org").map(|e| e.verdict), Some(Verdict::Alive));
+        assert_eq!(
+            outcome.cache.get("holy-blocker-smoke-test-dead.invalid").map(|e| e.verdict),
+            Some(Verdict::Dead)
+        );
+
+        // The whole point of running this instead of the full pipeline: a handful of domains at
+        // 5 qps should take a few seconds, not 24 hours. A blown budget here means something is
+        // wrong with pacing/timeouts, not with the resolvers.
+        assert!(
+            elapsed < Duration::from_secs(30),
+            "smoke sweep took {elapsed:?} — investigate before trusting this as a quick check"
+        );
+    }
 }
