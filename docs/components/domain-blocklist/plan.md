@@ -1048,12 +1048,26 @@ decision doc's [Distribution](../../decisions/domain-blocklist-sourcing.md#distr
    names as the single most dangerous unclosed gap (a resolver that filters only the swept category
    passes every control this design can currently supply) is still not sourced — this crate's own
    content-policy conventions forbid fabricating or checking one in, so it remains a deployment-time
-   data-sourcing decision, exactly as `liveness::canary`'s own doc comment already flagged; (5) the
-   real DNS client's live behavior was verified only through its 12 offline unit tests against
+   data-sourcing decision, exactly as `liveness::canary`'s own doc comment already flagged; (5)
+   ~~the real DNS client's live behavior was verified only through its 12 offline unit tests against
    hand-built `Message` fixtures — no `#[ignore]`d live smoke test against a real resolver over the
-   network was added, so UDP/TCP transport behavior against a real 1.1.1.1/8.8.8.8 has not been
-   observed running through this exact code path, only through the standalone `dig`-based
-   assumption-audit probes the plan's net-client audit table already records; (6) the license
+   network was added~~ **Done, in a follow-up pass.** `sweep::tests::live_sweep_smoke_test_against_
+   real_resolvers` (`#[ignore]`d, `cargo test --bin domain-blocklist --features cli,net --release
+   -- --ignored`) runs one real sweep — real UDP/53 to 1.1.1.1/8.8.8.8, real canary corroboration,
+   real qps pacing — over a handful of domains in ~1 second, precisely so this exact code path can
+   be exercised without waiting on a 24-hour production run. **It caught a real, 100%-reproducible
+   defect on its first run**: `HickoryDnsLookup::lookup_async` built its query `Name` via
+   `Name::from_ascii(domain)`, which leaves `is_fqdn` false for a bare domain string (no trailing
+   dot); `hickory_proto::rr::Name`'s `PartialEq` treats that flag as significant, so
+   `check_response_echo`'s echoed-name comparison rejected **every real DNS response, from every
+   domain, unconditionally**, as a "mismatch" — meaning the live client had never completed a
+   single successful lookup, on any prior run, offline test, or review, despite passing every
+   fixture-based unit test (which never exercises a wire-decoded `Name`). Fixed with one
+   `name.set_fqdn(true)` before the query is sent — a question name on the wire is always fully
+   qualified per RFC 1035 §4.1.2 regardless of how the caller typed it, so the distinction the flag
+   exists for (relative vs. absolute, for a stub resolver's search-list behavior) is moot once a
+   name is about to be sent as one specific query. `cargo test --all-features` (253
+   domain-blocklist + 92 net-shield tests) stays green; (6) the license
    allowlist a real run needs (`--allow-license`) defaults, with a loud warning, to an unratified
    starting set (MIT, CC0-1.0, GPL-3.0, CC-BY-SA-4.0) — ratifying that list, including whether
    copyleft (GPL-3.0) inputs are acceptable for this project, is a human licensing decision this

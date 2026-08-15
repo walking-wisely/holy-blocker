@@ -127,12 +127,25 @@ impl HickoryDnsLookup {
     /// transport failure, timeout, garbled response) becomes a [`LookupResult::Unknown`] variant,
     /// per this trait's "no I/O error type in the return" contract.
     pub async fn lookup_async(&self, domain: &str, record: RecordType) -> LookupResult {
-        let Ok(name) = Name::from_ascii(domain) else {
+        let Ok(mut name) = Name::from_ascii(domain) else {
             // A domain this client can't even parse into wire labels — module 0's normalize()
             // should never hand this client something malformed, but a defensive Unknown here is
             // strictly safer than a panic.
             return LookupResult::Unknown(UnknownReason::Malformed);
         };
+        // `Name::from_ascii` leaves `is_fqdn` false for any input with no trailing dot (e.g.
+        // "cloudflare.com", which is what every caller in this crate passes), and
+        // `hickory_proto::rr::Name`'s `PartialEq` treats `is_fqdn` as significant — it refuses to
+        // consider two otherwise-identical names equal if that flag differs. Every wire-decoded
+        // name (the echoed question in a real response) is *always* fully qualified, so without
+        // this, `check_response_echo` below rejects every single real response as a "mismatch",
+        // unconditionally — found live, against 1.1.1.1/8.8.8.8, where it made 100% of queries
+        // fail closed as `Unknown(Malformed)` before a single byte of the response was even
+        // inspected. The wire distinction the flag exists for (FQDN vs. relative, for a stub
+        // resolver's search-list behavior) is meaningless once a name is about to be sent as one
+        // specific query, per RFC 1035 §4.1.2 — every question name on the wire terminates with
+        // the zero-length root label regardless of this flag.
+        name.set_fqdn(true);
         let qtype = to_hickory_record_type(record);
 
         match query_with_tcp_fallback(self.config, &name, qtype).await {
