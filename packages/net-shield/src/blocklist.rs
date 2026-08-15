@@ -355,6 +355,12 @@ impl Worker {
     ///   the window where a `lookup()` call arriving between the two steps would see both an empty
     ///   `inflight` entry and a cache miss, and issue a duplicate worker request for a domain that
     ///   was just resolved.
+    /// - `worker_requests` is incremented *before* any waiter is sent its answer, not after.
+    ///   Sending an answer can wake a caller's `recv_timeout` immediately, on another thread, and a
+    ///   caller is allowed to read `worker_requests_processed()` right after `lookup()` returns —
+    ///   incrementing afterward raced that read against this thread's own next instruction, which
+    ///   is exactly the flake CI caught: the counter could still read the pre-increment value at
+    ///   the moment a freshly-woken caller checked it.
     fn handle_lookup(&self, domain: String) {
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let reversed = reverse_key(&domain);
@@ -378,6 +384,7 @@ impl Worker {
             .lock()
             .expect("cache mutex poisoned")
             .put(domain.clone(), decision.clone());
+        self.worker_requests.fetch_add(1, Ordering::SeqCst);
 
         let waiters = self
             .inflight
@@ -388,7 +395,6 @@ impl Worker {
         for w in waiters {
             let _ = w.send(decision.clone());
         }
-        self.worker_requests.fetch_add(1, Ordering::SeqCst);
     }
 }
 
