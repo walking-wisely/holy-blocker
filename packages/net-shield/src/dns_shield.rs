@@ -14,6 +14,7 @@
 //! former, and it is the step that decides whether a connection is attempted at
 //! all. SNI and IP filtering, which need the latter, come after.
 
+use crate::blocklist::{Allowlist, BlocklistLookup, resolve_action};
 use crate::dns;
 use crate::radix::{DomainFilter, FilterAction};
 use crate::udp::{self, Ipv4UdpDatagram};
@@ -35,14 +36,37 @@ pub enum DnsVerdict {
     Forward { name: String, query: Vec<u8> },
 }
 
-/// Decides DNS queries against a [`DomainFilter`].
+/// Decides DNS queries against the module-6 precedence table: device-local allowlist → explicit
+/// `DomainFilter` rules → the FST blocklist (through a bounded-latency worker) → the default.
+///
+/// The query side normalizes the name with `domain_normalize::normalize` — the *same* function the
+/// blocklist build uses — so a query-time/build-time mismatch is impossible by construction. The
+/// blocklist is `Option` so the DNS decision is fully testable without spawning a worker.
 pub struct DnsShield {
-    domains: DomainFilter,
+    explicit: DomainFilter,
+    allowlist: Allowlist,
+    blocklist: Option<BlocklistLookup>,
 }
 
 impl DnsShield {
     pub fn new(domains: DomainFilter) -> Self {
-        DnsShield { domains }
+        DnsShield {
+            explicit: domains,
+            allowlist: Allowlist::new(),
+            blocklist: None,
+        }
+    }
+
+    pub fn with_policy(
+        explicit: DomainFilter,
+        allowlist: Allowlist,
+        blocklist: Option<BlocklistLookup>,
+    ) -> Self {
+        DnsShield {
+            explicit,
+            allowlist,
+            blocklist,
+        }
     }
 
     /// Classify one IPv4 packet read from the TUN.
@@ -57,11 +81,10 @@ impl DnsShield {
             return DnsVerdict::Ignore;
         };
 
-        match self.domains.lookup(&question.name) {
-            // `Proxy` is DomainFilter's miss default — "unrecognised, inspect
-            // it more deeply downstream". There is no deeper DNS inspection to
-            // hand it to, so on this path it means the same thing as `Allow`:
-            // let the real resolver answer. The name is still seen again at
+        match self.resolve(&question.name) {
+            // `Proxy` is the miss default — "unrecognised, inspect it more deeply downstream".
+            // There is no deeper DNS inspection to hand it to, so on this path it means the same
+            // thing as `Allow`: let the real resolver answer. The name is still seen again at
             // connect time by the SNI/IP path once that exists.
             FilterAction::Allow | FilterAction::Proxy => DnsVerdict::Forward {
                 name: question.name,
@@ -76,6 +99,23 @@ impl DnsShield {
                 // builds. Refusing to guess keeps the failure a dropped packet
                 // — which the client retries — rather than a malformed one.
                 None => DnsVerdict::Ignore,
+            },
+        }
+    }
+
+    /// Resolve a query name against the precedence table. A name that fails to normalize cannot be
+    /// matched against the blocklist (whose keys are normalized), so it is treated as default —
+    /// forwarded rather than guessed at.
+    fn resolve(&self, name: &str) -> FilterAction {
+        let normalized = match domain_normalize::normalize(name) {
+            Ok(n) => n,
+            Err(_) => return FilterAction::Proxy,
+        };
+        match resolve_action(&normalized, &self.allowlist, &self.explicit, None) {
+            Some(action) => action,
+            None => match &self.blocklist {
+                Some(worker) => worker.lookup(&normalized),
+                None => FilterAction::Proxy,
             },
         }
     }
