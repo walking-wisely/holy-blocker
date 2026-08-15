@@ -18,16 +18,18 @@ use crate::types::{Category, MergedEntry, RawEntry, ScopeHint};
 /// `normalized` must already be the output of [`domain_normalize::normalize`] — this function
 /// does no normalization of its own, matching `classify_scope`'s own contract.
 ///
-/// - `classify_scope` returning `None` (a public suffix, or on `shared_hosting_denylist`) refuses
-///   the entry outright, regardless of `scope_hint`: a wildcard cannot conjure apex coverage the
-///   PSL says isn't the tenant's, and a plain entry naming a public suffix is exactly the
-///   shared-hosting black hole this design refuses to create.
+/// - `classify_scope` returning `None` refuses the entry outright, regardless of `scope_hint` —
+///   this now only happens for a `shared_hosting_denylist` match, a deliberate operator decision
+///   to never make a rule targeting that exact domain at all.
 /// - Only a wildcard (`scope_hint == Apex`) can ever produce `RuleScope::Apex`, and only when the
 ///   base it names is itself eTLD+1. A plain entry that happens to literally be a registrable
 ///   domain is still scoped `ExactHost` — a source that names `example.com` without a wildcard
 ///   only ever meant that one host, and widening it to cover every subdomain the source never
 ///   listed would be exactly the kind of silent over-block this plan's "no `www.`-stripping"
-///   section warns about for the mirror case.
+///   section warns about for the mirror case. The same downgrade-not-drop rule now applies when
+///   `normalized` is itself a public suffix (`classify_scope` still refuses `Apex` there, but
+///   returns `Some(ExactHost)` rather than `None` — see its own doc comment for why claiming the
+///   literal suffix string is safe even though claiming everything under it would not be).
 pub fn resolve_scope(
     normalized: &str,
     scope_hint: ScopeHint,
@@ -49,10 +51,13 @@ pub struct MergeReport {
     /// expansion, ...). Module 1's parsers are expected to have already dropped most of these at
     /// fetch time; this counter catches anything that reached `merge` anyway.
     pub dropped_normalization_failed: u64,
-    /// `classify_scope` returned `None` — the entry is itself a public suffix, or is on the
-    /// shared-hosting denylist. This is the counter that would otherwise black-hole an entire
-    /// hosting provider if it went unnoticed.
-    pub dropped_public_suffix_or_denylisted: u64,
+    /// `classify_scope` returned `None` — the normalized entry matches the caller-supplied
+    /// `shared_hosting_denylist` exactly. Being itself a public suffix no longer lands here (see
+    /// `classify_scope`'s own doc comment: that case downgrades to `ExactHost` now, since claiming
+    /// the literal suffix string is safe even though claiming everything under it would not be) —
+    /// this counter now only moves on a deliberate operator "never make a rule targeting this
+    /// domain" decision, so a nonzero count is worth checking against that list, not the PSL.
+    pub dropped_shared_hosting_denylisted: u64,
     /// The normalized domain parses as an IPv4 or IPv6 literal. The plan's module 1 input-shape
     /// table assigns dropping these to the source parsers ("IP-based blocking is out of scope for
     /// a domain-keyed artifact"), but that module doesn't exist yet — this is defense in depth so
@@ -117,7 +122,7 @@ pub fn merge(raw_entries: &[RawEntry], shared_hosting_denylist: &[&str]) -> Merg
         let scope = match resolve_scope(&normalized, entry.scope_hint, &denylist_refs) {
             Some(scope) => scope,
             None => {
-                report.dropped_public_suffix_or_denylisted += 1;
+                report.dropped_shared_hosting_denylisted += 1;
                 continue;
             }
         };
@@ -260,9 +265,15 @@ mod tests {
         }
 
         #[test]
-        fn public_suffix_is_refused_regardless_of_hint() {
-            assert_eq!(resolve_scope("co.uk", ScopeHint::None, &[]), None);
-            assert_eq!(resolve_scope("co.uk", ScopeHint::Apex, &[]), None);
+        fn public_suffix_is_never_apex_regardless_of_hint_but_downgrades_to_exact_host() {
+            assert_eq!(
+                resolve_scope("co.uk", ScopeHint::None, &[]),
+                Some(RuleScope::ExactHost)
+            );
+            assert_eq!(
+                resolve_scope("co.uk", ScopeHint::Apex, &[]),
+                Some(RuleScope::ExactHost)
+            );
         }
 
         #[test]
@@ -418,7 +429,10 @@ mod tests {
         }
 
         #[test]
-        fn a_public_suffix_entry_is_dropped_and_counted() {
+        fn a_public_suffix_entry_is_kept_as_exact_host_not_dropped() {
+            // "co.uk" is itself a public suffix — never eligible for Apex (that would claim the
+            // whole shared TLD) — but the literal string is still safe to name exactly, so it's
+            // kept as ExactHost rather than dropped. See classify_scope's own doc comment.
             let out = merge(
                 &[entry(
                     "co.uk",
@@ -428,8 +442,28 @@ mod tests {
                 )],
                 &[],
             );
-            assert!(out.entries.is_empty());
-            assert_eq!(out.report.dropped_public_suffix_or_denylisted, 1);
+            assert_eq!(out.entries.len(), 1);
+            assert_eq!(out.entries[0].domain, "co.uk");
+            assert_eq!(out.entries[0].scope, RuleScope::ExactHost);
+            assert_eq!(out.report.dropped_shared_hosting_denylisted, 0);
+        }
+
+        #[test]
+        fn a_wildcard_hinted_public_suffix_entry_downgrades_to_exact_host_not_dropped() {
+            // A wildcard source entry (*.co.uk) still can't get Apex over the whole TLD, but the
+            // literal base is kept as ExactHost rather than discarded outright — a strict subset
+            // of what the source asked for, not a widening.
+            let out = merge(
+                &[entry(
+                    "co.uk",
+                    SourceId::Ut1,
+                    Category::Adult,
+                    ScopeHint::Apex,
+                )],
+                &[],
+            );
+            assert_eq!(out.entries.len(), 1);
+            assert_eq!(out.entries[0].scope, RuleScope::ExactHost);
         }
 
         #[test]
@@ -444,7 +478,7 @@ mod tests {
                 &["shared-host.example"],
             );
             assert!(out.entries.is_empty());
-            assert_eq!(out.report.dropped_public_suffix_or_denylisted, 1);
+            assert_eq!(out.report.dropped_shared_hosting_denylisted, 1);
         }
 
         #[test]
@@ -463,7 +497,7 @@ mod tests {
             );
             assert!(out.entries.is_empty());
             assert_eq!(out.report.dropped_normalization_failed, 1);
-            assert_eq!(out.report.dropped_public_suffix_or_denylisted, 0);
+            assert_eq!(out.report.dropped_shared_hosting_denylisted, 0);
         }
 
         #[test]
@@ -489,7 +523,7 @@ mod tests {
             assert!(out.entries.is_empty());
             assert_eq!(out.report.dropped_ip_literal, 1);
             assert_eq!(out.report.dropped_normalization_failed, 0);
-            assert_eq!(out.report.dropped_public_suffix_or_denylisted, 0);
+            assert_eq!(out.report.dropped_shared_hosting_denylisted, 0);
         }
 
         #[test]
@@ -507,7 +541,7 @@ mod tests {
                 &["Shared-Host.example."],
             );
             assert!(out.entries.is_empty());
-            assert_eq!(out.report.dropped_public_suffix_or_denylisted, 1);
+            assert_eq!(out.report.dropped_shared_hosting_denylisted, 1);
         }
 
         #[test]
@@ -526,7 +560,7 @@ mod tests {
                 &[unnormalizable.as_str()],
             );
             assert_eq!(out.report.dropped_normalization_failed, 1);
-            assert_eq!(out.report.dropped_public_suffix_or_denylisted, 0);
+            assert_eq!(out.report.dropped_shared_hosting_denylisted, 0);
         }
 
         #[test]
