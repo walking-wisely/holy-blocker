@@ -756,6 +756,57 @@ fn log_verdict_breakdown(cache: &HashMap<String, domain_blocklist::CacheEntry>) 
     );
 }
 
+/// Tallies `outcome.cache`'s verdicts into a log line naming each `Unknown` reason separately —
+/// operational visibility for a qps ramp, per the plan's own recorded finding that the aggregate
+/// `Unknown` rate alone hides which failure mode (`Timeout` vs. cross-resolver
+/// `UncorroboratedDead` vs. resolver-side `ServFail`/`NoData`) is actually driving degradation
+/// (see `docs/decisions/domain-blocklist-sourcing.md`'s "Measured 2026-08-15/16" section).
+#[cfg(feature = "net")]
+fn log_verdict_breakdown(cache: &HashMap<String, domain_blocklist::CacheEntry>) {
+    use domain_blocklist::{UnknownReason, Verdict};
+    let mut alive = 0u64;
+    let mut dead = 0u64;
+    let mut unknown_nodata = 0u64;
+    let mut unknown_servfail = 0u64;
+    let mut unknown_refused = 0u64;
+    let mut unknown_timeout = 0u64;
+    let mut unknown_malformed = 0u64;
+    let mut unknown_filtered = 0u64;
+    let mut unknown_uncorroborated_dead = 0u64;
+    let mut unknown_other = 0u64;
+    for entry in cache.values() {
+        match &entry.verdict {
+            Verdict::Alive => alive += 1,
+            Verdict::Dead => dead += 1,
+            Verdict::Unknown(reason) => match reason {
+                UnknownReason::NoData => unknown_nodata += 1,
+                UnknownReason::ServFail => unknown_servfail += 1,
+                UnknownReason::Refused => unknown_refused += 1,
+                UnknownReason::Timeout => unknown_timeout += 1,
+                UnknownReason::Malformed => unknown_malformed += 1,
+                UnknownReason::FilteredByResolver => unknown_filtered += 1,
+                UnknownReason::UncorroboratedDead => unknown_uncorroborated_dead += 1,
+                _ => unknown_other += 1,
+            },
+        }
+    }
+    let total = cache.len().max(1) as f64;
+    tracing::info!(
+        alive,
+        dead,
+        unknown_nodata,
+        unknown_servfail,
+        unknown_refused,
+        unknown_timeout,
+        unknown_malformed,
+        unknown_filtered,
+        unknown_uncorroborated_dead,
+        unknown_other,
+        unknown_pct = format!("{:.4}", (cache.len() - alive as usize - dead as usize) as f64 / total * 100.0),
+        "verdict breakdown"
+    );
+}
+
 #[cfg(not(feature = "net"))]
 async fn run_liveness(
     _cli: &cli::Cli,
