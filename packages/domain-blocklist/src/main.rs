@@ -15,6 +15,8 @@ mod slots;
 mod sweep;
 
 use std::collections::BTreeSet;
+#[cfg(feature = "net")]
+use std::collections::HashMap;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -167,8 +169,8 @@ fn default_source_jobs() -> Vec<SourceJob> {
             fixture_name: "stevenblack",
             config: SourceConfig {
                 source: SourceId::StevenBlack,
-                url: "https://raw.githubusercontent.com/StevenBlack/hosts/UNPINNED/alternates/porn-only/hosts".to_string(),
-                pinned_revision: "UNPINNED".to_string(),
+                url: "https://raw.githubusercontent.com/StevenBlack/hosts/35db0ae94f7552dfd18218baffe74bd720a585f7/alternates/porn-only/hosts".to_string(),
+                pinned_revision: "35db0ae94f7552dfd18218baffe74bd720a585f7".to_string(),
                 expected_license: LicenseId("MIT".to_string()),
             },
             category: Category::Adult,
@@ -178,8 +180,8 @@ fn default_source_jobs() -> Vec<SourceJob> {
             fixture_name: "hagezi_nsfw",
             config: SourceConfig {
                 source: SourceId::Hagezi,
-                url: "https://raw.githubusercontent.com/hagezi/dns-blocklists/UNPINNED/wildcard/nsfw-onlydomains.txt".to_string(),
-                pinned_revision: "UNPINNED".to_string(),
+                url: "https://raw.githubusercontent.com/hagezi/dns-blocklists/3975aafcc2e4542f7b5383f69bd6b100c4fb9040/wildcard/nsfw-onlydomains.txt".to_string(),
+                pinned_revision: "3975aafcc2e4542f7b5383f69bd6b100c4fb9040".to_string(),
                 expected_license: LicenseId("GPL-3.0".to_string()),
             },
             category: Category::Adult,
@@ -190,7 +192,7 @@ fn default_source_jobs() -> Vec<SourceJob> {
             config: SourceConfig {
                 source: SourceId::Ut1,
                 url: "https://dsi.ut-capitole.fr/blacklists/download/adult.tar.gz".to_string(),
-                pinned_revision: "UNPINNED".to_string(),
+                pinned_revision: "last-modified=Sat, 15 Aug 2026 20:50:17 GMT".to_string(),
                 expected_license: LicenseId("CC-BY-SA-4.0".to_string()),
             },
             category: Category::Adult,
@@ -201,7 +203,7 @@ fn default_source_jobs() -> Vec<SourceJob> {
             config: SourceConfig {
                 source: SourceId::Ut1,
                 url: "https://dsi.ut-capitole.fr/blacklists/download/gambling.tar.gz".to_string(),
-                pinned_revision: "UNPINNED".to_string(),
+                pinned_revision: "last-modified=Sat, 15 Aug 2026 20:50:17 GMT".to_string(),
                 expected_license: LicenseId("CC-BY-SA-4.0".to_string()),
             },
             category: Category::Gambling,
@@ -212,7 +214,7 @@ fn default_source_jobs() -> Vec<SourceJob> {
             config: SourceConfig {
                 source: SourceId::Ut1,
                 url: "https://dsi.ut-capitole.fr/blacklists/download/dating.tar.gz".to_string(),
-                pinned_revision: "UNPINNED".to_string(),
+                pinned_revision: "last-modified=Sat, 15 Aug 2026 20:50:17 GMT".to_string(),
                 expected_license: LicenseId("CC-BY-SA-4.0".to_string()),
             },
             category: Category::Dating,
@@ -406,6 +408,15 @@ async fn run(cli: cli::Cli) -> Result<()> {
     }
 
     let mut entries = merge_output.entries;
+    if let Some(n) = cli.sample {
+        tracing::warn!(
+            sample = n,
+            total = entries.len(),
+            "--sample set: truncating the merged entry set for operational testing — never do \
+             this for a real publish"
+        );
+        entries.truncate(n);
+    }
 
     // --- Liveness sweep -----------------------------------------------------------------------
     if !cli.effective_skip_liveness() {
@@ -593,6 +604,7 @@ async fn run_liveness(cli: &cli::Cli, entries: Vec<MergedEntry>) -> Result<Vec<M
         pruned = outcome.pruned_domains.len(),
         "liveness sweep complete"
     );
+    log_verdict_breakdown(&outcome.cache);
 
     if let Some(path) = &cli.cache
         && !cli.dry_run
@@ -604,6 +616,57 @@ async fn run_liveness(cli: &cli::Cli, entries: Vec<MergedEntry>) -> Result<Vec<M
         .into_iter()
         .filter(|e| !outcome.pruned_domains.contains(&e.domain))
         .collect())
+}
+
+/// Tallies `outcome.cache`'s verdicts into a log line naming each `Unknown` reason separately —
+/// operational visibility for a qps ramp, per the plan's own recorded finding that the aggregate
+/// `Unknown` rate alone hides which failure mode (`Timeout` vs. cross-resolver
+/// `UncorroboratedDead` vs. resolver-side `ServFail`/`NoData`) is actually driving degradation
+/// (see `docs/decisions/domain-blocklist-sourcing.md`'s "Measured 2026-08-15/16" section).
+#[cfg(feature = "net")]
+fn log_verdict_breakdown(cache: &HashMap<String, domain_blocklist::CacheEntry>) {
+    use domain_blocklist::{UnknownReason, Verdict};
+    let mut alive = 0u64;
+    let mut dead = 0u64;
+    let mut unknown_nodata = 0u64;
+    let mut unknown_servfail = 0u64;
+    let mut unknown_refused = 0u64;
+    let mut unknown_timeout = 0u64;
+    let mut unknown_malformed = 0u64;
+    let mut unknown_filtered = 0u64;
+    let mut unknown_uncorroborated_dead = 0u64;
+    let mut unknown_other = 0u64;
+    for entry in cache.values() {
+        match &entry.verdict {
+            Verdict::Alive => alive += 1,
+            Verdict::Dead => dead += 1,
+            Verdict::Unknown(reason) => match reason {
+                UnknownReason::NoData => unknown_nodata += 1,
+                UnknownReason::ServFail => unknown_servfail += 1,
+                UnknownReason::Refused => unknown_refused += 1,
+                UnknownReason::Timeout => unknown_timeout += 1,
+                UnknownReason::Malformed => unknown_malformed += 1,
+                UnknownReason::FilteredByResolver => unknown_filtered += 1,
+                UnknownReason::UncorroboratedDead => unknown_uncorroborated_dead += 1,
+                _ => unknown_other += 1,
+            },
+        }
+    }
+    let total = cache.len().max(1) as f64;
+    tracing::info!(
+        alive,
+        dead,
+        unknown_nodata,
+        unknown_servfail,
+        unknown_refused,
+        unknown_timeout,
+        unknown_malformed,
+        unknown_filtered,
+        unknown_uncorroborated_dead,
+        unknown_other,
+        unknown_pct = format!("{:.4}", (cache.len() - alive as usize - dead as usize) as f64 / total * 100.0),
+        "verdict breakdown"
+    );
 }
 
 #[cfg(not(feature = "net"))]
