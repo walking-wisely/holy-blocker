@@ -5,6 +5,8 @@
 //!
 //! Runs as a periodic offline batch job, never on an end-user device.
 
+#[cfg(feature = "cli")]
+pub mod fetchers;
 pub mod fst_build;
 pub mod gates;
 pub mod liveness;
@@ -22,8 +24,8 @@ pub use gates::{
 };
 pub use liveness::{
     CacheEntry, CanaryConfig, CanaryResult, DnsLookup, LookupResult, RecordType, UnknownReason,
-    Verdict, canary_check, check as check_liveness, combine, due_for_check, should_prune,
-    should_prune_with_hysteresis,
+    Verdict, canary_check, check as check_liveness, check_corroborated, combine, corroborate,
+    due_for_check, is_special_use_domain, should_prune, should_prune_with_hysteresis,
 };
 pub use merge::{
     MergeOutput, MergeReport, filter_by_category, flag_personal_name, merge as merge_entries,

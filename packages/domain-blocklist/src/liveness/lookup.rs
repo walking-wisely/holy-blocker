@@ -92,6 +92,14 @@ pub enum UnknownReason {
     NotImp,
     /// No response arrived within the resolver client's deadline.
     Timeout,
+    /// A network-level failure reaching or talking to the resolver — connection refused/reset,
+    /// socket bind failure, unreachable network — as opposed to [`UnknownReason::Malformed`],
+    /// which is a response that *arrived* but could not be parsed. Kept distinct so an operator
+    /// debugging a spike in one reason doesn't investigate the wrong layer (the network path vs.
+    /// the resolver's own behavior). Never used by [`combine`] to produce anything other than
+    /// `Verdict::Unknown` (an `Unknown` reason can never gate pruning), so this is purely
+    /// diagnostic.
+    Transport,
     /// A response arrived but could not be parsed as a valid DNS message. **Never the right home
     /// for an unretried TC=1 (truncated) response** — see [`DnsLookup::lookup`]'s doc comment: an
     /// implementation that doesn't retry over TCP per RFC 1035 §4.2.1 / RFC 7766 must not surface
@@ -695,6 +703,45 @@ mod tests {
         assert_eq!(
             check(&resolver, "example.com"),
             Verdict::Unknown(UnknownReason::FormErr)
+        );
+    }
+
+    #[test]
+    fn transport_unknown_paired_with_anything_yields_transport_unchanged() {
+        // UnknownReason::Transport is diagnostic-only — combine()'s catch-all `(Unknown(reason),
+        // _)` arm passes any reason through unchanged, so a transport failure on the A side must
+        // surface as exactly that reason, never rewritten to something indistinguishable from a
+        // garbled-response Malformed.
+        let resolver = FakeResolver::new()
+            .with(
+                "example.com",
+                RecordType::A,
+                LookupResult::Unknown(UnknownReason::Transport),
+            )
+            .with(
+                "example.com",
+                RecordType::Aaaa,
+                LookupResult::Unknown(UnknownReason::Malformed),
+            );
+        assert_eq!(
+            check(&resolver, "example.com"),
+            Verdict::Unknown(UnknownReason::Transport)
+        );
+
+        let resolver = FakeResolver::new()
+            .with(
+                "example.com",
+                RecordType::A,
+                LookupResult::Unknown(UnknownReason::NotImp),
+            )
+            .with(
+                "example.com",
+                RecordType::Aaaa,
+                LookupResult::Unknown(UnknownReason::Transport),
+            );
+        assert_eq!(
+            check(&resolver, "example.com"),
+            Verdict::Unknown(UnknownReason::NotImp)
         );
     }
 
