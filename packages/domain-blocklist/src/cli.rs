@@ -162,6 +162,17 @@ pub struct Cli {
     /// Size gate ceiling, bytes. Plan default: 32 MiB.
     #[arg(long, default_value_t = 32 * 1024 * 1024)]
     pub size_ceiling_bytes: u64,
+
+    /// Operational testing only, never for a real publish: truncates the merged entry set to the
+    /// first N (post-merge, pre-liveness) domains before the liveness sweep and every gate below
+    /// it. Exists so a qps ramp or a canary check can be exercised against a small slice of a
+    /// *real* fetched corpus without waiting out a full-corpus sweep — `--fixture-dir` cannot
+    /// serve this purpose, since it deliberately forces `--skip-liveness` (see
+    /// `effective_skip_liveness`'s doc comment) and this flag's whole point is to reach the real
+    /// DNS sweep. Every gate still runs and can still fail (most obviously `shrinkage_gate`
+    /// against a real previous build) — that is intentional signal, not a bug to suppress.
+    #[arg(long)]
+    pub sample: Option<usize>,
 }
 
 impl Cli {
