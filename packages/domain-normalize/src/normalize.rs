@@ -51,17 +51,25 @@ pub fn normalize(domain: &str) -> Result<String, NormalizeError> {
         return Err(NormalizeError::Empty);
     }
 
-    // UseSTD3ASCIIRules=true (AsciiDenyList::STD3): reject disallowed ASCII (spaces, underscores,
-    // etc.) rather than silently letting them through, matching the module's "no
-    // normalization-widens-scope" guarantee — a stray forbidden character must never quietly
-    // become a different, matchable string. Hyphens::Allow: positional hyphen restrictions
-    // (leading/trailing/3rd-4th-position) reject real-world names idna's own `domain_to_ascii_strict`
-    // docs warn about (YouTube CDN nodes, some GitHub Pages hosts); length is validated separately
-    // below, so DnsLength::Ignore here.
+    // AsciiDenyList::URL, matching UseSTD3ASCIIRules=false plus the WHATWG URL Standard's own
+    // forbidden-domain-code-point check (idna's own doc comment names this as exactly what the
+    // URL Standard's domain-to-ASCII step applies). A real browser resolves `beStrict = false`
+    // when parsing a URL's host — the URL Standard says so explicitly, "due to web compatibility"
+    // — so a strict LDH-only deny list (AsciiDenyList::STD3) rejects domains a browser will
+    // actually navigate to. The load-bearing case: an underscore label is not DNS-preferred syntax
+    // (RFC 952/1123) but is legal on the wire (RFC 1035 §2.3.1 labels are arbitrary octets) and
+    // resolves in practice (`_dmarc.google.com` is a real, ubiquitous example) — rejecting it here
+    // does not narrow this crate's guaranteed-safe scope, it silently drops the domain from the
+    // merged set entirely, so it can never become a rule at all. AsciiDenyList::URL still denies
+    // glyphless/control characters and URL-structural punctuation (`%#/:<>?@[\]^|`, which is also
+    // how an IPv6 literal's `:`/`[`/`]` stay rejected here, same as before). Hyphens::Allow:
+    // positional hyphen restrictions (leading/trailing/3rd-4th-position) reject real-world names
+    // idna's own `domain_to_ascii_strict` docs warn about (YouTube CDN nodes, some GitHub Pages
+    // hosts); length is validated separately below, so DnsLength::Ignore here.
     let cow = Uts46::new()
         .to_ascii(
             trimmed.as_bytes(),
-            AsciiDenyList::STD3,
+            AsciiDenyList::URL,
             Hyphens::Allow,
             DnsLength::Ignore,
         )
@@ -160,12 +168,27 @@ mod tests {
     }
 
     #[test]
-    fn rejects_forbidden_std3_characters() {
+    fn rejects_glyphless_and_url_structural_characters() {
+        // Space is glyphless (deny_glyphless=true in AsciiDenyList::URL) — still rejected.
         assert_eq!(normalize("exa mple.com"), Err(NormalizeError::InvalidIdna));
-        assert_eq!(
-            normalize("under_score.com"),
-            Err(NormalizeError::InvalidIdna)
-        );
+        // '/' is one of the URL-structural characters AsciiDenyList::URL denies explicitly.
+        assert_eq!(normalize("exa/mple.com"), Err(NormalizeError::InvalidIdna));
+    }
+
+    #[test]
+    fn accepts_underscore_a_real_browser_resolves() {
+        // Underscore is DNS-wire-legal (RFC 1035 §2.3.1) and a real browser's URL parser accepts
+        // it (WHATWG URL Standard, beStrict=false) — AsciiDenyList::STD3 previously rejected this
+        // and silently dropped a browser-reachable domain from the merged set entirely.
+        assert_eq!(normalize("under_score.com").unwrap(), "under_score.com");
+        assert_eq!(normalize("_dmarc.google.com").unwrap(), "_dmarc.google.com");
+    }
+
+    #[test]
+    fn still_rejects_ipv6_literal_colons_and_brackets() {
+        // AsciiDenyList::URL's own doc comment: "this deny list rejects IPv6 addresses" — ':'/
+        // '['/']' are all in its explicit URL-structural deny list, same as under STD3 before.
+        assert_eq!(normalize("[::1]"), Err(NormalizeError::InvalidIdna));
     }
 
     #[test]
