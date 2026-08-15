@@ -444,6 +444,11 @@ constant.
 alongside its existing one — it does not grow I/O or mmap logic of its own. A new type owns the
 signed-artifact concerns and hands `DomainFilter` something it already knows how to consume:
 
+**Superseded by the assumption-audit table below**: the sketch originally here declared
+`map: Arc<memmap2::Mmap>` alongside a separate `fst::Map`, which is exactly the self-referential
+`Mmap`/`Map` pair the audit's first row rejects. The implementation (and the shape to read as
+current) owns a single `fst::Map<Mmap>`, which is `Send + Sync` on its own and needs no `Arc`:
+
 ```rust
 // packages/net-shield/src/radix.rs — unchanged:
 impl DomainFilter {
@@ -452,7 +457,7 @@ impl DomainFilter {
 
 // new: a thin wrapper that owns the artifact, not DomainFilter itself
 pub struct BlocklistArtifact {
-    map: Arc<memmap2::Mmap>,       // the mmap-backed .fst, per the decision doc
+    map: fst::Map<memmap2::Mmap>,  // owns the mmap-backed .fst directly — no Arc, no self-reference
     provenance: Vec<ProvenanceEntry>,
 }
 
@@ -643,10 +648,21 @@ context), and the DNS client has no query retries, so the canary's near-certain 
 dropped UDP packet across ~6,000 canary queries per sweep makes a real multi-hour sweep's most
 likely outcome a false abort — plus several high/medium findings (an unintended `net-shield`
 dependency on a full HTTP stack, silent-by-default logging, an unenforced false-positive gate,
-and more). **Neither the live-fetch path nor the live-DNS-sweep path has ever run to completion —
-every verification so far has been fixture-mode/`--skip-liveness` only.** Full findings, reproduced
-where practical: [module-7-cli-adversarial-review.md](module-7-cli-adversarial-review.md). Not yet
-fixed.
+and more). Full findings, reproduced where practical:
+[module-7-cli-adversarial-review.md](module-7-cli-adversarial-review.md) — that file is a **pre-fix
+snapshot** as of the date above; see its own note at the top for where each finding's disposition is
+now tracked. **Fixed in this same branch's later commits**, per this row's own "module 7 (`cli`) is
+now done" text in `CLAUDE.md`: the `Runtime`-dropped-inside-async-context panic (`main.rs`'s
+`AlreadyFetched` wrapper now drives the real fetchers' async paths from outside `fetch_source`'s
+synchronous trait method, rather than `block_on`-ing from inside an already-running runtime) and the
+DNS client's missing retries (`liveness/net.rs`'s `UDP_RETRY_ATTEMPTS`/`UDP_RETRY_BACKOFF`, plus this
+module's own later `TOTAL_QUERY_BUDGET` fix for the retry loop's total time bound). The unintended
+`net-shield`-on-full-HTTP-stack dependency does not reproduce against current `Cargo.toml`:
+`net-shield` depends on `domain-blocklist` with no `cli`/`net` features enabled, so `reqwest`/`tar`/
+`clap` are not pulled in. **Neither the live-fetch path nor the live-DNS-sweep path has been run to
+completion against real infrastructure** — every verification so far, including this fix pass, has
+been fixture-mode/`--skip-liveness`/unit-test only; that gap is unchanged by the fixes above and is
+still open.
 
 ### 8. `overlay` — a small, fast-cadence tier for urgent additions and removals
 
@@ -1063,7 +1079,8 @@ decision doc's [Distribution](../../decisions/domain-blocklist-sourcing.md#distr
     module's test helper, never by module 7 `cli` (unbuilt), so the layout contract is defined and
     tested against but not yet produced by the real pipeline. 25 new tests (22 in `blocklist.rs`
     covering load verification/fallback, label-boundary scoping, precedence, the budget worker, and
-    end-to-end DNS, plus precedence tests; net-shield total now 91). Consumed by nothing yet — the
+    end-to-end DNS, plus precedence tests; net-shield total 91 as of this pass — see the adversarial
+    review below, which adds one more test and brings the final total to 92). Consumed by nothing yet — the
     daemon that constructs a `DnsShield` with a loaded artifact is a later wiring step.
 
     **An adversarial review round (four parallel angle-scoped passes, one independently re-verifying

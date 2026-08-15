@@ -1,9 +1,17 @@
 # Module 7 (`cli`) — adversarial review findings
 
-Recorded 2026-08-15, against the uncommitted working tree of `feat/domain-blocklist-netshield`
-after module 7's first implementation pass. Not yet fixed — this file is the record of what an
-Opus adversarial review pass found, scoped per the user's request to transient error handling,
-overall error handling/tracing, and performance/parallelization. See
+**Pre-fix snapshot.** Recorded 2026-08-15, against the uncommitted working tree of
+`feat/domain-blocklist-netshield` after module 7's first implementation pass — this file is the
+record of what an Opus adversarial review pass found at that moment, scoped per the user's request
+to transient error handling, overall error handling/tracing, and performance/parallelization. It is
+kept as-written below (findings text unedited); do not read it as the current state of the code. The
+two Critical findings (§1 the `Runtime`-dropped-inside-async-context panic, §2 the DNS client's
+missing retries) and the unintended `net-shield`-on-full-HTTP-stack dependency were fixed in this
+same branch's later commits — see
+[the plan's module 7 disposition note](plan.md#7-cli--the-pipeline-entry-point) for what changed and
+what a fresh review would need to re-verify. Findings below this point were not individually
+re-audited when that disposition note was written; treat any one of them as still open until
+checked against current code. See
 [the plan's module 7 section](plan.md#7-cli--the-pipeline-entry-point) for the behavioral contract
 this code is supposed to satisfy, and
 [domain-blocklist-sourcing.md](../../decisions/domain-blocklist-sourcing.md) for the pipeline

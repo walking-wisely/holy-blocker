@@ -9,6 +9,7 @@
 #[cfg_attr(not(feature = "net"), allow(dead_code))]
 mod cache_store;
 mod cli;
+mod publish_policy;
 mod slots;
 #[cfg(feature = "net")]
 mod sweep;
@@ -349,88 +350,6 @@ async fn fetch_ut1(job: &SourceJob) -> Result<FetchedSource, FetchError> {
     }
 }
 
-/// `license_gate` (module 5) is keyed one-`SourceSnapshot`-per-`SourceId` — correctly, since a
-/// second entry for the same source is ambiguous license coverage in the general case. This
-/// pipeline's own `SourceId::Ut1` is the one place that invariant needs help from the caller: UT1
-/// is fetched as three separate per-category tarballs (adult/gambling/dating), each producing its
-/// own snapshot, but they all carry the identical `SourceId::Ut1`. This collapses any such group
-/// into one snapshot per `SourceId` — asserting every grouped snapshot agrees on license (a
-/// genuine per-category license split for one source would be a real anomaly worth stopping the
-/// build for, not silently picking one) and joining their individually-verified revisions. Each
-/// revision is tagged with the `Category` it was fetched under (`Adult=W/"abc";Gambling=W/"def"`),
-/// so the composite is self-describing and mechanically splittable on `;` then `=` — the bare
-/// `;`-join it replaces lost which category each revision belonged to and was not splittable if any
-/// single revision string itself contained `;`. The category is only needed to build that
-/// self-describing string; it is not part of the published `SourceSnapshot` type.
-fn collapse_snapshots_by_source(
-    snapshots: Vec<(Category, SourceSnapshot)>,
-) -> Result<Vec<SourceSnapshot>> {
-    let mut by_source: std::collections::BTreeMap<SourceId, Vec<(Category, SourceSnapshot)>> =
-        Default::default();
-    for (category, snapshot) in snapshots {
-        by_source.entry(snapshot.source).or_default().push((category, snapshot));
-    }
-    by_source
-        .into_values()
-        .map(|group| {
-            let first = group.first().expect("BTreeMap group is never empty").clone();
-            if group.iter().any(|(_, s)| !s.license.spdx_matches(&first.1.license)) {
-                bail!(
-                    "source {:?} reported different licenses across its per-category fetches: {:?} \
-                     — refusing to silently pick one",
-                    first.1.source,
-                    group.iter().map(|(_, s)| &s.license).collect::<Vec<_>>()
-                );
-            }
-            let revision = group
-                .iter()
-                .map(|(category, s)| format!("{category:?}={}", s.revision))
-                .collect::<Vec<_>>()
-                .join(";");
-            // Deliberately the minimum across the group, which understates two of UT1's three
-            // category fetch times — a fabricated-but-safe-direction value (staleness reads too
-            // pessimistic, never too optimistic), kept simple rather than carrying three separate
-            // timestamps into one manifest field.
-            let fetched_at = group
-                .iter()
-                .map(|(_, s)| s.fetched_at)
-                .min()
-                .unwrap_or(first.1.fetched_at);
-            Ok(SourceSnapshot {
-                source: first.1.source,
-                revision,
-                license: first.1.license,
-                fetched_at,
-            })
-        })
-        .collect()
-}
-
-/// The least-permissive input license, per `fst_build::build`'s `output_license` contract. A small,
-/// explicit rank table over this build's expected license set (most to least permissive); a
-/// license not in the table maps to a distinct `UNKNOWN` sentinel rather than a guess, so an
-/// unrecognized license shows up in the manifest rather than silently picking a rank for it.
-///
-/// The relative ordering below — especially CC-BY-SA-4.0 vs GPL-3.0 — is a starting point that has
-/// **not been legally reviewed** and MUST be ratified by someone qualified before this manifest's
-/// `output_license` field is treated as authoritative for redistribution decisions (`net-shield`
-/// and any redistributor rely on it).
-fn pick_output_license(snapshots: &[SourceSnapshot]) -> LicenseId {
-    const RANK: &[&str] = &["CC0-1.0", "MIT", "CC-BY-SA-4.0", "GPL-3.0"];
-    let worst = snapshots
-        .iter()
-        .map(|s| {
-            RANK.iter()
-                .position(|r| LicenseId(r.to_string()).spdx_matches(&s.license))
-                .unwrap_or(usize::MAX)
-        })
-        .max();
-    match worst {
-        Some(idx) if idx < RANK.len() => LicenseId(RANK[idx].to_string()),
-        _ => LicenseId("UNKNOWN".to_string()),
-    }
-}
-
 async fn run(cli: cli::Cli) -> Result<()> {
     // Cross-field validation first, before any I/O, so every function below can assume the flags
     // are consistent with each other (not just individually well-formed).
@@ -459,7 +378,7 @@ async fn run(cli: cli::Cli) -> Result<()> {
     let jobs = default_source_jobs();
     let (raw_entries, snapshots) =
         fetch_all_sources(&jobs, cli.fixture_dir.as_deref(), &allowlist).await?;
-    let snapshots = collapse_snapshots_by_source(snapshots)?;
+    let snapshots = publish_policy::collapse_snapshots_by_source(snapshots)?;
 
     let merge_output = merge_entries(&raw_entries, &denylist_refs);
     tracing::info!(
@@ -489,10 +408,10 @@ async fn run(cli: cli::Cli) -> Result<()> {
     let mut entries = merge_output.entries;
 
     // --- Liveness sweep -----------------------------------------------------------------------
-    if !cli.skip_liveness {
+    if !cli.effective_skip_liveness() {
         entries = run_liveness(&cli, entries).await?;
     } else {
-        tracing::warn!("--skip-liveness set: every merged entry is kept without a DNS check");
+        tracing::warn!("liveness skipped (--skip-liveness or --fixture-dir): every merged entry is kept without a DNS check");
     }
 
     let new_keys: BTreeSet<String> = entries.iter().map(|e| e.domain.clone()).collect();
@@ -529,7 +448,7 @@ async fn run(cli: cli::Cli) -> Result<()> {
         domain_blocklist::growth_gate(prev_keys, &new_keys, cli.max_growth_pct),
     ));
 
-    let output_license = pick_output_license(&snapshots);
+    let output_license = publish_policy::pick_output_license(&snapshots);
     if output_license.spdx_matches(&LicenseId("CC-BY-SA-4.0".to_string()))
         || output_license.spdx_matches(&LicenseId("GPL-3.0".to_string()))
     {
@@ -600,17 +519,23 @@ async fn run(cli: cli::Cli) -> Result<()> {
         }
     }
 
-    write_review_queue(&cli.output, &personal_name_candidates, &review)?;
-
     if failed {
+        // A gate failure still writes the review queue: the queue is useful triage input even
+        // when the build itself did not pass, and `--dry-run` is orthogonal to gate failure.
+        write_review_queue(&cli.output, &personal_name_candidates, &review)?;
         bail!("one or more publish gates failed — see the gate log above; nothing was published");
     }
 
     if cli.dry_run {
-        tracing::info!("--dry-run set: all gates passed, nothing was published");
+        tracing::info!(
+            review_queue_entries = review.len(),
+            personal_name_candidates = personal_name_candidates.len(),
+            "--dry-run set: all gates passed, nothing was written to --output"
+        );
         return Ok(());
     }
 
+    write_review_queue(&cli.output, &personal_name_candidates, &review)?;
     slots::publish(&cli.output, &artifact).context("failed to publish the artifact")?;
     tracing::info!(version, base = %cli.output.display(), "published");
     Ok(())
@@ -621,6 +546,14 @@ async fn run_liveness(cli: &cli::Cli, entries: Vec<MergedEntry>) -> Result<Vec<M
     let cache = match &cli.cache {
         Some(path) => cache_store::load(path)?,
         None => {
+            if !cli.dry_run {
+                bail!(
+                    "refusing a real (non-dry-run) liveness sweep with no --cache: a sweep that \
+                     cannot persist loses every verified Dead verdict, so the quarantine window \
+                     can never elapse and no domain is ever pruned — pass --cache, or add \
+                     --dry-run/--skip-liveness"
+                );
+            }
             tracing::warn!("no --cache given: the liveness sweep runs with no prior state and its results are not persisted");
             Default::default()
         }

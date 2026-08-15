@@ -458,8 +458,19 @@ impl RetryPolicy {
 enum RemoteOutcome {
     Ok,
     Retry,
-    /// The only *named* terminal path: HTTP 403 with `X-RateLimit-Remaining: 0` whose reset lies
-    /// outside the retry horizon. Carries the epoch-seconds reset.
+    /// A 403 with `X-RateLimit-Remaining: 0` whose reset lies *inside* the retry horizon: the
+    /// quota cannot un-exhaust itself before then, so retrying on the ordinary exponential
+    /// backoff schedule would just re-request into the same 403 until the attempt budget runs
+    /// out. `delay` is the wait that actually clears the reset (not `RetryPolicy::backoff_for`'s
+    /// schedule); `reset_at` is carried through so the terminal error, if the budget still runs
+    /// out, can name the quota as the cause via [`GithubFetchError::RateLimit`] rather than a
+    /// generic exhausted-retries [`GithubFetchError::Transport`].
+    RetryAfter {
+        delay: Duration,
+        reset_at: Timestamp,
+    },
+    /// HTTP 403 with `X-RateLimit-Remaining: 0` whose reset lies outside the retry horizon.
+    /// Carries the epoch-seconds reset.
     QuotaExhausted(Timestamp),
     Fail(GithubFetchError),
 }
@@ -707,18 +718,30 @@ impl<H: GithubHttp, R: GithubRepos> GithubSourceFetcher<H, R> {
         let policy = self.retry;
         let mut last_detail: Option<String> = None;
         let mut win: Option<GithubHttpResponse> = None;
+        // Set only by RemoteOutcome::RetryAfter — carries the rate-limit reset through so the
+        // terminal error, if the attempt budget still runs out, names the quota as the cause
+        // instead of a generic "exhausted retries" Transport error (see RemoteOutcome's doc
+        // comment).
+        let mut pending_reset: Option<Timestamp> = None;
+        let mut next_delay: Option<Duration> = None;
 
         for attempt in 0..policy.max_attempts {
             let outcome = match self.http.get(url).await {
                 Ok(resp) => {
                     let verdict = self.classify_outcome(url, &resp);
-                    match verdict {
+                    match &verdict {
                         RemoteOutcome::Ok => {
                             // The response belongs to the winner; keep it for the return.
                             win = Some(resp);
                         }
                         RemoteOutcome::Retry => {
                             last_detail = Some(format!("HTTP status {}", resp.status));
+                        }
+                        RemoteOutcome::RetryAfter { .. } => {
+                            last_detail = Some(format!(
+                                "HTTP status {} (rate-limited, waiting for reset)",
+                                resp.status
+                            ));
                         }
                         _ => {}
                     }
@@ -734,7 +757,17 @@ impl<H: GithubHttp, R: GithubRepos> GithubSourceFetcher<H, R> {
                 RemoteOutcome::Ok => {
                     return Ok(win.expect("an Ok verdict is only ever paired with the response it was classified from"))
                 }
-                RemoteOutcome::Retry => {}
+                RemoteOutcome::Retry => {
+                    // A plain retryable failure after an earlier rate-limit wait means the quota
+                    // is no longer the live cause — don't let a stale reset from an earlier
+                    // attempt misattribute the eventual terminal error.
+                    pending_reset.take();
+                    next_delay.take();
+                }
+                RemoteOutcome::RetryAfter { delay, reset_at } => {
+                    pending_reset = Some(reset_at);
+                    next_delay = Some(delay);
+                }
                 RemoteOutcome::QuotaExhausted(reset_at) => {
                     return Err(GithubFetchError::RateLimit { reset_at });
                 }
@@ -742,13 +775,16 @@ impl<H: GithubHttp, R: GithubRepos> GithubSourceFetcher<H, R> {
             }
 
             if attempt + 1 >= policy.max_attempts {
+                if let Some(reset_at) = pending_reset {
+                    return Err(GithubFetchError::RateLimit { reset_at });
+                }
                 return Err(GithubFetchError::Transport(format!(
                     "HTTP request to {url} failed after {} attempts; last error: {}",
                     policy.max_attempts,
                     last_detail.as_deref().unwrap_or("exhausted retry budget")
                 )));
             }
-            (self.delay)(policy.backoff_for(attempt)).await;
+            (self.delay)(next_delay.take().unwrap_or_else(|| policy.backoff_for(attempt))).await;
         }
         unreachable!("the loop above always returns; this line exists only to satisfy the type checker")
     }
@@ -772,7 +808,11 @@ impl<H: GithubHttp, R: GithubRepos> GithubSourceFetcher<H, R> {
                         // present the reset header specifically so a client can decide this.
                         let wait = reset_at.saturating_sub(now_epoch_seconds());
                         if reset_at != 0 && wait <= self.retry.max_backoff.as_secs() {
-                            RemoteOutcome::Retry
+                            // +1s so the retry lands after the reset boundary, never on it.
+                            RemoteOutcome::RetryAfter {
+                                delay: Duration::from_secs(wait + 1),
+                                reset_at,
+                            }
                         } else {
                             RemoteOutcome::QuotaExhausted(reset_at)
                         }
@@ -1029,6 +1069,19 @@ mod tests {
         Arc::new(|_| Box::pin(async {}))
     }
 
+    /// A `DelayFn` that records every duration it's asked to sleep (without actually sleeping),
+    /// so a test can assert the retry loop chose the reset-covering wait rather than the ordinary
+    /// exponential backoff schedule.
+    fn recording_sleep() -> (DelayFn, Arc<std::sync::Mutex<Vec<Duration>>>) {
+        let log: Arc<std::sync::Mutex<Vec<Duration>>> = Arc::default();
+        let recorded = log.clone();
+        let delay: DelayFn = Arc::new(move |d| {
+            recorded.lock().unwrap().push(d);
+            Box::pin(async {})
+        });
+        (delay, log)
+    }
+
     fn fetcher(mock: MockHttp) -> GithubSourceFetcher<MockHttp, StaticGithubRepos> {
         GithubSourceFetcher::with_policy(
             mock,
@@ -1218,6 +1271,68 @@ mod tests {
 
         assert!(result.is_ok(), "waited-out reset then succeeded: got {result:?}");
         assert_eq!(mock.attempts(), 4, "commit + 2 license attempts + 1 content");
+    }
+
+    #[test]
+    fn exhausted_rate_limit_sleeps_the_reset_wait_not_the_ordinary_backoff() {
+        let mock = MockHttp::default();
+        mock.script(&commit_url(), 200, sha200_body());
+        // Reset 2 s out — far longer than the 1 ms base_backoff the other tests use, so a pass
+        // here proves the loop chose the reset-covering wait and not RetryPolicy::backoff_for's
+        // ordinary exponential schedule.
+        let now = now_epoch_seconds();
+        let near_reset = (now + 2).to_string();
+        mock.with_headers(
+            &license_url(),
+            403,
+            vec![("X-RateLimit-Remaining", "0"), ("X-RateLimit-Reset", near_reset.as_str())],
+            b"{}",
+        );
+        mock.script(&license_url(), 200, license200_body("GPL-3.0"));
+        mock.script(&raw_url(), 200, b"blocked.example.net\n");
+        let (delay, log) = recording_sleep();
+        let f = GithubSourceFetcher::with_policy(
+            mock,
+            StaticGithubRepos::new([(SourceId::Hagezi, hagezi_repo())]),
+            RetryPolicy { base_backoff: Duration::from_millis(1), ..Default::default() },
+            delay,
+        )
+        .unwrap();
+
+        let result = tokio_rt().block_on(f.fetch_async(&config(PINNED, "GPL-3.0", SourceId::Hagezi)));
+
+        assert!(result.is_ok(), "waited-out reset then succeeded: got {result:?}");
+        let sleeps = log.lock().unwrap();
+        assert!(
+            sleeps.iter().any(|d| *d >= Duration::from_secs(2)),
+            "expected a sleep covering the ~2s reset, got {sleeps:?}"
+        );
+    }
+
+    #[test]
+    fn rate_limit_that_never_clears_stays_named_ratelimit_not_generic_transport() {
+        let mock = MockHttp::default();
+        mock.script(&commit_url(), 200, sha200_body());
+        // Every attempt sees the same near-future reset — the quota never actually clears within
+        // the attempt budget (a flaky reset header, or a reset that keeps rolling forward).
+        let now = now_epoch_seconds();
+        let near_reset = (now + 2).to_string();
+        mock.with_headers(
+            &license_url(),
+            403,
+            vec![("X-RateLimit-Remaining", "0"), ("X-RateLimit-Reset", near_reset.as_str())],
+            b"{}",
+        );
+        let f = fetcher(mock.clone());
+
+        let err = tokio_rt().block_on(f.fetch_async(&config(PINNED, "GPL-3.0", SourceId::Hagezi))).unwrap_err();
+
+        match err {
+            GithubFetchError::RateLimit { reset_at } => {
+                assert!(reset_at > now, "reset must be the mocked near-future value, got {reset_at}");
+            }
+            other => panic!("expected the exhausted-budget error to stay named RateLimit, got {other:?}"),
+        }
     }
 
     #[test]

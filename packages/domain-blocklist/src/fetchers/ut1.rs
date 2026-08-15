@@ -58,6 +58,16 @@ pub const UT1_LICENSE_PAGE: &str = "https://dsi.ut-capitole.fr/blacklists/";
 /// headroom that still refuses an accidentally-served log dump or a corrupted endless stream.
 pub const MAX_FETCHED_BYTES: u64 = 512 * 1024 * 1024;
 
+/// Hard ceiling on one extracted (decompressed) archive member, applied both to the reservation
+/// and to the read in [`extract_member`]. A tar entry's declared `size()` header and its actual
+/// decompressed byte count are both untrusted data from inside the fetched archive — a crafted
+/// header declaring e.g. 4 GiB would make a naive `Vec::with_capacity` reserve that much from a
+/// few kilobytes of compressed input, and reading with no cap permits a decompression-bomb-shaped
+/// gzip stream to actually produce that much. UT1's largest `domains`/`urls` member measures a few
+/// MB (assumption audit, run 2026-08-15); 64 MiB is generous headroom that still refuses either
+/// attack from a tiny compressed payload.
+pub const MAX_MEMBER_BYTES: u64 = 64 * 1024 * 1024;
+
 /// A UT1 category the fetcher can target, as a type so two fetchers for different categories
 /// are distinct types and a `source: SourceId::Ut1` `SourceConfig` can't be silently fetched
 /// with the wrong extraction directory. The directory name is what `SourceConfig.url`'s tarball
@@ -196,6 +206,14 @@ pub enum Ut1ExtractError {
     /// A category directory string that isn't safe to interpolate into an archive entry path
     /// (empty, absolute, or containing `/`, `..`, `\`, or a leading `.`).
     InvalidCategoryDir(String),
+    /// `<dir>/<member>` decompressed to more than [`MAX_MEMBER_BYTES`] — refused rather than
+    /// trusted, since both the declared tar header size and the actual decompressed byte count
+    /// are untrusted data from inside a payload this crate does not control (a UT1 `domains`
+    /// member is a few MB; a crafted header or a decompression-bomb-shaped gzip stream is not).
+    MemberTooLarge {
+        category_dir: String,
+        member: &'static str,
+    },
 }
 
 impl std::fmt::Display for Ut1ExtractError {
@@ -214,6 +232,10 @@ impl std::fmt::Display for Ut1ExtractError {
                 write!(f, "`{category_dir}/{member}` is not a regular file")
             }
             Self::InvalidCategoryDir(d) => write!(f, "invalid category directory `{d}`"),
+            Self::MemberTooLarge { category_dir, member } => write!(
+                f,
+                "`{category_dir}/{member}` exceeds the {MAX_MEMBER_BYTES}-byte member ceiling"
+            ),
         }
     }
 }
@@ -321,7 +343,7 @@ impl<C: Ut1Category> Ut1SourceFetcher<C> {
         Self::verify_config_category(config)?;
 
         let (tarball_bytes, etag, last_modified) =
-            self.get_bytes_with_retry(&config.url).await?;
+            self.get_bytes_with_retry(&config.url, "the category tarball (renamed upstream?)").await?;
         let license_page = self.get_text_with_retry(UT1_LICENSE_PAGE).await?;
         let license = extract_license(&license_page).map_err(ut1_license_to_fetch)?;
         let fetched_at = now_timestamp();
@@ -380,6 +402,7 @@ impl<C: Ut1Category> Ut1SourceFetcher<C> {
     async fn get_bytes_with_retry(
         &self,
         url: &str,
+        resource: &str,
     ) -> Result<(Vec<u8>, Option<String>, Option<String>), FetchError> {
         let mut retries: u32 = 0;
         loop {
@@ -387,8 +410,7 @@ impl<C: Ut1Category> Ut1SourceFetcher<C> {
                 Ok(success) => return Ok(success),
                 Err(AttemptFailure::Status(404)) => {
                     return Err(FetchError::Transport(format!(
-                        "UT1 returned HTTP 404 for {url} — the category directory does not exist \
-                         (renamed upstream?): no point retrying"
+                        "UT1 returned HTTP 404 for {resource} at {url}: no point retrying"
                     )));
                 }
                 Err(AttemptFailure::Status(status))
@@ -421,7 +443,7 @@ impl<C: Ut1Category> Ut1SourceFetcher<C> {
         &self,
         url: &str,
     ) -> Result<(Vec<u8>, Option<String>, Option<String>), AttemptFailure> {
-        let resp = self
+        let mut resp = self
             .client
             .get(url)
             .send()
@@ -448,17 +470,21 @@ impl<C: Ut1Category> Ut1SourceFetcher<C> {
             .get(LAST_MODIFIED)
             .and_then(|v| v.to_str().ok())
             .map(str::to_string);
-        let bytes = resp
-            .bytes()
-            .await
-            .map_err(AttemptFailure::from_reqwest)?;
-        if bytes.len() as u64 > MAX_FETCHED_BYTES {
-            return Err(AttemptFailure::Transport(format!(
-                "response body {} exceeds the {MAX_FETCHED_BYTES}-byte ceiling",
-                bytes.len()
-            )));
+        // `Content-Length` is optional (chunked/HTTP2 responses can omit it), so the check above
+        // does not by itself bound the body — read incrementally via `chunk()` (reqwest 0.12) and
+        // reject *before* appending a chunk that would cross the ceiling, rather than collecting
+        // the whole body first via `bytes()`, which would already have paid the memory cost the
+        // ceiling exists to avoid.
+        let mut bytes: Vec<u8> = Vec::new();
+        while let Some(chunk) = resp.chunk().await.map_err(AttemptFailure::from_reqwest)? {
+            if bytes.len() as u64 + chunk.len() as u64 > MAX_FETCHED_BYTES {
+                return Err(AttemptFailure::Transport(format!(
+                    "response body exceeds the {MAX_FETCHED_BYTES}-byte ceiling"
+                )));
+            }
+            bytes.extend_from_slice(&chunk);
         }
-        Ok((bytes.to_vec(), etag, last_modified))
+        Ok((bytes, etag, last_modified))
     }
 
     /// The license-page request, sharing the same retry policy: the license is fetched fresh on
@@ -467,7 +493,10 @@ impl<C: Ut1Category> Ut1SourceFetcher<C> {
     /// in one process *may* fetch it once and reuse — a benchmark question, not a correctness
     /// one, since the page is re-scraped each run either way.
     async fn get_text_with_retry(&self, url: &str) -> Result<String, FetchError> {
-        let bytes = self.get_bytes_with_retry(url).await?.0;
+        let bytes = self
+            .get_bytes_with_retry(url, "the UT1 license page — the only license source this module has")
+            .await?
+            .0;
         String::from_utf8(bytes).map_err(|e| {
             FetchError::Transport(format!(
                 "license page at {url} is not UTF-8 — treating as changed (actual error: {e})"
@@ -606,11 +635,20 @@ fn extract_member(
                 member,
             });
         }
-        let mut buf = Vec::with_capacity(entry.header().size().unwrap_or(0) as usize);
+        // Reserve only what the ceiling allows — the tar header's declared size is untrusted
+        // archive data, per MAX_MEMBER_BYTES's doc comment.
+        let declared = entry.header().size().unwrap_or(0).min(MAX_MEMBER_BYTES);
+        let mut buf = Vec::with_capacity(declared as usize);
         entry
-            .take(u32::MAX as u64)
+            .take(MAX_MEMBER_BYTES + 1)
             .read_to_end(&mut buf)
             .map_err(|e| Ut1ExtractError::GzipInvalid(e.to_string()))?;
+        if buf.len() as u64 > MAX_MEMBER_BYTES {
+            return Err(Ut1ExtractError::MemberTooLarge {
+                category_dir: category_dir.to_string(),
+                member,
+            });
+        }
         found = Some(buf);
     }
 
@@ -1030,6 +1068,27 @@ mod tests {
         assert_eq!(
             extract_domains_file(&tar_bytes, "adult"),
             Err(Ut1ExtractError::MemberNotFound {
+                category_dir: "adult".to_string(),
+                member: "domains",
+            })
+        );
+    }
+
+    #[test]
+    fn extract_domains_file_rejects_a_member_over_the_size_ceiling() {
+        // Real (compressible, so the fixture stays cheap to build) data past MAX_MEMBER_BYTES —
+        // the tar header's declared size matches, so this exercises the post-read check, not the
+        // reservation clamp alone.
+        let oversized = vec![b'a'; (MAX_MEMBER_BYTES + 1) as usize];
+        let mut tar_bytes = Vec::new();
+        let gz = flate2::write::GzEncoder::new(&mut tar_bytes, flate2::Compression::fast());
+        let mut builder = tar::Builder::new(gz);
+        append(&mut builder, "adult", "domains", &oversized);
+        builder.into_inner().unwrap().finish().unwrap();
+
+        assert_eq!(
+            extract_domains_file(&tar_bytes, "adult"),
+            Err(Ut1ExtractError::MemberTooLarge {
                 category_dir: "adult".to_string(),
                 member: "domains",
             })

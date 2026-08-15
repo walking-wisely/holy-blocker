@@ -179,6 +179,14 @@ impl Cli {
         }
         Ok(())
     }
+
+    /// The value `main.rs` must use in place of the raw `skip_liveness` flag: liveness is skipped
+    /// whenever the caller asked for it explicitly, or whenever `--fixture-dir` is set — a fixture
+    /// run is documented as deterministic and offline, so it must never open UDP/53 to
+    /// `--resolver1`/`--resolver2` regardless of whether the caller remembered `--skip-liveness`.
+    pub fn effective_skip_liveness(&self) -> bool {
+        self.skip_liveness || self.fixture_dir.is_some()
+    }
 }
 
 #[cfg(test)]
@@ -231,5 +239,27 @@ mod tests {
         // Post-fix shipped defaults: ttl 90d, quarantine 180d (== 2 * ttl), so a fresh,
         // un-overridden run passes its own new invariant.
         default_cli().validate().expect("shipped defaults must satisfy validate");
+    }
+
+    #[test]
+    fn effective_skip_liveness_false_by_default() {
+        assert!(!default_cli().effective_skip_liveness());
+    }
+
+    #[test]
+    fn effective_skip_liveness_true_when_flag_set() {
+        let cli = Cli::try_parse_from(["domain-blocklist", "--skip-liveness"])
+            .expect("--skip-liveness must parse");
+        assert!(cli.effective_skip_liveness());
+    }
+
+    #[test]
+    fn effective_skip_liveness_true_when_fixture_dir_set_without_the_flag() {
+        // The documented implication: `--fixture-dir` alone must imply skip, since a fixture run
+        // is supposed to be deterministic and offline regardless of whether the caller also
+        // remembered `--skip-liveness`.
+        let cli = Cli::try_parse_from(["domain-blocklist", "--fixture-dir", "/tmp/fixtures"])
+            .expect("--fixture-dir must parse");
+        assert!(cli.effective_skip_liveness());
     }
 }

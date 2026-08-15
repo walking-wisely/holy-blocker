@@ -68,9 +68,22 @@ const MAX_CHAIN_HOPS: usize = 16;
 /// Total attempts the UDP leg of one query gets — 1 initial send plus 2 retries, spaced by
 /// [`UDP_RETRY_BACKOFF`]. A starting value, not a measured one.
 const UDP_RETRY_ATTEMPTS: usize = 3;
-/// Fixed delay between UDP retry attempts. Also a starting value, not a measured one; deliberately
-/// small against [`ResolverConfig::timeout`] so retries stay inside a single query's budget.
+/// Fixed delay between UDP retry attempts. Also a starting value, not a measured one. NOTE: this
+/// does *not* keep retries inside a single query's `ResolverConfig::timeout` budget by itself —
+/// each of [`UDP_RETRY_ATTEMPTS`]'s attempts and the TCP fallback time out independently against
+/// that same per-socket-operation budget, so worst case one logical query can take roughly
+/// `UDP_RETRY_ATTEMPTS` times the per-attempt timeout plus this backoff between them, plus the TCP
+/// fallback's own several timed steps — see [`TOTAL_QUERY_BUDGET`], which is the actual bound on
+/// one logical lookup.
 const UDP_RETRY_BACKOFF: Duration = Duration::from_millis(100);
+/// The one deadline that actually bounds a whole logical lookup ([`query_with_tcp_fallback`]):
+/// [`UDP_RETRY_ATTEMPTS`] UDP attempts (each up to 3 timed socket steps) plus up to
+/// [`UDP_RETRY_ATTEMPTS`] - 1 backoffs, plus the TCP fallback's 4 timed steps, all against a
+/// `ResolverConfig::timeout` that applies per-step rather than per-query. 15 seconds is a starting
+/// value with headroom over the qps-paced sweep's expected per-query cost, not a measured one —
+/// the sweep's own concurrency budget is sized against this constant, not against
+/// `ResolverConfig::timeout` directly, since that field alone understates one query's worst case.
+const TOTAL_QUERY_BUDGET: Duration = Duration::from_secs(15);
 
 /// One resolver's UDP/TCP address (RFC 1035 §4.2 transports) and the per-query timeout budget.
 /// The plan's default is Cloudflare's unfiltered `1.1.1.1`/`2606:4700:4700::1111` — **never** the
@@ -186,6 +199,19 @@ async fn query_with_tcp_fallback(
     name: &Name,
     qtype: HickoryRecordType,
 ) -> Result<Message, QueryFailure> {
+    // One deadline for the whole logical lookup — see TOTAL_QUERY_BUDGET's doc comment for why
+    // the per-socket-operation timeouts inside query_udp_with_retry/query_tcp do not add up to one
+    // by themselves.
+    tokio::time::timeout(TOTAL_QUERY_BUDGET, query_with_tcp_fallback_inner(config, name, qtype))
+        .await
+        .unwrap_or(Err(QueryFailure::Timeout))
+}
+
+async fn query_with_tcp_fallback_inner(
+    config: ResolverConfig,
+    name: &Name,
+    qtype: HickoryRecordType,
+) -> Result<Message, QueryFailure> {
     let request = build_query(name, qtype);
     let request_bytes = request
         .to_vec()
@@ -254,8 +280,21 @@ fn udp_retry_schedule(attempt: usize) -> Option<Duration> {
 /// Constructs one query message: a single question for `name`/`qtype`, IN class (the `Query`
 /// default), with EDNS(0) attached and the DNSSEC OK bit set — see this module's doc comment for
 /// why the DO bit is mandatory here rather than optional.
+///
+/// `Message::query()` already gives every request a fresh random ID (`hickory-proto` 0.26.1's own
+/// `Message::query()` calls `Self::new(random(), ..)` — verified against this crate's own pinned
+/// source, not its docs, since a web search surfaced a claim for a hypothetical future release
+/// that a bare `Message::query()` leaves the ID at `0`; that claim does not hold for the version
+/// this crate actually pins). What `Message::query()` does *not* set is Recursion Desired — its
+/// `Header`/`Metadata` default is `recursion_desired: false` — so it is set explicitly here: this
+/// client queries public recursive resolvers ([`ResolverConfig`]'s doc comment names
+/// `1.1.1.1`/`8.8.8.8`), not authoritative servers, and an RD-unset query is a request for
+/// iterative-only (referral) behavior a recursive resolver is not obligated to answer the way this
+/// client's response interpretation assumes — [RFC 1035
+/// §4.1.1](https://www.rfc-editor.org/rfc/rfc1035#section-4.1.1).
 fn build_query(name: &Name, qtype: HickoryRecordType) -> Message {
     let mut message = Message::query();
+    message.metadata.recursion_desired = true;
     let mut query = Query::new();
     query.set_name(name.clone());
     query.set_query_type(qtype);
@@ -648,6 +687,23 @@ mod tests {
         let message = build_query(&name("example.com."), HickoryRecordType::A);
         let edns = message.edns.expect("build_query always attaches EDNS");
         assert!(edns.flags().dnssec_ok);
+    }
+
+    #[test]
+    fn build_query_sets_recursion_desired() {
+        let message = build_query(&name("example.com."), HickoryRecordType::A);
+        assert!(message.metadata.recursion_desired);
+    }
+
+    #[test]
+    fn build_query_ids_are_not_constant_across_calls() {
+        // `Message::query()` already randomizes the ID (verified against this crate's own pinned
+        // source — see build_query's doc comment); this is a smoke check that still holds, not a
+        // re-derivation of hickory-proto's own randomness.
+        let ids: std::collections::HashSet<u16> = (0..16)
+            .map(|_| build_query(&name("example.com."), HickoryRecordType::A).metadata.id)
+            .collect();
+        assert!(ids.len() > 1, "16 fresh queries produced only one distinct id: {ids:?}");
     }
 
     #[test]
