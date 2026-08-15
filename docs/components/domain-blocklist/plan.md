@@ -1033,12 +1033,24 @@ decision doc's [Distribution](../../decisions/domain-blocklist-sourcing.md#distr
    all carry the identical `SourceId::Ut1` — `main.rs`'s `collapse_snapshots_by_source` merges them
    into one snapshot per source (asserting every grouped snapshot agrees on license, joining their
    individually pin-verified revisions) rather than changing `license_gate`'s own, correctly strict,
-   one-entry-per-source invariant. **Left explicitly undone, not silently skipped:** (1) the sweep's
-   qps pacing is dispatch-time (a domain-check *starts* every `1/qps` seconds, concurrency-capped at
-   `--concurrency`) rather than a raw-query-count limiter, and canary re-checks happen at
+   one-entry-per-source invariant. **Left explicitly undone, not silently skipped:** (1) ~~the
+   sweep's qps pacing is dispatch-time (a domain-check *starts* every `1/qps` seconds, concurrency-
+   capped at `--concurrency`) rather than a raw-query-count limiter, and canary re-checks happen at
    `--canary-every`-sized chunk boundaries rather than continuously interleaved — both are the
    plan's own stated starting-value shape, but neither has been run at the plan's real ~1,000,000-
-   domain, 24-hour scale, only against small fixture sets; (2) `--signing-key`/`--trust-key` take a
+   domain, 24-hour scale, only against small fixture sets~~ **Partially measured, 2026-08-16 — see
+   `docs/decisions/domain-blocklist-sourcing.md`'s "Measured 2026-08-15/16" section for the full
+   numbers.** The real merged corpus is already ~4.75M domains from under half the planned source
+   list (not ~1,000,000), so the original `~23 qps`/24h sizing is stale on corpus size alone. The
+   `canary_every`-chunk-boundary concern was tested directly and cleared at the shipped default
+   (`--canary-every 2000`: 1.03x wall-clock overhead against a real dead/lame-domain sample) — it
+   only showed up (1.83x) at an artificially small `--canary-every 50` used for a quick local test.
+   A naive qps bump sized to the corpus-growth factor (`--qps 57.5`, ~5x) was tested against a real
+   corpus sample and produced a real degradation signal (`Unknown` rate 0.7%→10.6%, mostly `Timeout`
+   and cross-resolver `UncorroboratedDead`, with local resource exhaustion checked and ruled out) —
+   still not run at the true ~4.75M-domain/24h scale, and the CLI's qps/concurrency defaults are
+   deliberately left unchanged pending an incremental, canary-monitored ramp on the real deployment
+   host rather than a single guessed jump; (2) `--signing-key`/`--trust-key` take a
    `key_id:path-to-32-byte-file` argument, not the `--signing-key-env` comma-separated-hex CI-secret
    design a drafting pass's notes recommended — a real deployment wiring this into CI should add
    that env-var path rather than writing key material to a file on the runner; (3) the nonce dead
