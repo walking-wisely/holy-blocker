@@ -408,8 +408,14 @@ async fn run(cli: cli::Cli) -> Result<()> {
     let mut entries = merge_output.entries;
 
     // --- Liveness sweep -----------------------------------------------------------------------
+    // `None` when liveness was skipped entirely — there is no sweep data to report in that case,
+    // and `write_negative_outcome_report` writes nothing rather than an empty (and misleadingly
+    // "all clean") file.
+    let mut negative_report: Option<domain_blocklist::NegativeOutcomeReport> = None;
     if !cli.effective_skip_liveness() {
-        entries = run_liveness(&cli, entries).await?;
+        let (kept, report) = run_liveness(&cli, entries).await?;
+        entries = kept;
+        negative_report = Some(report);
     } else {
         tracing::warn!("liveness skipped (--skip-liveness or --fixture-dir): every merged entry is kept without a DNS check");
     }
@@ -520,9 +526,11 @@ async fn run(cli: cli::Cli) -> Result<()> {
     }
 
     if failed {
-        // A gate failure still writes the review queue: the queue is useful triage input even
-        // when the build itself did not pass, and `--dry-run` is orthogonal to gate failure.
+        // A gate failure still writes the review queue and the negative-outcome report: both are
+        // useful triage input even when the build itself did not pass, and `--dry-run` (not gate
+        // failure) is what actually gates whether anything is written to `--output`.
         write_review_queue(&cli.output, &personal_name_candidates, &review)?;
+        write_negative_outcome_report(&cli.output, &negative_report)?;
         bail!("one or more publish gates failed — see the gate log above; nothing was published");
     }
 
@@ -536,13 +544,17 @@ async fn run(cli: cli::Cli) -> Result<()> {
     }
 
     write_review_queue(&cli.output, &personal_name_candidates, &review)?;
+    write_negative_outcome_report(&cli.output, &negative_report)?;
     slots::publish(&cli.output, &artifact).context("failed to publish the artifact")?;
     tracing::info!(version, base = %cli.output.display(), "published");
     Ok(())
 }
 
 #[cfg(feature = "net")]
-async fn run_liveness(cli: &cli::Cli, entries: Vec<MergedEntry>) -> Result<Vec<MergedEntry>> {
+async fn run_liveness(
+    cli: &cli::Cli,
+    entries: Vec<MergedEntry>,
+) -> Result<(Vec<MergedEntry>, domain_blocklist::NegativeOutcomeReport)> {
     let cache = match &cli.cache {
         Some(path) => cache_store::load(path)?,
         None => {
@@ -588,9 +600,12 @@ async fn run_liveness(cli: &cli::Cli, entries: Vec<MergedEntry>) -> Result<Vec<M
     let outcome = sweep::run_sweep(&entries, cache, &canary, &sweep_config, now)
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let negative_report = domain_blocklist::negative_outcome_report(&outcome.cache);
     tracing::info!(
         checked = outcome.checked_count,
         pruned = outcome.pruned_domains.len(),
+        dead = negative_report.dead.len(),
+        unknown = negative_report.total() - negative_report.dead.len(),
         "liveness sweep complete"
     );
 
@@ -600,14 +615,18 @@ async fn run_liveness(cli: &cli::Cli, entries: Vec<MergedEntry>) -> Result<Vec<M
         cache_store::save(path, &outcome.cache)?;
     }
 
-    Ok(entries
+    let kept = entries
         .into_iter()
         .filter(|e| !outcome.pruned_domains.contains(&e.domain))
-        .collect())
+        .collect();
+    Ok((kept, negative_report))
 }
 
 #[cfg(not(feature = "net"))]
-async fn run_liveness(_cli: &cli::Cli, _entries: Vec<MergedEntry>) -> Result<Vec<MergedEntry>> {
+async fn run_liveness(
+    _cli: &cli::Cli,
+    _entries: Vec<MergedEntry>,
+) -> Result<(Vec<MergedEntry>, domain_blocklist::NegativeOutcomeReport)> {
     bail!(
         "a liveness sweep was requested but this binary was built without the `net` feature — \
          rebuild with `--features net`, or pass --skip-liveness to keep every merged entry unchecked"
@@ -633,5 +652,33 @@ fn write_review_queue(
         fp.push_str(&format!("{}\t{:?}\t{:?}\n", hit.domain, hit.scope, hit.sources));
     }
     std::fs::write(output.join("review-queue-false-positives.txt"), fp)?;
+    Ok(())
+}
+
+/// Writes every domain a liveness sweep placed in a negative category — `dead\t<domain>` for
+/// `Dead`, `unknown:<reason>\t<domain>` for each distinct `Unknown` reason — to
+/// `liveness-negative-outcomes.txt`, one line per domain, sorted for reproducible diffs across
+/// runs. Writes nothing when `report` is `None` (liveness was skipped: `--skip-liveness` or
+/// `--fixture-dir`), since an absent file correctly reads as "no sweep data", where an empty file
+/// would misleadingly read as "swept clean, zero negatives".
+fn write_negative_outcome_report(
+    output: &Path,
+    report: &Option<domain_blocklist::NegativeOutcomeReport>,
+) -> Result<()> {
+    let Some(report) = report else {
+        return Ok(());
+    };
+    std::fs::create_dir_all(output).with_context(|| format!("failed to create {}", output.display()))?;
+
+    let mut lines = String::new();
+    for domain in &report.dead {
+        lines.push_str(&format!("dead\t{domain}\n"));
+    }
+    for (reason, domains) in &report.unknown_by_reason {
+        for domain in domains {
+            lines.push_str(&format!("unknown:{reason}\t{domain}\n"));
+        }
+    }
+    std::fs::write(output.join("liveness-negative-outcomes.txt"), lines)?;
     Ok(())
 }
