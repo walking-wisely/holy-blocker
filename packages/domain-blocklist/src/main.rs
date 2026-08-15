@@ -384,7 +384,7 @@ async fn run(cli: cli::Cli) -> Result<()> {
     tracing::info!(
         merged = merge_output.entries.len(),
         dropped_normalization_failed = merge_output.report.dropped_normalization_failed,
-        dropped_public_suffix_or_denylisted = merge_output.report.dropped_public_suffix_or_denylisted,
+        dropped_shared_hosting_denylisted = merge_output.report.dropped_shared_hosting_denylisted,
         dropped_ip_literal = merge_output.report.dropped_ip_literal,
         "merged sources"
     );

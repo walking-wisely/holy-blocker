@@ -767,7 +767,19 @@ decision doc's [Distribution](../../decisions/domain-blocklist-sourcing.md#distr
    (`AsciiDenyList::URL`, `Hyphens::Allow`, `DnsLength::Ignore`, with label/name length validated
    explicitly afterward per RFC 1035 §2.3.4/RFC 5891 §4.4) and `classify_scope()` uses the `psl`
    crate (compiled-in Public Suffix List data — no I/O, no network fetch) plus a caller-supplied
-   shared-hosting denylist slice. 22 tests, including every named case from this plan (`com`,
+   shared-hosting denylist slice. **`classify_scope` now downgrades to `ExactHost` rather than
+   dropping the entry entirely when the normalized domain is itself a public suffix** (`com`,
+   `co.uk`, or a wildcard-PSL tenant boundary like `pornslut.cn.st` — structurally the same as
+   `someone.blogspot.com`, just one PSL level lower, since the boundary rule that matched was a
+   wildcard rather than a plain suffix) — `Apex` is still refused (claiming the whole shared suffix
+   would blackhole every other tenant), but the literal string itself can never match anything but
+   that one exact query, so there's no scope-widening reason to drop it. A live run against the
+   same ~4.78M real merged domains found ~20 entries being dropped this way (`ec2-*.compute-1.
+   amazonaws.com`, `pornslut.cn.st`-style wildcard-tenant hosts, bare gTLDs like `xxx`/`adult`);
+   after the fix, only an actual `shared_hosting_denylist` match still drops an entry outright
+   (renamed `dropped_public_suffix_or_denylisted` → `dropped_shared_hosting_denylisted` to match),
+   and the same real merge: `dropped_shared_hosting_denylisted` 20 → 0, entries 4,721,732 →
+   4,721,752. 25 tests, including every named case from this plan (`com`,
    `co.uk`, `blogspot.com`, `s3.amazonaws.com` never `Apex`; `someone.blogspot.com` is `Apex`;
    `www.example.com` normalizes to itself and scopes `ExactHost`, distinct from the `example.com`
    `Apex` key). **`AsciiDenyList::STD3` (the initial choice) was replaced with `AsciiDenyList::URL`
