@@ -764,14 +764,24 @@ decision doc's [Distribution](../../decisions/domain-blocklist-sourcing.md#distr
    and post-conversion length limits; `classify_scope` against public suffixes, provider suffixes,
    the shared-hosting denylist, and deep hostnames. Every apex-widening bug this design fears is
    caught here or nowhere.~~ **Done.** `normalize()` uses the `idna` crate's UTS46 pass
-   (`AsciiDenyList::STD3`, `Hyphens::Allow`, `DnsLength::Ignore`, with label/name length validated
+   (`AsciiDenyList::URL`, `Hyphens::Allow`, `DnsLength::Ignore`, with label/name length validated
    explicitly afterward per RFC 1035 §2.3.4/RFC 5891 §4.4) and `classify_scope()` uses the `psl`
    crate (compiled-in Public Suffix List data — no I/O, no network fetch) plus a caller-supplied
    shared-hosting denylist slice. 22 tests, including every named case from this plan (`com`,
    `co.uk`, `blogspot.com`, `s3.amazonaws.com` never `Apex`; `someone.blogspot.com` is `Apex`;
    `www.example.com` normalizes to itself and scopes `ExactHost`, distinct from the `example.com`
-   `Apex` key). Not yet consumed by `domain-blocklist` (module 1+, unbuilt) or `net-shield` (module
-   6, unbuilt) — this is the shared crate only.
+   `Apex` key). **`AsciiDenyList::STD3` (the initial choice) was replaced with `AsciiDenyList::URL`
+   after a live run against ~4.78M real merged domains found ~1,029 entries silently dropped for
+   containing an underscore** — DNS-wire-legal (RFC 1035 §2.3.1: labels are arbitrary octets, not
+   LDH-restricted; `_dmarc.google.com` is a ubiquitous real example) and, confirmed against the
+   WHATWG URL Standard (`beStrict = false` on the URL host parser, "due to web compatibility"), a
+   hostname a real browser's address bar actually resolves and navigates to. `AsciiDenyList::URL`
+   is the same deny list the URL Standard's own domain-to-ASCII step applies — denies glyphless/
+   control characters and URL-structural punctuation (`%#/:<>?@[\]^|`, which is also how an IPv6
+   literal's `:`/`[`/`]` stay rejected, unchanged from before) but not underscore. Rerunning the
+   same ~4.78M-domain merge afterward: `dropped_normalization_failed` 1029 → 0, all 1,027 distinct
+   previously-rejected domains now present in the merged set. Consumed by `domain-blocklist`
+   (module 1+, done — see that row) and `net-shield` (module 6, done — see that row).
 2. ~~`merge.rs` — pure functions (the union/provenance merge, scope resolution, category filtering,
    `flag_personal_name`) with no I/O. Test against hand-built `RawEntry` fixtures.~~ **Done.**
    `packages/domain-blocklist` created — `types.rs` defines `SourceId`, `Category` (`Adult`,
