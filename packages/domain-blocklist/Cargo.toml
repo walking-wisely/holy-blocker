@@ -3,11 +3,47 @@ name = "domain-blocklist"
 version = "0.1.0"
 edition = "2024"
 
+[[bin]]
+name = "domain-blocklist"
+path = "src/main.rs"
+required-features = ["cli"]
+
+[features]
+# Gates the real hickory-proto DNS client (liveness/net.rs), its Tokio-based async socket I/O, and
+# the futures-driven qps-paced sweep loop (sweep.rs) — and their live, network-touching `#[ignore]`d
+# smoke tests. Kept off by default so `cargo test` stays fully offline, per the module 7 net-client
+# assumption audit in docs/components/domain-blocklist/plan.md.
+net = ["dep:hickory-proto", "dep:tokio", "dep:futures"]
+
+# Gates the `domain-blocklist` pipeline binary (main.rs) and everything only it needs: CLI arg
+# parsing, structured log output, and the real GitHub/UT1 HTTP fetchers (fetchers/github.rs,
+# fetchers/ut1.rs) with their HTTP client, TLS stack, and tar/gzip decoder. Off by default so a
+# library consumer (e.g. net-shield, which only needs the pure fst_build/Manifest types) never
+# compiles a network stack it never calls. `cargo build --features cli` builds the binary as it
+# stands with the default (net off) feature set; add `net` (or use `--all-features`) for the DNS
+# liveness sweep too.
+cli = ["dep:clap", "dep:reqwest", "dep:tar", "dep:flate2", "dep:serde_json", "dep:tracing-subscriber", "dep:tokio", "dep:futures"]
+
 [dependencies]
+anyhow = "1"
 bincode = "1"
+clap = { version = "4", features = ["derive"], optional = true }
 domain-normalize = { path = "../domain-normalize" }
 ed25519-dalek = { version = "3.0.0", features = ["rand_core"] }
+flate2 = { version = "1.1.9", optional = true }
 fst = "0.4.7"
+futures = { version = "0.3", optional = true }
+hickory-proto = { version = "0.26.1", optional = true }
+rand = "0.8"
+reqwest = { version = "0.12.28", default-features = false, features = ["rustls-tls", "http2"], optional = true }
 serde = { version = "1.0.229", features = ["derive"] }
+serde_json = { version = "1.0.151", optional = true }
 sha2 = "0.11.0"
+tar = { version = "0.4.43", optional = true }
 thiserror = "2.0.20"
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "net", "time", "macros", "io-util"], optional = true }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
+
+[dev-dependencies]
+tempfile = "3"
