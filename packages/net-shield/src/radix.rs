@@ -32,6 +32,15 @@ impl DomainFilter {
         filter
     }
 
+    /// **Not normalized.** `domain` is stored exactly as given — no case-folding, no trailing-dot
+    /// stripping, no IDNA. This was already true before module 6 of the domain-blocklist plan; that
+    /// module's precedence resolver now queries `rule_for` with a *normalized* key
+    /// (`domain_normalize::normalize`), so a rule inserted with a differently-spelled domain (mixed
+    /// case, a trailing dot, a non-ASCII IDN label) becomes silently unreachable at level 2 — it
+    /// falls through to the FST/default instead of matching, rather than erroring. No caller
+    /// currently builds a `DomainFilter` from untrusted/raw config strings (`cli`, module 7 of the
+    /// domain-blocklist plan, is unbuilt), so this hazard is real but dormant; whichever module
+    /// first does should normalize at construction, not query, time.
     fn insert(&mut self, domain: &str, action: FilterAction) {
         let labels: Vec<&str> = domain.split('.').collect();
         let mut node = &mut self.root;
@@ -43,6 +52,15 @@ impl DomainFilter {
     }
 
     pub fn lookup(&self, domain: &str) -> FilterAction {
+        self.rule_for(domain).unwrap_or(FilterAction::Proxy)
+    }
+
+    /// Like [`lookup`](Self::lookup), but reports whether the domain matched an *explicit* rule at
+    /// all: `Some(action)` for the deepest explicit rule on the domain's label path, `None` for a
+    /// miss. The miss case is what lets the precedence resolver distinguish an explicit `Proxy`
+    /// rule (which beats the FST blocklist at level 2) from the trie's default `Proxy` (which does
+    /// not) — `lookup` alone cannot tell the two apart.
+    pub fn rule_for(&self, domain: &str) -> Option<FilterAction> {
         let labels: Vec<&str> = domain.split('.').collect();
         let mut node = &self.root;
         let mut last_match: Option<&FilterAction> = None;
@@ -59,7 +77,7 @@ impl DomainFilter {
             }
         }
 
-        last_match.cloned().unwrap_or(FilterAction::Proxy)
+        last_match.cloned()
     }
 }
 
@@ -210,6 +228,21 @@ mod tests {
     fn domain_empty_ruleset_returns_proxy() {
         let f = DomainFilter::from_rules(&[]);
         assert_eq!(f.lookup("anything.com"), FilterAction::Proxy);
+    }
+
+    #[test]
+    fn rule_for_misses_at_a_branch_node_with_no_action_of_its_own() {
+        // Only "cdn.example.com" carries a rule. "example.com" is a real node in the trie (an
+        // ancestor on the path) but has no action of its own, so rule_for must report a miss
+        // (None) for it, not Some(Proxy) — the precedence resolver depends on this distinction to
+        // fall through to the FST blocklist rather than treating "example.com" as an explicit rule.
+        let f = DomainFilter::from_rules(&[("cdn.example.com", FilterAction::Block)]);
+        assert_eq!(f.rule_for("example.com"), None);
+        assert_eq!(f.rule_for("www.example.com"), None);
+        // The node with its own action still reports it.
+        assert_eq!(f.rule_for("cdn.example.com"), Some(FilterAction::Block));
+        // lookup() still collapses the miss to the default, unchanged.
+        assert_eq!(f.lookup("example.com"), FilterAction::Proxy);
     }
 
     #[test]

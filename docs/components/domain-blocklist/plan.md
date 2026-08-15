@@ -538,6 +538,27 @@ ordinary hash lookup on the calling thread before the bulk-FST worker is ever co
 own load/verify/swap path is what needs the async, off-thread treatment; the query-time lookup does
 not.
 
+#### Assumption audit
+
+Run 2026-08-10 before implementing this module. Claims verified against the shipped crate sources in
+`~/.cargo/registry`, not against docs.
+
+| Claim | Falsifier | Observed | Verdict |
+|---|---|---|---|
+| `fst::Map<D>` can own its backing bytes, so the artifact needs no self-referential `Mmap`/`Map` pair — `Map<Mmap>` owns the mapping and is `Send + Sync` | read `fst-0.4.7/src/raw/mod.rs` `struct Fst<D>` | `struct Fst<D> { meta: Meta, data: D }` — no raw pointer, no `PhantomData`; `Map::new(data: D)` takes ownership | **TRUE** — `Map<Mmap>` is `Send + Sync` iff `Mmap` is; this replaces the plan's `map: Arc<Mmap>` field with a single owned `fst::Map<Mmap>` inside the artifact (same reference-counting/reclaimability, no self-reference) |
+| `memmap2::Mmap` is an `AsRef<[u8]>`/`Deref<Target=[u8]>` and `Send + Sync` | read `memmap2-0.9.11/src/lib.rs` | `impl Deref for Mmap` (l.918), `impl AsRef<[u8]> for Mmap` (l.927), `MmapOptions::map_copy_read_only` (l.593); `Mmap` holds only `ptr`/`len` | **TRUE** |
+| `fst::Map::get(key) -> Option<u64>` is exact-match, usable for the decision doc's label-boundary lookups | read `fst-0.4.7/src/map.rs` | `pub fn get<K: AsRef<[u8]>>(&self, key: K) -> Option<u64>` (l.133) | **TRUE** — the hot path is `get` at each label boundary, not prefix streaming (which would need anchoring, per decision doc l.674) |
+| A `Manifest`/artifact produced by `fst_build::build` round-trips through bincode so a consumer can deserialize it | existing `fst_build` test `manifest_round_trips_through_bincode` | passes; `Manifest`/`ProvenanceEntry` carry serde derives | **TRUE** — net-shield deserializes the same `Manifest` type from `domain-blocklist` rather than redefining it (no drift) |
+| The on-device two-slot layout has a defined file format net-shield can load | search decision doc / plan for a filename or byte layout | decision doc specifies `current/` + `previous/` slots, each a `.fst` + manifest pair, and a high-water-mark record, but **names no file format and module 7 `cli` (which writes it) is unbuilt** | **UNVERIFIED — gap** — `load` must define the slot layout it reads; the constants are specified in `blocklist.rs` and module 7 must write the same layout, tracked here until module 7 exists |
+| Query-side normalization must not drift from build-side | `net-shield` calls `domain_normalize::normalize` directly (no reimplementation) | by construction, same function both sides | **TRUE** |
+
+The one load-bearing gap is the undefined on-disk slot layout. `BlocklistArtifact::load` defines it as
+a base directory with `current/artifact.fst` + `current/manifest.bin`, `previous/` with the same two
+files, and a `high_water_mark` file (a u64, absent ⇒ 0). Cold-start `load` verifies `current/` then
+`previous/` and fails closed to no artifact if both fail; the `version > high-water-mark` rollback
+check is the update/accept path's job (module 7 / distribution), not the cold-start loader's. Module 7
+must write exactly this layout for the two to interoperate.
+
 ### 7. `cli` — the pipeline entry point
 
 ```text
@@ -878,7 +899,49 @@ decision doc's [Distribution](../../decisions/domain-blocklist-sourcing.md#distr
    pipeline that would call `build` and act on the manifest doesn't exist yet.
 7. `cli` — wire the whole pipeline together; the first real run is a dry run against the three
    fixture sources, not a live fetch.
-8. `net-shield` integration — the precedence table and the shared `normalize()`, per module 6.
+ 8. ~~`net-shield` integration — the precedence table and the shared `normalize()`, per module 6.~~
+    **Done.** `packages/net-shield/src/blocklist.rs` — `BlocklistArtifact` (a `fst::Map<Mmap>` that
+    owns the mapping, avoiding the plan's `Arc<Mmap>`-plus-`Map` self-reference while keeping the
+    reference-counted/reclaimable property), `load()` implementing the two-slot (`current/`→`previous/`
+    fallback) cold-start verification of signature then `fst_digest` then FST validity, and
+    `lookup()` doing the decision doc's scope-aware label-boundary exact-`get` lookups (never prefix
+    streaming, so `examplezzz.com` can't match an `example.com` apex). `DnsShield` now resolves the
+    module-6 precedence table (allowlist → explicit `DomainFilter` rules → FST → default) and
+    normalizes the query with `domain_normalize::normalize` — the *same* function the build uses.
+    `DomainFilter` gained `rule_for()` (distinguishing an explicit `Proxy` rule from the trie's
+    miss-default, which `lookup()` alone cannot) while `from_rules`/`lookup`/existing tests stay
+    untouched. The lookup-budget worker (`BlocklistLookup`) owns the artifact on one thread, answers
+    over a bounded channel keyed by the normalized domain, waits at most a caller-set budget (plan's
+    starting value 2 ms), falls back to a small LRU then the default on expiry while counting the
+    event, and deduplicates in-flight lookups. **Two explicit narrowings, recorded in
+    `docs/engineering/coverage.md`:** (1) the SNI/Wintun path (`NetShield::process_packet`) still
+    uses `DomainFilter` alone — the FST is wired into the DNS path only, which is the plan's own
+    budget-section target; (2) `load()` has only ever met the two-slot layout written by this
+    module's test helper, never by module 7 `cli` (unbuilt), so the layout contract is defined and
+    tested against but not yet produced by the real pipeline. 25 new tests (22 in `blocklist.rs`
+    covering load verification/fallback, label-boundary scoping, precedence, the budget worker, and
+    end-to-end DNS, plus precedence tests; net-shield total now 91). Consumed by nothing yet — the
+    daemon that constructs a `DnsShield` with a loaded artifact is a later wiring step.
+
+    **An adversarial review round (four parallel angle-scoped passes, one independently re-verifying
+    all four) found and fixed two real concurrency bugs in `BlocklistLookup`/`Worker`, neither caught
+    by the shipped tests because none of them induce a panic.** `Worker::run` had no `catch_unwind`
+    around the FST lookup: a panic there would kill the whole worker thread, silently degrading every
+    uncached domain to the level-5 default for the rest of the process's life, and would permanently
+    strand the panicking domain's `inflight` waiters (each subsequent `lookup()` call for that domain
+    appends another `Responder` that is never drained). Fixed by wrapping the lookup in `catch_unwind`
+    — a caught panic now answers that one request as `None` ("no rule") and the worker keeps running
+    — plus a `panic_count()` metric, the same "no silently absorbed path" convention the fallback
+    counter already followed. Separately, the cache was populated *after* draining `inflight`, not
+    before, opening a narrow window for a duplicate worker request on a domain that had just resolved
+    — fixed by reordering. Two more findings were documentation-only, not code changes: the review
+    confirmed the SNI narrowing above is real and traced (not just asserted), and flagged that
+    `DomainFilter::insert` stores rules unnormalized while module 6 queries normalized — pre-existing,
+    dormant (no non-test caller builds a `DomainFilter` from untrusted input yet, since `cli` is still
+    unbuilt), now called out in `radix.rs`'s own doc comment rather than left implicit. One test-
+    coverage gap was closed: `rule_for` returning `None` at a branch node that has children but no
+    action of its own (the shape the precedence table's `Some(Proxy)`-vs-miss distinction depends on)
+    had no direct test; one was added. Net-shield total now 92.
 9. **The mmap benchmark** (below) — after there is a real artifact to map.
 10. `overlay.rs` — after `fst_build` and `net-shield` integration both exist, since it reuses
     module 4's manifest/signing contract wholesale and slots into module 6's precedence table rather
