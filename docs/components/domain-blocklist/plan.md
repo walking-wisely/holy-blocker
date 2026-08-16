@@ -764,14 +764,36 @@ decision doc's [Distribution](../../decisions/domain-blocklist-sourcing.md#distr
    and post-conversion length limits; `classify_scope` against public suffixes, provider suffixes,
    the shared-hosting denylist, and deep hostnames. Every apex-widening bug this design fears is
    caught here or nowhere.~~ **Done.** `normalize()` uses the `idna` crate's UTS46 pass
-   (`AsciiDenyList::STD3`, `Hyphens::Allow`, `DnsLength::Ignore`, with label/name length validated
+   (`AsciiDenyList::URL`, `Hyphens::Allow`, `DnsLength::Ignore`, with label/name length validated
    explicitly afterward per RFC 1035 §2.3.4/RFC 5891 §4.4) and `classify_scope()` uses the `psl`
    crate (compiled-in Public Suffix List data — no I/O, no network fetch) plus a caller-supplied
-   shared-hosting denylist slice. 22 tests, including every named case from this plan (`com`,
+   shared-hosting denylist slice. **`classify_scope` now downgrades to `ExactHost` rather than
+   dropping the entry entirely when the normalized domain is itself a public suffix** (`com`,
+   `co.uk`, or a wildcard-PSL tenant boundary like `pornslut.cn.st` — structurally the same as
+   `someone.blogspot.com`, just one PSL level lower, since the boundary rule that matched was a
+   wildcard rather than a plain suffix) — `Apex` is still refused (claiming the whole shared suffix
+   would blackhole every other tenant), but the literal string itself can never match anything but
+   that one exact query, so there's no scope-widening reason to drop it. A live run against the
+   same ~4.78M real merged domains found ~20 entries being dropped this way (`ec2-*.compute-1.
+   amazonaws.com`, `pornslut.cn.st`-style wildcard-tenant hosts, bare gTLDs like `xxx`/`adult`);
+   after the fix, only an actual `shared_hosting_denylist` match still drops an entry outright
+   (renamed `dropped_public_suffix_or_denylisted` → `dropped_shared_hosting_denylisted` to match),
+   and the same real merge: `dropped_shared_hosting_denylisted` 20 → 0, entries 4,721,732 →
+   4,721,752. 25 tests, including every named case from this plan (`com`,
    `co.uk`, `blogspot.com`, `s3.amazonaws.com` never `Apex`; `someone.blogspot.com` is `Apex`;
    `www.example.com` normalizes to itself and scopes `ExactHost`, distinct from the `example.com`
-   `Apex` key). Not yet consumed by `domain-blocklist` (module 1+, unbuilt) or `net-shield` (module
-   6, unbuilt) — this is the shared crate only.
+   `Apex` key). **`AsciiDenyList::STD3` (the initial choice) was replaced with `AsciiDenyList::URL`
+   after a live run against ~4.78M real merged domains found ~1,029 entries silently dropped for
+   containing an underscore** — DNS-wire-legal (RFC 1035 §2.3.1: labels are arbitrary octets, not
+   LDH-restricted; `_dmarc.google.com` is a ubiquitous real example) and, confirmed against the
+   WHATWG URL Standard (`beStrict = false` on the URL host parser, "due to web compatibility"), a
+   hostname a real browser's address bar actually resolves and navigates to. `AsciiDenyList::URL`
+   is the same deny list the URL Standard's own domain-to-ASCII step applies — denies glyphless/
+   control characters and URL-structural punctuation (`%#/:<>?@[\]^|`, which is also how an IPv6
+   literal's `:`/`[`/`]` stay rejected, unchanged from before) but not underscore. Rerunning the
+   same ~4.78M-domain merge afterward: `dropped_normalization_failed` 1029 → 0, all 1,027 distinct
+   previously-rejected domains now present in the merged set. Consumed by `domain-blocklist`
+   (module 1+, done — see that row) and `net-shield` (module 6, done — see that row). <!-- step: domain-blocklist.domain-normalize -->
 2. ~~`merge.rs` — pure functions (the union/provenance merge, scope resolution, category filtering,
    `flag_personal_name`) with no I/O. Test against hand-built `RawEntry` fixtures.~~ **Done.**
    `packages/domain-blocklist` created — `types.rs` defines `SourceId`, `Category` (`Adult`,
@@ -814,7 +836,7 @@ decision doc's [Distribution](../../decisions/domain-blocklist-sourcing.md#distr
    domain flagged `adult` by one source and `gambling` by another keeps both categories; the bare
    `example.com`/`www.example.com` pair stays two distinct entries with distinct scopes) and the
    review-driven regression tests above. Not yet consumed by `sources`, `gates`, or `fst_build`
-   (modules 1, 3, 4 — all still unbuilt).
+   (modules 1, 3, 4 — all still unbuilt). <!-- step: domain-blocklist.merge -->
 3. ~~`gates.rs` — pure functions against synthetic counts and key sets. Built early precisely because
    they are cheap, pure, and are what stops every category of bad build; leaving them for last means
    the first real run has no guardrail.~~ **Done, including an adversarial (Opus) review's fixes.**
@@ -874,7 +896,7 @@ decision doc's [Distribution](../../decisions/domain-blocklist-sourcing.md#distr
    percentage against the limit, capped at 20 named hits with a count of the remainder) rather than
    a bare boolean, per the plan's "refuses publication and requires explicit human sign-off"
    framing. 80 tests. Not yet consumed by `cli` (module 7, unbuilt) — the pipeline that would call
-   these gates in sequence and act on a `Fail` doesn't exist yet.
+   these gates in sequence and act on a `Fail` doesn't exist yet. <!-- step: domain-blocklist.gates -->
 4. ~~`sources/` — one parser per source against small fixture files first (a few lines of each
    source's real format, not a live fetch), covering every row of the input-shape table above, then
    wire in the real pinned `SourceFetcher` HTTP path last.~~ **Done, minus the real HTTP client.**
@@ -903,7 +925,7 @@ decision doc's [Distribution](../../decisions/domain-blocklist-sourcing.md#distr
    category `SourceConfig` list, are left to `cli` (module 7, unbuilt) per this module's own text
    ("the pipeline binary wires in a real HTTP client") — nothing here needs live network access to
    test. Not yet consumed by `liveness`, `fst_build`, or `cli` (modules 3, 4, 7 — all still
-   unbuilt).
+   unbuilt). <!-- step: domain-blocklist.sources -->
 5. ~~`liveness.rs` — `due_for_check` first as a pure function against a fake clock and fake cache
    entries with cadence ≠ TTL (this is the part with the trickiest edge cases: reappeared-stale vs.
    genuinely-revived entries). Then `canary_check` against a fake resolver that simulates a
@@ -959,7 +981,7 @@ decision doc's [Distribution](../../decisions/domain-blocklist-sourcing.md#distr
    NXDOMAIN at `example.com` implies every `*.example.com` entry is also dead, with zero extra
    queries — is deferred because nothing in this module's shape expresses shared context between
    per-domain `check()` calls, which a real optimization lever for module 7's per-domain sweep
-   would need.
+   would need. <!-- step: domain-blocklist.liveness -->
 6. ~~`fst_build.rs` — pin against a small hand-built key set first (a handful of domains sharing
    prefixes and suffixes, mixed `Apex` and `ExactHost`) and assert exact-match, label-boundary
    scoping, and **anchored** prefix-streaming behavior before building the real list.~~ **Done.**
@@ -985,7 +1007,7 @@ decision doc's [Distribution](../../decisions/domain-blocklist-sourcing.md#distr
    combination, manifest bincode round-trip, a two-signature rotation manifest verifying against
    old-key-only/new-key-only/both clients, and tampering with `fst_digest` after signing
    invalidating every signature entry. Not yet consumed by `cli` (module 7, unbuilt) — the
-   pipeline that would call `build` and act on the manifest doesn't exist yet.
+   pipeline that would call `build` and act on the manifest doesn't exist yet. <!-- step: domain-blocklist.fst-build -->
 7. ~~`cli` — wire the whole pipeline together; the first real run is a dry run against the three
    fixture sources, not a live fetch.~~ **Done, with the real qps-paced sweep's production hardening
    (24h pacing at real scale, a genuinely random per-run nonce, a vetted in-category canary control)
@@ -1127,31 +1149,52 @@ decision doc's [Distribution](../../decisions/domain-blocklist-sourcing.md#distr
    VPS (RAM, real `O_DIRECT` disk-latency percentiles, real corpus) and a real redb file built from
    the project's actual pinned sources (4,767,348 domains → 515MB compacted, vs. 2.71GB observed
    live for the then-current in-memory `HashMap`). `cache_store::CacheStore` is now the redb-backed
-   store that section speced: a single-file mmap-backed table (domain → bincode `CacheEntryDto`,
-   the same DTO `load`/`save` already used, kept unchanged for tests/small-corpus callers) behind a
-   new `CacheBackend` trait, with `set` buffering into an in-memory pending map and `flush`
-   committing one batched write transaction — sorted by key first, the free B-tree-locality win the
-   plan named — rather than one transaction per domain. `sweep::run_sweep_streaming` (the function
+   store that section speced: a single-file table (domain → bincode `CacheEntryDto`, the same DTO
+   `load`/`save` already used, kept unchanged for tests/small-corpus callers) behind a new
+   `CacheBackend` trait, with `set` buffering into an in-memory pending map and `flush` committing
+   one batched write transaction — sorted by key first, the free B-tree-locality win the plan named
+   — rather than one transaction per domain. **Correction: redb is not mmap-backed** — it keeps its
+   own in-process page cache (`redb::Builder`, 1 GiB default), which is anonymous process heap the
+   kernel can only swap, not drop the cheap way it drops a clean mmap; `CacheStore::open` now passes
+   `set_cache_size(cache_store::DEFAULT_CACHE_SIZE_BYTES)` (128 MiB, see that constant's own doc
+   comment) explicitly rather than taking the unbounded default, which is the actual mechanism that
+   bounds this cache's RSS — see the sourcing doc's corrected redb section for the full story and
+   why the earlier mmap-reclaim framing was wrong. `sweep::run_sweep_streaming` (the function
    `main.rs` calls for a real run) is now generic over `CacheBackend`, so `main.rs` passes a real
    `CacheStore` there instead of a resident `HashMap`; checkpointing is `cache.flush()` at each
-   `canary_every` boundary plus one final flush, gated on `checkpoint_every > 0` so a dry run (which
-   forces that to `0`) still never persists `--cache`. **On-disk migration was decided, not
-   discovered mid-migration, per this section's own instruction**: no automatic bincode→redb
-   converter was built, because no real production `cache.bin` exists to migrate — a deployment
-   switching to this starts one cold sweep. One real narrowing this decision costs: a dry run can no
-   longer cheaply seed itself from an existing cache file's exact prior state (`CacheBackend::for_each`
-   has no key-yielding variant to reconstruct a `HashMap` from), so a dry run now always starts
-   cold — recorded inline in `main.rs`, affecting only the dry-run preview path. **Measured against
-   the same 4.8M-synthetic-domain stress harness the streaming-corpus pass above used, same machine,
-   same process shape**: `HashMap`-backed streaming final RSS 1353.8MB vs. redb-backed 1126.7MB
-   (cache file 514.0MB on disk, matching this section's independent ~515MB measurement) — a real but
-   modest ~17% reduction, not the ~5x the production-VPS figure above projected. Reported honestly
-   rather than reconciled away: the likely cause is that a synthetic single-process stress test never
-   gives the OS a reason to reclaim the mmap pages redb just wrote, unlike a real multi-hour sweep on
-   a memory-pressured shared-tenant VPS — the same class of allocator/OS-behavior caveat the
-   streaming-corpus pass already flagged for macOS vs. the Linux VPS target, unverified against the
-   real host rather than assumed away. Periodic compaction cadence for steady-state churn remains
-   this section's own named open gap — still unmeasured, not built here.
+   `canary_every` boundary plus one **unconditional** final flush — no longer gated on
+   `checkpoint_every > 0` (a real bug found and fixed: that gate made `--checkpoint-every 0` on a
+   real run silently buffer every verdict since the sweep began and never reach disk, since the "a
+   dry run never persists `--cache`" guarantee is already enforced upstream, by `main.rs` choosing an
+   in-memory cache for a dry run rather than a real `CacheStore` at all). **On-disk migration was
+   decided, not discovered mid-migration, per this section's own instruction**: no automatic
+   bincode→redb converter was built, because no real production `cache.bin` exists to migrate — a
+   deployment switching to this starts one cold sweep. ~~One real narrowing this decision costs: a
+   dry run can no longer cheaply seed itself from an existing cache file's exact prior state
+   (`CacheBackend::for_each` has no key-yielding variant to reconstruct a `HashMap` from), so a dry
+   run now always starts cold.~~ **Closed in the adversarial-review pass below**: a new
+   `cache_store::read_snapshot(path)` reads an existing redb file read-only (never creates it,
+   never opens a write transaction) into a plain `HashMap`, and `main.rs`'s dry-run branch now
+   seeds `LivenessCache::Memory` from it when `--cache` is given, restoring the "sees exactly the
+   gate decisions a real run would" guarantee `--dry-run`'s own doc comment makes. **Measured
+   against the same 4.8M-synthetic-domain stress harness the streaming-corpus pass
+   above used, same machine, same process shape**: `HashMap`-backed streaming final RSS 1353.8MB;
+   redb with the unbounded 1 GiB default, 1126.7MB (a modest ~17% reduction the sourcing doc
+   originally, and wrongly, attributed to mmap reclaim); redb with the fixed 128 MiB bounded cache,
+   **942.8MB** (cache file still 514.0MB on disk, unchanged — this is a resident-memory fix, not a
+   format change). See the sourcing doc's corrected section for a separately-reproduced run that
+   measured a larger gap (down to 613.9MB) under conditions not fully pinned down between the two
+   runs — both agree the bounded-cache-size fix is real and correctly targeted, neither is confirmed
+   against the real VPS yet. Periodic compaction cadence for steady-state churn remains this
+   section's own named open gap — still unmeasured, not built here. **The same review also closed
+   a silent-error gap in `CacheStore::get`**: four chained `.ok()?` calls previously collapsed a
+   real error (a transaction/table failure, an undecodable row) into the same `None` a genuine
+   cache miss returns, which mattered concretely in `sweep::process_batch` — a transient read
+   error on an already-`Dead` domain silently reset its `first_dead_at` quarantine clock,
+   indistinguishable from a fresh death. `get` now logs and counts real errors distinctly (a new
+   `AtomicU64 error_count` field, exposed via `CacheStore::error_count()` and logged as
+   `cache_errors` on the "liveness sweep complete" line) while leaving the fallback behavior
+   (treat as due/unknown) unchanged for every caller. <!-- step: domain-blocklist.cli -->
  8. ~~`net-shield` integration — the precedence table and the shared `normalize()`, per module 6.~~
     **Done.** `packages/net-shield/src/blocklist.rs` — `BlocklistArtifact` (a `fst::Map<Mmap>` that
     owns the mapping, avoiding the plan's `Arc<Mmap>`-plus-`Map` self-reference while keeping the
@@ -1195,12 +1238,12 @@ decision doc's [Distribution](../../decisions/domain-blocklist-sourcing.md#distr
     unbuilt), now called out in `radix.rs`'s own doc comment rather than left implicit. One test-
     coverage gap was closed: `rule_for` returning `None` at a branch node that has children but no
     action of its own (the shape the precedence table's `Some(Proxy)`-vs-miss distinction depends on)
-    had no direct test; one was added. Net-shield total now 92.
-9. **The mmap benchmark** (below) — after there is a real artifact to map.
+    had no direct test; one was added. Net-shield total now 92. <!-- step: domain-blocklist.net-shield-integration -->
+9. **The mmap benchmark** (below) — after there is a real artifact to map. <!-- step: domain-blocklist.mmap-benchmark -->
 10. `overlay.rs` — after `fst_build` and `net-shield` integration both exist, since it reuses
     module 4's manifest/signing contract wholesale and slots into module 6's precedence table rather
     than defining either from scratch. Pin the size and publish-size gates against synthetic entry
-    sets first, the same way `gates.rs` was built ahead of a real artifact to test against.
+    sets first, the same way `gates.rs` was built ahead of a real artifact to test against. <!-- step: domain-blocklist.overlay -->
 
 ## Benchmarking plan — the mmap major-fault tail
 
