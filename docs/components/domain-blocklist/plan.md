@@ -1121,18 +1121,58 @@ decision doc's [Distribution](../../decisions/domain-blocklist-sourcing.md#distr
    during the sweep's duration, a structural fact independent of what `ps` reports. The cache
    remains the dominant driver of the ~1.9-2GB peak either way — an embedded KV store bounding
    cache RSS by a page budget instead of corpus size (replacing the `HashMap` +
-   whole-file-bincode design) is the real lever for that number. **Now spec'd, not yet built**:
-   `docs/decisions/domain-blocklist-sourcing.md`'s "Measured 2026-08-16: the cache's in-process
-   representation — redb, not a `HashMap` blob" section measures the actual production VPS (RAM,
-   real `O_DIRECT` disk-latency percentiles, real corpus) and a real redb file built from the
-   project's actual pinned sources (4,767,348 domains → 515MB compacted, vs. 2.71GB observed live
-   for the current in-memory `HashMap`). The follow-up implementation swaps `cache_store.rs`'s
-   `HashMap`-based `load`/`save` for a redb-backed store with batched write transactions (one
-   commit per `--checkpoint-every` chunk, not per domain), needs a periodic compaction cadence
-   (515MB is a freshly-compacted single-writer measurement, not a steady-state-after-churn one —
-   unmeasured, flagged as an open gap in that section), an explicit decision on migrating or
-   discarding the existing bincode `cache.bin` format, and should take the free win of sorting the
-   due-list traversal into key order first, for B-tree page locality.
+   whole-file-bincode design) is the real lever for that number. ~~Now spec'd, not yet built~~
+   **Built.** `docs/decisions/domain-blocklist-sourcing.md`'s "Measured 2026-08-16: the cache's
+   in-process representation — redb, not a `HashMap` blob" section measured the actual production
+   VPS (RAM, real `O_DIRECT` disk-latency percentiles, real corpus) and a real redb file built from
+   the project's actual pinned sources (4,767,348 domains → 515MB compacted, vs. 2.71GB observed
+   live for the then-current in-memory `HashMap`). `cache_store::CacheStore` is now the redb-backed
+   store that section speced: a single-file table (domain → bincode `CacheEntryDto`, the same DTO
+   `load`/`save` already used, kept unchanged for tests/small-corpus callers) behind a new
+   `CacheBackend` trait, with `set` buffering into an in-memory pending map and `flush` committing
+   one batched write transaction — sorted by key first, the free B-tree-locality win the plan named
+   — rather than one transaction per domain. **Correction: redb is not mmap-backed** — it keeps its
+   own in-process page cache (`redb::Builder`, 1 GiB default), which is anonymous process heap the
+   kernel can only swap, not drop the cheap way it drops a clean mmap; `CacheStore::open` now passes
+   `set_cache_size(cache_store::DEFAULT_CACHE_SIZE_BYTES)` (128 MiB, see that constant's own doc
+   comment) explicitly rather than taking the unbounded default, which is the actual mechanism that
+   bounds this cache's RSS — see the sourcing doc's corrected redb section for the full story and
+   why the earlier mmap-reclaim framing was wrong. `sweep::run_sweep_streaming` (the function
+   `main.rs` calls for a real run) is now generic over `CacheBackend`, so `main.rs` passes a real
+   `CacheStore` there instead of a resident `HashMap`; checkpointing is `cache.flush()` at each
+   `canary_every` boundary plus one **unconditional** final flush — no longer gated on
+   `checkpoint_every > 0` (a real bug found and fixed: that gate made `--checkpoint-every 0` on a
+   real run silently buffer every verdict since the sweep began and never reach disk, since the "a
+   dry run never persists `--cache`" guarantee is already enforced upstream, by `main.rs` choosing an
+   in-memory cache for a dry run rather than a real `CacheStore` at all). **On-disk migration was
+   decided, not discovered mid-migration, per this section's own instruction**: no automatic
+   bincode→redb converter was built, because no real production `cache.bin` exists to migrate — a
+   deployment switching to this starts one cold sweep. ~~One real narrowing this decision costs: a
+   dry run can no longer cheaply seed itself from an existing cache file's exact prior state
+   (`CacheBackend::for_each` has no key-yielding variant to reconstruct a `HashMap` from), so a dry
+   run now always starts cold.~~ **Closed in the adversarial-review pass below**: a new
+   `cache_store::read_snapshot(path)` reads an existing redb file read-only (never creates it,
+   never opens a write transaction) into a plain `HashMap`, and `main.rs`'s dry-run branch now
+   seeds `LivenessCache::Memory` from it when `--cache` is given, restoring the "sees exactly the
+   gate decisions a real run would" guarantee `--dry-run`'s own doc comment makes. **Measured
+   against the same 4.8M-synthetic-domain stress harness the streaming-corpus pass
+   above used, same machine, same process shape**: `HashMap`-backed streaming final RSS 1353.8MB;
+   redb with the unbounded 1 GiB default, 1126.7MB (a modest ~17% reduction the sourcing doc
+   originally, and wrongly, attributed to mmap reclaim); redb with the fixed 128 MiB bounded cache,
+   **942.8MB** (cache file still 514.0MB on disk, unchanged — this is a resident-memory fix, not a
+   format change). See the sourcing doc's corrected section for a separately-reproduced run that
+   measured a larger gap (down to 613.9MB) under conditions not fully pinned down between the two
+   runs — both agree the bounded-cache-size fix is real and correctly targeted, neither is confirmed
+   against the real VPS yet. Periodic compaction cadence for steady-state churn remains this
+   section's own named open gap — still unmeasured, not built here. **The same review also closed
+   a silent-error gap in `CacheStore::get`**: four chained `.ok()?` calls previously collapsed a
+   real error (a transaction/table failure, an undecodable row) into the same `None` a genuine
+   cache miss returns, which mattered concretely in `sweep::process_batch` — a transient read
+   error on an already-`Dead` domain silently reset its `first_dead_at` quarantine clock,
+   indistinguishable from a fresh death. `get` now logs and counts real errors distinctly (a new
+   `AtomicU64 error_count` field, exposed via `CacheStore::error_count()` and logged as
+   `cache_errors` on the "liveness sweep complete" line) while leaving the fallback behavior
+   (treat as due/unknown) unchanged for every caller.
  8. ~~`net-shield` integration — the precedence table and the shared `normalize()`, per module 6.~~
     **Done.** `packages/net-shield/src/blocklist.rs` — `BlocklistArtifact` (a `fst::Map<Mmap>` that
     owns the mapping, avoiding the plan's `Arc<Mmap>`-plus-`Map` self-reference while keeping the

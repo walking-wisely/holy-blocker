@@ -693,11 +693,18 @@ bucket-array slack below 100% load factor, struct alignment padding), none of it
 by the ~25-byte domain strings and ~13–21-byte `CacheEntryDto` values being stored.
 
 The fix is to stop holding the cache as a live Rust collection at all and read/write it through
-[redb](https://docs.rs/redb) — a pure-Rust, single-file, mmap-backed, transactional embedded
-key-value store ([repository](https://github.com/cberner/redb)), with the domain string as key and
-a bincode-encoded `CacheEntryDto` as value, matching the DTO shape already defined in
-`cache_store.rs`. This was evaluated rather than assumed, using real data from the actual deployment
-host rather than synthetic benchmarks:
+[redb](https://docs.rs/redb) 4.1.0 — a pure-Rust, single-file, transactional embedded key-value
+store ([repository](https://github.com/cberner/redb)), with the domain string as key and a
+bincode-encoded `CacheEntryDto` as value, matching the DTO shape already defined in
+`cache_store.rs`. **Correction (2026-08-16, same day, after implementation and measurement): redb
+is not mmap-backed.** An earlier draft of this section claimed it was, on the strength of the crate
+description alone rather than reading its actual storage code; that claim was wrong and is corrected
+here rather than left standing. redb 4.1.0 keeps its own in-process page cache
+(`redb::Builder::set_cache_size`, defaulting to 1 GiB) over a single file it manages with its own
+I/O, not a `mmap()`ed region the kernel pages in the sense the rest of this section originally
+assumed. This matters for the "how does this bound memory" argument below, which the mmap framing
+got backwards — see the corrected "Net effect" paragraph. This was evaluated rather than assumed,
+using real data from the actual deployment host rather than synthetic benchmarks:
 
 - **VPS specs** (`ssh` to the production Contabo box): 7.8GB RAM, of which only ~4.0GB was
   "available" (free + reclaimable buff/cache) while the current sweep held its 2.71GB `HashMap`
@@ -728,13 +735,19 @@ host rather than synthetic benchmarks:
   and wrongly, guessed before measuring (that guess anchored on the inflated 2.71GB in-memory figure
   as its baseline, which was already the wrong number to add B-tree overhead on top of).
 
-**Net effect of the swap:** steady-state resident memory for the cache drops roughly 5x (2.71GB →
-likely 500MB–1GB once redb is warm), for the boring reason that Rust's live `HashMap<String, T>`
-carries per-object heap overhead redb's packed encoding doesn't. Separately, because the resident
-pages are OS-managed mmap pages rather than a Rust-owned allocation, the kernel can reclaim them
-under memory pressure instead of the process holding a fixed allocation until it OOMs — graceful
-degradation (a page fault, 400μs–17ms per the measurement above) instead of a hard failure, which
-matters on a VPS shared with unrelated workloads whose own memory demand can grow.
+**Net effect of the swap, corrected:** steady-state resident memory for the cache drops for the
+boring reason that Rust's live `HashMap<String, T>` carries per-object heap overhead redb's packed
+encoding doesn't — but that drop is bounded by **an explicit cache-size budget passed to
+`redb::Builder::set_cache_size`, not by OS reclaim of mmap pages**, since no such pages exist. redb's
+page cache is process-owned anonymous heap the kernel can, at best, swap under pressure — it cannot
+drop it the cheap way it drops a clean file-backed mapping, so leaving the 1 GiB default in place
+(as the first implementation of `CacheStore::open` did, before this correction) trades one unbounded
+allocator (a resident `HashMap`) for a differently-shaped one. The actual lever, and the one this
+section's "bounding cache RSS by a page budget instead of corpus size" goal describes, is choosing
+`set_cache_size` explicitly — `cache_store::DEFAULT_CACHE_SIZE_BYTES` (128 MiB) is what
+`CacheStore::open` now passes; see that constant's own doc comment for the measurement that picked
+128 MiB specifically. This is graceful in a different sense than originally claimed: it is a hard,
+predictable ceiling set at open time, not a hope that the kernel reclaims something under pressure.
 
 **What implementing this needs to account for, not treated as free:**
 
@@ -759,10 +772,45 @@ matters on a VPS shared with unrelated workloads whose own memory demand can gro
   400μs–17ms cold-fault lookups measured above) than visiting them in whatever order the corpus
   happened to be merged in, at no cost beyond sorting the due list once per sweep.
 
-This section documents the decision and the measurements backing it; the implementation itself
-(swapping `cache_store.rs`'s `HashMap`-based `load`/`save` for a redb-backed store, wiring batched
-commits into `sweep::CheckpointSink`, and adding a compaction cadence) is tracked as the next module
-7 follow-up in `docs/components/domain-blocklist/plan.md`, not yet built.
+This section documents the decision and the measurements backing it; the implementation
+(`cache_store::CacheStore`, `CacheBackend`, and a `CacheBackend`-generic `sweep::run_sweep_streaming`)
+is built — see `docs/components/domain-blocklist/plan.md`'s module 7 entry for what shipped and the
+one narrowing it cost (a dry run can no longer cheaply seed itself from an existing cache file's
+exact prior state, so it always starts cold now).
+
+**Measured 2026-08-16, same day: the stress-harness comparison, its first (wrong) explanation, and
+the correction.** Running the streaming sweep's own 4.8M-synthetic-domain stress test
+(`sweep::tests::stress_test_streaming_sweep_avoids_holding_the_full_corpus`, already in this repo)
+both ways — a `HashMap`-backed cache and a `CacheStore`-backed one, same process shape, same machine
+— gave final RSS 1353.8MB vs. 1126.7MB: a real ~17% reduction, not the ~5x this section's own
+production-VPS estimate projected. **That comparison's explanation was wrong**, not just optimistic:
+it attributed the shortfall to "dirty/recently-touched mmap pages stay resident until something
+evicts them," reasoning the production VPS's shared-tenant memory pressure would let the kernel
+reclaim more than a quiet single-process stress test would. There are no mmap pages — see the
+correction above — so there is nothing for the kernel to reclaim either way, on a quiet dev machine
+or a busy VPS; a 1 GiB redb cache is 1 GiB of anonymous heap regardless of who else is running.
+**The real cause was the unbounded 1 GiB `redb::Builder` default itself, left unset by the first
+`CacheStore::open`.** Fixed by passing `set_cache_size(cache_store::DEFAULT_CACHE_SIZE_BYTES)`
+(128 MiB — see that constant's doc comment) explicitly. Re-measured on the same stress harness,
+same machine, after the fix: **rss_final=942.8 MB**, cache file still 514.0MB on disk (unchanged —
+this is a resident-memory fix, not a format change). That's a real reduction from the 1 GiB-default
+redb run (1126.7MB → 942.8MB, ~16%) and from the `HashMap` baseline (1353.8MB → 942.8MB, ~30%), but
+notably **not** as large as `redb::Builder`'s cache-size delta alone would suggest — a separately
+reproduced run of the same before/after comparison (see `cache_store::DEFAULT_CACHE_SIZE_BYTES`'s
+own doc comment) measured a larger gap (1126.7MB → 613.9MB) under conditions not fully pinned down
+here; the two runs agree on direction and rough magnitude but not on the exact number, most likely
+because this stress test's own ~516MB entry-corpus build-then-drop overhead (documented in the
+streaming-corpus pass above as **not actually released back to the OS by macOS's allocator**) sits
+underneath both numbers and doesn't cancel out cleanly between runs. Reported honestly rather than
+reconciled: the bounded-cache-size fix is confirmed real and correctly targeted at the right root
+cause, but this repo does not yet have a single trusted number for its exact size on this dev
+machine, and — per every other caveat this document already carries about macOS vs. the Linux VPS
+target — neither number has been confirmed against the real deployment host. Unlike the original
+mmap-based reasoning, though, the fixed mechanism does not depend on kernel reclaim behavior varying
+by host at all: `set_cache_size` is an explicit, host-independent ceiling, so the VPS should see the
+same order-of-magnitude reduction this stress harness does, not a host-specific bonus the way the
+original (wrong) mmap story implied. A real multi-hour sweep against the production VPS is still the
+only way to confirm the exact number there.
 
 #### Egress: a documented estimate, not a measurement
 
