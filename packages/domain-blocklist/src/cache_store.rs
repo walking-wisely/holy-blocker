@@ -15,9 +15,14 @@
 //! the sweep's cache as a live `HashMap<String, CacheEntry>` measured **2.71GB RSS**, almost all of
 //! it per-`String`/bucket-array heap overhead the ~25-byte domain keys and ~13-21-byte values don't
 //! structurally need. [`CacheStore`] instead reads/writes the cache through
-//! [redb](https://docs.rs/redb), a single-file mmap-backed embedded KV store, so the OS pages the
-//! table in and out under memory pressure rather than the process holding a fixed multi-GB
-//! allocation. The old `HashMap`-based `load`/`save` functions are kept unchanged below — they're
+//! [redb](https://docs.rs/redb) 4.1.0, a single-file embedded KV store with its own **in-process,
+//! bounded page cache** — redb is not mmap-backed (an earlier draft of this doc comment claimed it
+//! was; that was never true of this crate's version and is corrected here). The cache is
+//! process-owned anonymous heap, not a clean file-backed mapping the kernel can drop under memory
+//! pressure the way it can with real mmap pages, so leaving `redb::Builder`'s 1 GiB default in
+//! place would trade one unbounded allocator (a resident `HashMap`) for another. [`open`](CacheStore::open)
+//! therefore sets an explicit, bounded cache size — see [`DEFAULT_CACHE_SIZE_BYTES`] for the
+//! measurement that picked its value. The old `HashMap`-based `load`/`save` functions are kept unchanged below — they're
 //! still the right shape for `run_sweep`/`run_sweep_with_resolvers` (kept for tests and
 //! small-corpus callers, per `sweep.rs`'s own doc comments) and for anything reading/writing a
 //! *complete* cache snapshot in one shot.
@@ -242,6 +247,90 @@ impl CacheBackend for HashMap<String, CacheEntry> {
 /// byte-compatible with each other if a future migration pass ever wants that.
 const TABLE: redb::TableDefinition<&str, &[u8]> = redb::TableDefinition::new("liveness_cache");
 
+/// Reads a snapshot of an existing redb cache file at `path` into a plain `HashMap`, **without
+/// ever creating the file if it's missing or writing anything to it** — the seam that lets a dry
+/// run (`main.rs`'s `run_liveness`) preview real gate decisions against real prior cache state
+/// again, while still keeping its own "a dry run never persists `--cache`" guarantee, which this
+/// function cannot violate structurally: it never opens a write transaction and never touches a
+/// path that doesn't already exist.
+///
+/// [`CacheStore::open`] was the wrong tool for this — it always creates the file (and one write
+/// transaction to ensure the table exists) if absent, which is correct for a real run but not
+/// something a dry run should ever trigger, however harmless the resulting empty file would be.
+///
+/// A missing file returns an empty snapshot — "a run that cannot load the cache starts cold," the
+/// same rule [`load`] documents for the legacy bincode path — rather than an error, since a dry
+/// run against a `--cache` path that hasn't been swept into yet is exactly as valid as a genuine
+/// first sweep.
+pub fn read_snapshot(path: &Path) -> anyhow::Result<HashMap<String, CacheEntry>> {
+    if !path.exists() {
+        return Ok(HashMap::new());
+    }
+    let db = redb::Builder::new()
+        .set_cache_size(DEFAULT_CACHE_SIZE_BYTES)
+        .open(path)
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "failed to open redb cache at {} for a read-only dry-run snapshot: {e} — if this \
+                 path previously held the legacy bincode `cache.bin` format, that's the likely \
+                 cause (see this module's own doc comment)",
+                path.display()
+            )
+        })?;
+    let txn = db
+        .begin_read()
+        .map_err(|e| anyhow::anyhow!("failed to open a read transaction for a snapshot: {e}"))?;
+    let table = match txn.open_table(TABLE) {
+        Ok(table) => table,
+        // A redb file this crate created always has the table (`CacheStore::open` creates it
+        // eagerly) — this only guards against some other, unexpected redb file at the path.
+        Err(redb::TableError::TableDoesNotExist(_)) => return Ok(HashMap::new()),
+        Err(e) => {
+            return Err(anyhow::anyhow!(
+                "failed to open liveness_cache for a read-only snapshot: {e}"
+            ));
+        }
+    };
+    let iter = table
+        .iter()
+        .map_err(|e| anyhow::anyhow!("failed to iterate liveness_cache for a snapshot: {e}"))?;
+    let mut out = HashMap::new();
+    for row in iter {
+        let (key, value) = row.map_err(|e| anyhow::anyhow!("failed to read a cache row: {e}"))?;
+        let dto: CacheEntryDto = bincode::deserialize(value.value())
+            .map_err(|e| anyhow::anyhow!("failed to decode a cache row: {e}"))?;
+        out.insert(key.value().to_string(), dto.into());
+    }
+    Ok(out)
+}
+
+/// Bounded redb in-process cache budget [`CacheStore::open`] uses instead of `redb::Builder`'s 1
+/// GiB default. Measured 2026-08-16 against the same 4.8M-synthetic-domain stress harness this
+/// module's own doc comment cites (`stress_test_streaming_sweep_with_redb_cache_bounds_rss`),
+/// changing only `redb::Database::create(path)` → `Builder::new().set_cache_size(...).create(path)`:
+///
+/// | variant | final RSS |
+/// |---|---|
+/// | `HashMap` baseline | 1353.8 MB |
+/// | redb, 1 GiB default cache | 1126.7 MB |
+/// | redb, 128 MiB cache budget | 613.9 MB (one measured run) / 942.8 MB (a second, separately
+/// reproduced run — see below) |
+///
+/// No measurable CPU cost difference and identical on-disk file size (514.0 MB) between the two
+/// redb variants in every run. 128 MiB is small enough to bound RSS hard at multi-million-domain
+/// scale while still being large enough that the hot pages touched during one `canary_every`-sized
+/// sweep chunk mostly hit cache rather than a disk read.
+///
+/// **Reported honestly rather than reconciled**: two separately reproduced runs of the same
+/// before/after comparison did not agree on the exact final-RSS number for the bounded-cache
+/// variant (613.9 MB vs. 942.8 MB), though both agree the fix is real and correctly targeted
+/// (both land well under the unbounded-default 1126.7 MB). The most likely cause, per
+/// `docs/decisions/domain-blocklist-sourcing.md`'s corrected redb section, is that this stress
+/// test's own ~516 MB entry-corpus build-then-drop overhead is not reliably released back to the
+/// OS by macOS's allocator between runs, so it doesn't cancel out cleanly. Neither number is
+/// confirmed against the real Linux VPS deployment target.
+pub const DEFAULT_CACHE_SIZE_BYTES: usize = 128 * 1024 * 1024;
+
 /// The redb-backed [`CacheBackend`] — see this module's doc comment for the measurement that
 /// motivated it and the migration decision.
 ///
@@ -254,14 +343,44 @@ const TABLE: redb::TableDefinition<&str, &[u8]> = redb::TableDefinition::new("li
 pub struct CacheStore {
     db: redb::Database,
     pending: HashMap<String, CacheEntry>,
+    /// Counts real `get` failures (a transaction that couldn't open, a table that couldn't open, a
+    /// row that couldn't decode) distinctly from an ordinary cache miss — see [`CacheBackend::get`]
+    /// on [`CacheStore`]'s own doc comment for why this distinction matters. `AtomicU64` because
+    /// `get` takes `&self` (this crate's `CacheBackend::get` is not `&mut self`, matching the
+    /// `HashMap` impl, which needs no mutability either), so a plain counter field can't be bumped
+    /// without interior mutability. Mirrors the counter pattern `merge.rs`'s `MergeReport` uses for
+    /// its own soft-failure drop counts.
+    error_count: std::sync::atomic::AtomicU64,
 }
 
 impl CacheStore {
-    /// Opens (creating if absent) the redb database at `path` and ensures [`TABLE`] exists —
-    /// `redb::Database::create` alone doesn't create tables, only the file/header.
+    /// Opens (creating if absent) the redb database at `path`, bounding its in-process page cache
+    /// to [`DEFAULT_CACHE_SIZE_BYTES`] rather than `redb::Builder`'s 1 GiB default — see this
+    /// module's doc comment and [`DEFAULT_CACHE_SIZE_BYTES`]'s own doc comment for the measurement.
     pub fn open(path: &Path) -> anyhow::Result<Self> {
-        let db = redb::Database::create(path)
-            .map_err(|e| anyhow::anyhow!("failed to open redb cache at {}: {e}", path.display()))?;
+        Self::open_with_cache_size(path, DEFAULT_CACHE_SIZE_BYTES)
+    }
+
+    /// Same as [`open`](Self::open), but with an explicit redb in-process cache budget in bytes —
+    /// the seam a future `--cache-size-mb` CLI flag (or any other caller wanting a different
+    /// budget than the shipped default) would call into.
+    pub fn open_with_cache_size(path: &Path, cache_size_bytes: usize) -> anyhow::Result<Self> {
+        let db = redb::Builder::new()
+            .set_cache_size(cache_size_bytes)
+            .create(path)
+            .map_err(|e| {
+                // redb's own error here is a generic "invalid data"/header-mismatch failure —
+                // the same failure a stale legacy bincode `cache.bin` (or any other non-redb
+                // file) at this path produces. Name the likely cause and the remedy this module's
+                // own doc comment already describes rather than leaving the operator to guess.
+                anyhow::anyhow!(
+                    "failed to open redb cache at {}: {e} — if this path previously held the \
+                     legacy bincode `cache.bin` format (or any other non-redb file), that's the \
+                     likely cause: there is no automatic migrator, so start one cold sweep \
+                     against a fresh --cache path instead (see this module's own doc comment)",
+                    path.display()
+                )
+            })?;
         let txn = db.begin_write().map_err(|e| {
             anyhow::anyhow!("failed to open a write transaction on a fresh redb cache: {e}")
         })?;
@@ -275,6 +394,7 @@ impl CacheStore {
         Ok(Self {
             db,
             pending: HashMap::new(),
+            error_count: std::sync::atomic::AtomicU64::new(0),
         })
     }
 
@@ -290,18 +410,70 @@ impl CacheStore {
             .compact()
             .map_err(|e| anyhow::anyhow!("redb compaction failed: {e}"))
     }
+
+    /// Number of `get` calls that hit a real error (a transaction/table that couldn't open, or a
+    /// row that failed to decode) rather than an ordinary cache miss, since this store was opened.
+    /// See [`CacheBackend::get`]'s impl on [`CacheStore`] for why the two are logged and counted
+    /// separately instead of both silently collapsing to `None`.
+    pub fn error_count(&self) -> u64 {
+        self.error_count.load(std::sync::atomic::Ordering::Relaxed)
+    }
 }
 
 impl CacheBackend for CacheStore {
+    /// A real read error (transaction/table open failure, an undecodable row) is distinguished
+    /// from "this domain has no cache entry" — both used to collapse to `None` via four chained
+    /// `.ok()?` calls, indistinguishable to every caller. That mattered concretely in
+    /// `sweep::process_batch`: a transient read error on a domain previously marked `Dead` made
+    /// `entry_before.first_dead_at` read as `None`, so that batch's fresh `Dead` verdict reset
+    /// `first_dead_at = now` — silently restarting the domain's whole quarantine clock on a read
+    /// error, with nothing to distinguish it from a domain that genuinely just died. A real error
+    /// now logs (naming the domain and the failure) and increments [`CacheStore::error_count`]
+    /// instead of silently reading as a miss; this is the minimum fix rather than propagating
+    /// `Result` through [`CacheBackend::get`] and every caller, since the two failure classes
+    /// still need the same fallback behavior (treat as due/unknown) and only need to be
+    /// *observable* as distinct, not handled differently by every call site.
     fn get(&self, domain: &str) -> Option<CacheEntry> {
         if let Some(entry) = self.pending.get(domain) {
             return Some(*entry);
         }
-        let txn = self.db.begin_read().ok()?;
-        let table = txn.open_table(TABLE).ok()?;
-        let guard = table.get(domain).ok().flatten()?;
-        let dto: CacheEntryDto = bincode::deserialize(guard.value()).ok()?;
-        Some(dto.into())
+        let txn = match self.db.begin_read() {
+            Ok(txn) => txn,
+            Err(e) => {
+                self.error_count
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                tracing::warn!(domain, error = %e, "redb read transaction failed on get — treating as a cache miss, not a confirmed absence");
+                return None;
+            }
+        };
+        let table = match txn.open_table(TABLE) {
+            Ok(table) => table,
+            Err(e) => {
+                self.error_count
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                tracing::warn!(domain, error = %e, "failed to open liveness_cache table on get — treating as a cache miss, not a confirmed absence");
+                return None;
+            }
+        };
+        let guard = match table.get(domain) {
+            Ok(Some(guard)) => guard,
+            Ok(None) => return None, // a genuine miss — no row for this domain
+            Err(e) => {
+                self.error_count
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                tracing::warn!(domain, error = %e, "redb row lookup failed on get — treating as a cache miss, not a confirmed absence");
+                return None;
+            }
+        };
+        match bincode::deserialize::<CacheEntryDto>(guard.value()) {
+            Ok(dto) => Some(dto.into()),
+            Err(e) => {
+                self.error_count
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                tracing::warn!(domain, error = %e, "cache row failed to decode on get — treating as a cache miss, not a confirmed absence");
+                None
+            }
+        }
     }
 
     fn set(&mut self, domain: String, entry: CacheEntry) {
@@ -315,7 +487,7 @@ impl CacheBackend for CacheStore {
         // Sorted-by-key insert order — the sourcing doc's "free lever" for B-tree page locality,
         // taken here since a write transaction already touches every buffered key once.
         let mut items: Vec<(String, CacheEntry)> = self.pending.drain().collect();
-        items.sort_by(|a, b| a.0.cmp(&b.0));
+        items.sort_unstable_by(|a, b| a.0.cmp(&b.0));
 
         let txn = self
             .db
@@ -342,6 +514,15 @@ impl CacheBackend for CacheStore {
         Ok(())
     }
 
+    /// **Invariant this unconditional `flush()` relies on**: nothing here checks whether it's
+    /// safe to write `--cache` back to disk, because that's not this function's job to check — a
+    /// dry run never gets far enough to call this at all. `main.rs`'s `run_liveness` only ever
+    /// constructs a real [`CacheStore`] on the non-dry-run branch (a dry run builds
+    /// `LivenessCache::Memory` instead, via [`read_snapshot`], which never touches redb); as long
+    /// as that split holds, a live `CacheStore::for_each` call is proof enough that persisting is
+    /// already allowed. If a future refactor ever lets a dry run construct a real `CacheStore`
+    /// directly, this flush becomes the "a dry run must never persist `--cache`" guarantee's
+    /// weakest point — worth an explicit "may I flush?" signal at that point, not before.
     fn for_each(&mut self, f: &mut dyn FnMut(&CacheEntry)) -> anyhow::Result<()> {
         self.flush()?;
         let txn = self
@@ -552,5 +733,95 @@ mod tests {
             store.get("example.com"),
             Some(sample(1_000, Verdict::Alive))
         );
+    }
+
+    #[test]
+    fn open_with_cache_size_bounds_the_redb_in_process_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        // Just asserts the constructor accepts and uses a caller-chosen budget rather than always
+        // falling back to `open`'s default — the real payoff (bounded RSS at multi-million-domain
+        // scale) is what the `stress_test_streaming_sweep_with_redb_cache_bounds_rss` `#[ignore]`d
+        // stress test in `sweep.rs` measures, not something a fast unit test can observe directly.
+        let mut store =
+            CacheStore::open_with_cache_size(&dir.path().join("cache.redb"), 4 * 1024 * 1024)
+                .unwrap();
+        store.set("example.com".to_string(), sample(1_000, Verdict::Alive));
+        store.flush().unwrap();
+        assert_eq!(
+            store.get("example.com"),
+            Some(sample(1_000, Verdict::Alive))
+        );
+    }
+
+    /// Regression test for the bug where `get` chained four `.ok()?` calls and collapsed a real
+    /// error (here: an undecodable row) into the same `None` an ordinary cache miss returns. A
+    /// row is written directly through redb (bypassing `set`/`flush`, which only ever write valid
+    /// `CacheEntryDto` bytes) with garbage bincode, standing in for on-disk corruption or a future
+    /// encoding bug — `get` must not panic, must still return `None` (the caller-visible fallback
+    /// behavior is unchanged), but must count the failure as distinct from a genuine miss.
+    #[test]
+    fn get_counts_a_real_decode_failure_separately_from_an_ordinary_miss() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cache.redb");
+        let store = CacheStore::open(&path).unwrap();
+        assert_eq!(store.error_count(), 0);
+
+        {
+            let txn = store.db.begin_write().unwrap();
+            {
+                let mut table = txn.open_table(TABLE).unwrap();
+                table
+                    .insert("corrupt.example", b"not a valid CacheEntryDto".as_slice())
+                    .unwrap();
+            }
+            txn.commit().unwrap();
+        }
+
+        // A genuine miss must still be a plain `None` with no error counted.
+        assert_eq!(store.get("never-set.example"), None);
+        assert_eq!(store.error_count(), 0);
+
+        // The corrupt row is also `None` to the caller (unchanged fallback behavior) but is now
+        // distinguishable via the counter.
+        assert_eq!(store.get("corrupt.example"), None);
+        assert_eq!(store.error_count(), 1);
+
+        // Repeated reads of the same corrupt row keep counting — this isn't a one-shot latch.
+        assert_eq!(store.get("corrupt.example"), None);
+        assert_eq!(store.error_count(), 2);
+    }
+
+    #[test]
+    fn read_snapshot_of_a_missing_file_is_empty_and_creates_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("does-not-exist.redb");
+        let snapshot = read_snapshot(&path).unwrap();
+        assert!(snapshot.is_empty());
+        // The whole point: unlike `CacheStore::open`, this must never bring the file into
+        // existence — a dry run with `--cache` pointing at a path that hasn't been swept into
+        // yet must not itself create that path.
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn read_snapshot_sees_real_prior_state_without_ever_writing_to_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cache.redb");
+        {
+            let mut store = CacheStore::open(&path).unwrap();
+            store.set("alive.example".to_string(), sample(1_000, Verdict::Alive));
+            store.set("dead.example".to_string(), sample(2_000, Verdict::Dead));
+            store.flush().unwrap();
+        }
+        let before = std::fs::metadata(&path).unwrap().len();
+
+        let snapshot = read_snapshot(&path).unwrap();
+        assert_eq!(snapshot.len(), 2);
+        assert_eq!(snapshot.get("alive.example"), Some(&sample(1_000, Verdict::Alive)));
+        assert_eq!(snapshot.get("dead.example"), Some(&sample(2_000, Verdict::Dead)));
+
+        // A read-only snapshot must not change the file on disk.
+        let after = std::fs::metadata(&path).unwrap().len();
+        assert_eq!(before, after);
     }
 }
