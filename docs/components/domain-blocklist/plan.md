@@ -1121,8 +1121,18 @@ decision doc's [Distribution](../../decisions/domain-blocklist-sourcing.md#distr
    during the sweep's duration, a structural fact independent of what `ps` reports. The cache
    remains the dominant driver of the ~1.9-2GB peak either way — an embedded KV store bounding
    cache RSS by a page budget instead of corpus size (replacing the `HashMap` +
-   whole-file-bincode design) is the real lever for that number, tracked as a separate follow-up,
-   not attempted here.
+   whole-file-bincode design) is the real lever for that number. **Now spec'd, not yet built**:
+   `docs/decisions/domain-blocklist-sourcing.md`'s "Measured 2026-08-16: the cache's in-process
+   representation — redb, not a `HashMap` blob" section measures the actual production VPS (RAM,
+   real `O_DIRECT` disk-latency percentiles, real corpus) and a real redb file built from the
+   project's actual pinned sources (4,767,348 domains → 515MB compacted, vs. 2.71GB observed live
+   for the current in-memory `HashMap`). The follow-up implementation swaps `cache_store.rs`'s
+   `HashMap`-based `load`/`save` for a redb-backed store with batched write transactions (one
+   commit per `--checkpoint-every` chunk, not per domain), needs a periodic compaction cadence
+   (515MB is a freshly-compacted single-writer measurement, not a steady-state-after-churn one —
+   unmeasured, flagged as an open gap in that section), an explicit decision on migrating or
+   discarding the existing bincode `cache.bin` format, and should take the free win of sorting the
+   due-list traversal into key order first, for B-tree page locality.
  8. ~~`net-shield` integration — the precedence table and the shared `normalize()`, per module 6.~~
     **Done.** `packages/net-shield/src/blocklist.rs` — `BlocklistArtifact` (a `fst::Map<Mmap>` that
     owns the mapping, avoiding the plan's `Arc<Mmap>`-plus-`Map` self-reference while keeping the
