@@ -303,16 +303,202 @@ The order below is the original plan. What was actually built is recorded under
 Still to do:
 
 7. `hash.rs` + `db.rs` as a short-circuit cache, if and when a hash database exists.
-8. A **fully convolutional** equivalent of tile-max, if the per-image cost of up to 15 forward
-   passes becomes a problem. MobileNetV3's `AdaptiveAvgPool2d(1) → Linear(576,1024) →
-   Linear(1024,2)` head converts mechanically to 1×1 convolutions with identical weights, so one
-   pass over a larger input yields a spatial logit grid whose max equals the tiled max — and, as
-   a side effect, the coarse heatmap the screen-capture path will need for localisation.
+8. A **fully convolutional** equivalent of tile-max. MobileNetV3's `AdaptiveAvgPool2d(1) →
+   Linear(576,1024) → Linear(1024,2)` head converts mechanically to 1×1 convolutions with
+   identical weights, so one pass over a larger input yields a spatial logit grid whose max equals
+   the tiled max — and, as a side effect, the coarse heatmap the screen-capture path needs for
+   localisation. **Promoted from "if cost becomes a problem" to Stage 1 of
+   [The screen path](#the-screen-path)**: on a screen frame it is not a cost optimisation but the
+   option that removes the region-proposal problem entirely, since it scores every pixel and so
+   carries no silent-miss class.
+
+## The screen path
+
+**Added after the macOS daemon's `ImageScanner` (module 18) shipped and was run live.** The
+screen path is no longer independent of this crate — `check_raw` is its entry point, and
+`packages/image-sandbox-ffi` carries it to the daemon. This section is the plan for making that
+path correct, and its first instruction is **not to build anything yet**.
+
+### The problem
+
+`ImageScanner` hands `check_raw` a whole screen frame. Tile-max then cuts 224 windows across
+3000×2000 of mostly application chrome — toolbars, flat colour fields, walls of monospace text —
+none of which exists anywhere in the training distribution, and takes the **max** over those
+out-of-distribution scores. Simultaneously, a 300px thumbnail inside that frame is a small patch of
+one tile once the shorter side is resized to 224, so the detail that would decide the verdict is
+discarded before inference.
+
+Both live observations point here. Ordinary non-sexual photos firing is the first effect; drawn
+content not firing is partly the second and partly a genuine concept gap in the checkpoint.
+
+Note the three failures are separate and only one is a model problem:
+
+1. **Geometry** — chrome scored, small regions destroyed. No amount of retraining touches this.
+2. **Taxonomy** — a binary head cannot express "suggestive". Addressed by the three-tier contract.
+3. **Medium** — a photo-trained concept does not transfer to drawn content. Needs positives to fix
+   by training, which [image-corpus-custody.md](../../decisions/image-corpus-custody.md) forbids,
+   so it is addressed by *delegation* to a second pretrained expert instead.
+
+### What the literature actually calls this
+
+Surveyed 2026-08-08. The nearest field is **screen content detection** in video coding, not
+document analysis and not image forensics.
+
+- **libaom** ships `estimate_screen_content()` in `av1/encoder/encoder.c`: tile the **luma** plane
+  into 16×16 blocks, count **distinct luma values** per block, flag a block screen-ish at
+  `n_colors ≤ 4`, tie-break on per-pixel variance. Frame verdict by block count.
+- **SVT-AV1** adds an anti-aliasing-aware mode (`--scm 3`) with a three-way block taxonomy —
+  *simple* (2–4 values), *complex* (5–40, re-counted after dilation), *photo-like* (>40) — and its
+  design document states the failure of the naive form outright: screen content "has too many
+  colors in total, and so the detection algorithm can get easily fooled into thinking it's actually
+  natural content."
+- Google (US7657089), Intel (US11399187) and Microsoft's RemoteFX tile classifier converge
+  independently on the same two features: colour-frequency histogram plus spatial variance.
+
+Two conclusions from that survey are load-bearing:
+
+- **Nobody publishes a recall number.** libaom, SVT-AV1, Intel and Microsoft all ship or patent one
+  of these and none reports precision or recall; SVT-AV1's doc says the thresholds were "determined
+  experimentally". There is no operating point to inherit — any figure this project uses has to be
+  measured here.
+- Every published instance answers *"is this **frame** screen content?"*, never *"which
+  **rectangles** are pictorial?"* The spatial version of the question is not solved anywhere
+  public.
+
+Rejected branches, recorded so they are not re-litigated: **document page segmentation / MRC /
+Leptonica** (contract is 1bpp at 300–400ppi, and its halftone detector looks for print screening
+that does not exist on a screen); **CG-vs-photo forensics** (95–98% headline accuracy, but the
+signal is sensor noise and demosaicing residue, destroyed by the display pipeline — and its "CG"
+class is content we must *keep*); **VIPS and web page segmentation** (DOM-driven, we have pixels);
+**UIED / OmniParser / DocLayout-YOLO** (wrong target class — interactable widgets, not pictorial
+regions — plus AGPL on the useful weights and, for PP-DocLayout-L, 760 ms on CPU).
+
+### The finding that constrains the design
+
+**A palette-cardinality discard rule would drop cel-shaded and anime artwork**, and that is not a
+bug in someone's implementation — it is the design intent of the entire photo-vs-graphic
+literature. Lienhart & Hartmann's canonical taxonomy places comics and cartoons on the *graphics*
+side; Google's patent states the rationale ("a synthetic/graphical image is likely to contain a
+limited range of colors compared to a natural photograph"); cel shading by construction quantises
+light into 2–3 flat bands.
+
+Drawn explicit content is precisely the class this path is already missing. So:
+
+> **No discard rule keyed on colour cardinality alone may ship.** Any such rule needs a per-block
+> variance/linework term, and even then the aggregation must be asymmetric — a 224 tile holds 196
+> 16×16 blocks; discard only if *essentially all* of them are simple *and* low-variance.
+
+And specifically: **do not port SVT-AV1's dilation step.** It exists to reclassify anti-aliased
+text as screen content, and it would take flat art with it.
+
+Anti-aliased text fails in the safe direction — it reads as photographic and is kept, costing an
+inference. That makes it a cost problem, not a miss problem, but a large one, since a code editor
+is mostly anti-aliased text.
+
+**Evidence gap, do not treat as settled:** no published distribution of distinct-colour-per-block
+for cel-shaded art vs UI vs photos, and no study of any of these statistics on modern translucent /
+vibrancy / gradient OS UI — the standard screen-content corpora (SIQAD, SCID) predate it.
+
+### The reframing that decides the order of work
+
+This crate already tiles and takes a max. A region proposer is therefore **not proposing regions —
+it is choosing which of the tiles we were going to run anyway to skip.** Measured cost is 5.3 ms
+for one tile, 9.6 ms at 1024², and a 1.54-aspect display frame costs three tiles.
+
+So a content gate buys roughly 15 ms twice a second, and pays for it with a **silent-miss class
+that produces no log line**. That is the worst risk/reward shape in the system, and two
+alternatives dominate it:
+
+- **Dirty-rectangle change detection.** Per-16×16-block hash against the last frame *analysed* —
+  the same rule `apps/mobile`'s `FrameGate` already learned — skips tiles because nothing changed,
+  not because something was judged boring. Same single pass, no silent-miss class. A static editor
+  costs nothing; a playing video costs full price.
+- **The fully convolutional pass already recorded as step 8 below.** One forward pass whose spatial
+  max equals the tiled max, no recall liability at all, overlap computed once instead of twice, and
+  it yields the heatmap that would finally populate the daemon's reserved
+  `ScanVerdict.regions` and let `Overlay` cover a rectangle rather than hide a whole application.
+  Open question is purely empirical: a stride-32 pass over 3000×2000 is roughly 50× a single 224²
+  pass.
+
+### Staged plan
+
+Each stage is independently shippable, and each one's result decides whether the next is worth
+doing. **Nothing here starts by writing a gate.**
+
+**Stage 0 — the transport-shift measurement.** Build it in `machine-learning` (see that plan's
+`synth_composite.py` and `transport.py`) and run it against the pipeline *as it exists today*.
+This is the baseline every later claim is measured against, it needs only benign imagery, and it
+splits the observed misses into "geometry, fixable and measurable" versus "concept, needs a
+different expert". Right now that split is unknown.
+
+**Stage 1 — the FCN cost measurement.** Convert the head to 1×1 convolutions, run one pass over a
+real frame size, and time it. If it fits the ~500 ms tick budget, build it and **stop** — the gate
+never gets written, and the region-proposal problem and its corpus both disappear.
+
+**Stage 2 — dirty-rectangle dedup**, if cost still needs reducing. No recall liability, so it can
+land regardless of what Stages 0 and 1 say.
+
+**Stage 3 — a content gate, only if Stages 1 and 2 are insufficient.** Build libaom's, not a
+region-level colour-concentration statistic: luma only; **every pixel** of every 16×16 block (see
+the striding trap below); a 256-entry stack histogram; the three-way block taxonomy; aggregate per
+224 tile; discard only when essentially every block is *simple* and low-variance. No dilation. Zero
+new dependencies, pure Rust, single pass, and the thresholds are `SandboxConfig` fields with no
+built-in defaults, exactly as the existing constants are.
+
+**Stage 4 — a second expert for drawn content**, routed non-exclusively (below confidence, run
+both and take the max — fail toward more inference, never fewer). This is the only stage that
+addresses failure (3), and its recall cannot be measured here; see *What stays unmeasurable*.
+
+### Traps to carry into implementation
+
+- **Do not subsample by striding.** Two mechanisms, both mechanical: striding can lock phase
+  against ordered dithering or a subpixel-AA glyph grid and return an artificially *low* colour
+  count; and a 96×96 thumbnail — exactly the existing size floor — contributes ~144 samples to a
+  region histogram of tens of thousands and is statistically invisible. libaom reads every pixel;
+  its speed comes from one linear pass with a stack histogram, not from sampling.
+- **Any resize that interpolates destroys the exact-palette signal**, making flat UI look
+  photographic. Same class of bug as the `bytesPerRow` padding trap.
+- **Block granularity, not region granularity.** Anything additive that covers part of a region —
+  a caption bar, letterbox bars, a solid product-shot background — moves a region-wide statistic
+  that is supposed to describe the rest of it. Per-block classification plus "any sufficiently
+  large connected cluster" handles all three cases with one rule, and the block map *is* the region
+  proposal, so no separate growing step is needed.
+- **A text overlay is not a reason to discard anything.** Explicit imagery routinely carries
+  captions, subtitles, watermarks and meme text. The predicate must be *absence of pictorial
+  evidence*, never *presence of text*. Text coverage is legitimately a **geometry selector** —
+  heavy coverage argues for sub-tiling within the region so the unoccluded part gets a
+  full-resolution look — but never a reject predicate.
+- **Instrument every discard.** Log the gate's decision and its margin exactly as the classifier's
+  score is logged, and **defeat the gate on 1 frame in 20**, running the full tile set and
+  recording any gated-out tile that would have scored above threshold. ~5% extra cost, and it is
+  the only route to a false-discard number, since no published source has one. A silently
+  discarding gate is indistinguishable from a clean screen — the same failure the `pixelFormat`
+  incident cost a session on.
+
+### What stays unmeasurable
+
+Under [image-corpus-custody.md](../../decisions/image-corpus-custody.md) these have no measurement
+available here, and must not be given a number:
+
+- **Recall on drawn explicit content.** A drawn-content expert can be validated on false positives
+  and on latency; its recall is inherited from its publisher's evaluation plus live observation.
+- **The "suggestive" tier's boundary.** The band has no measurable edge without positives spanning
+  it.
+- **Any threshold's absolute correctness.** Thresholds are chosen against the false-positive curve,
+  which is observable; the miss side is inherited.
+
+What substitutes for an end-to-end miss rate is an **argument, labelled as one**: the checkpoint's
+published image-level miss rate, times a *measured* near-zero transport shift, implies a comparable
+screen miss rate. Its validity rests entirely on that shift being measured to be near zero and on
+the transformation being content-blind — crop, scale, composite and overlay do the same thing to a
+photo of a dog as to anything else. Everything else in the measurement table is a real number.
 
 ## What this does not cover
 
 - Video frame handling — that is `packages/video-watchdog` (Phase 5 of the network pipeline).
-- Screen-capture image classification — that path goes through the daemon's `IScanner` interface and is independent of this package.
+- Screen-capture *scheduling and response* — the cadence, dedup and overlay decisions live in the
+  daemon's `ScanLoop`/`ImageScanner`. The *pixels-to-score* half is this crate's `check_raw`, and
+  the plan for it is [The screen path](#the-screen-path) above.
 - Training or updating the ONNX model — that is `machine-learning/models/web-image-v1/` (see [architecture.md](../../architecture/overview.md)).
 - Hash database population — data curation and hash ingestion are out-of-repo operations; this package only reads an already-populated `hashes.sqlite`.
 - Serving the 1×1 transparent pixel response to the browser — that is the responsibility of `packages/mitm-proxy`, which calls `ImageSandbox::check` and acts on the returned verdict.
