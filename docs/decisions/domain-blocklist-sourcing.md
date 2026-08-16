@@ -681,6 +681,89 @@ convention of gitignoring corpora and model artifacts. A run that cannot load th
 and does a full sweep; a run that cannot write it back fails loudly rather than silently discarding
 three months of accumulated state.
 
+#### Measured 2026-08-16: the cache's in-process representation — redb, not a `HashMap` blob
+
+The persistent-storage question above (*where* the cache lives between runs) is separate from *how*
+it's held while a run is using it, and the second question turned out to be the one actually driving
+memory cost. `cache_store.rs` currently loads the whole cache into a `HashMap<String, CacheEntry>`
+for the sweep's duration and reserializes the entire map to one bincode blob on every checkpoint.
+Measured live on the production VPS mid-sweep: **2.71GB RSS** for the real ~4.75M-domain corpus —
+about 569 bytes per entry, all of it Rust heap (a separately-allocated `String` per key, `HashMap`
+bucket-array slack below 100% load factor, struct alignment padding), none of it structurally needed
+by the ~25-byte domain strings and ~13–21-byte `CacheEntryDto` values being stored.
+
+The fix is to stop holding the cache as a live Rust collection at all and read/write it through
+[redb](https://docs.rs/redb) — a pure-Rust, single-file, mmap-backed, transactional embedded
+key-value store ([repository](https://github.com/cberner/redb)), with the domain string as key and
+a bincode-encoded `CacheEntryDto` as value, matching the DTO shape already defined in
+`cache_store.rs`. This was evaluated rather than assumed, using real data from the actual deployment
+host rather than synthetic benchmarks:
+
+- **VPS specs** (`ssh` to the production Contabo box): 7.8GB RAM, of which only ~4.0GB was
+  "available" (free + reclaimable buff/cache) while the current sweep held its 2.71GB `HashMap`
+  resident alongside ~1GB from unrelated tenants on the same box (n8n, an `openclaw` gateway,
+  `dockerd`, `tailscaled`). 4 vCPUs. Disk reports `ROTA=0` but is `QEMU HARDDISK` — a virtio block
+  device on a KVM host — which does **not** prove local NVMe; that flag alone cannot distinguish
+  local flash from network-attached block storage.
+- **Real disk latency**, measured directly rather than inferred from the rotational flag: a 500MB
+  scratch file, `posix_fadvise(..., POSIX_FADV_DONTNEED)` to evict it from page cache, then 500
+  `O_DIRECT` random 4KB `pread`s to force genuine disk I/O. Result: **p50 405μs, p90 1.37ms, p99
+  7.4ms, max 16.9ms, mean 744μs** — an order of magnitude worse than local NVMe's typical tens of
+  microseconds, consistent with network-backed virtual storage rather than local flash. This matters
+  because it sets the cost of a redb page fault: roughly 4,000–7,000x a `HashMap` hit on average, and
+  70,000x+ at the tail, if a lookup actually has to go to disk.
+- **Real corpus**, not a synthetic one: the project's actual pinned sources (StevenBlack `porn-only`,
+  hagezi `nsfw-onlydomains`, UT1 `adult`/`gambling`/`dating`, at the same pins recorded in the
+  "Measured 2026-08-16" ramp section above) were fetched and normalized on the VPS itself, producing
+  **4,767,348 distinct domains** — matching the corpus-size figure already measured elsewhere in this
+  document. Average domain length: 25.7 bytes.
+- **Real redb file size**, built from those real keys plus the real `CacheEntryDto` value shape
+  (synthetic verdicts, since no on-disk `production.bin` exists yet on this pre-checkpointing binary —
+  see the "Left explicitly undone" list in the plan's module 7 for why): **515MB, compacted**. For
+  comparison, the same data as a flat (non-B-tree) bincode `HashMap` blob would run an estimated
+  ~228MB (8-byte length prefix + ~26-byte key + ~8-byte timestamp + ~4-byte enum discriminant +
+  ~2-byte average `Option<u64>` per entry) — so redb's B-tree page/checksum overhead costs roughly
+  **2.25x** the flat format, but the absolute number is what matters: 515MB against 4.0–7GB of
+  available RAM is a comfortable fit with room to spare, not the 2.5–3.5GB this document originally,
+  and wrongly, guessed before measuring (that guess anchored on the inflated 2.71GB in-memory figure
+  as its baseline, which was already the wrong number to add B-tree overhead on top of).
+
+**Net effect of the swap:** steady-state resident memory for the cache drops roughly 5x (2.71GB →
+likely 500MB–1GB once redb is warm), for the boring reason that Rust's live `HashMap<String, T>`
+carries per-object heap overhead redb's packed encoding doesn't. Separately, because the resident
+pages are OS-managed mmap pages rather than a Rust-owned allocation, the kernel can reclaim them
+under memory pressure instead of the process holding a fixed allocation until it OOMs — graceful
+degradation (a page fault, 400μs–17ms per the measurement above) instead of a hard failure, which
+matters on a VPS shared with unrelated workloads whose own memory demand can grow.
+
+**What implementing this needs to account for, not treated as free:**
+
+- **Batched write transactions**, replacing the current whole-map reserialize-on-checkpoint. A
+  transaction per domain would fsync every write (~1–10ms each per typical SSD fsync latency,
+  unmeasured on this specific VPS) and cap sweep throughput far below what's needed at 4.75M domains;
+  batch commits every `--checkpoint-every` domains (mirroring the existing checkpoint cadence) rather
+  than per-entry.
+- **Periodic compaction.** The 515MB figure is a freshly compacted, single-writer build — it does
+  **not** measure steady-state size after months of incremental updates (`last_checked` bumps,
+  verdict flips) fragmenting the B-tree across repeated commits. This needs its own measurement
+  before shipping a maintenance cadence; call it an open gap, not an assumption to build against
+  silently.
+- **On-disk format migration.** redb's file format is not bincode-`HashMap`-compatible, so an
+  existing `cache.bin` written by the current `cache_store::save` cannot be opened directly by a
+  redb-based reader. Either a one-time conversion pass or accepting that in-flight caches finish
+  their current cycle on the old format and new caches start clean is a decision the implementing
+  PR must make explicitly, not one to discover mid-migration.
+- **Due-list key ordering** is a free lever worth taking at the same time: today's due-domain
+  traversal order has no particular relationship to redb's key-sorted B-tree layout, so a sweep that
+  visits domains in sorted-key order gets meaningfully better page locality (and fewer of the
+  400μs–17ms cold-fault lookups measured above) than visiting them in whatever order the corpus
+  happened to be merged in, at no cost beyond sorting the due list once per sweep.
+
+This section documents the decision and the measurements backing it; the implementation itself
+(swapping `cache_store.rs`'s `HashMap`-based `load`/`save` for a redb-backed store, wiring batched
+commits into `sweep::CheckpointSink`, and adding a compaction cadence) is tracked as the next module
+7 follow-up in `docs/components/domain-blocklist/plan.md`, not yet built.
+
 #### Egress: a documented estimate, not a measurement
 
 The previous figures undercounted by roughly 2×, because **a liveness check is not one query**. A
