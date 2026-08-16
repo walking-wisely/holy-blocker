@@ -121,8 +121,10 @@ pub struct Cli {
     /// Persist the liveness cache to `--cache` after roughly this many newly-checked domains, so a
     /// crash mid-sweep loses at most one checkpoint interval instead of the whole run. Rounds up
     /// to the next multiple of `--canary-every`, since a checkpoint only fires once that chunk's
-    /// canary re-check has passed. `0` disables checkpointing. No-op under `--dry-run` or without
-    /// `--cache`.
+    /// canary re-check has passed. `0` disables *mid-sweep* checkpoints only — the whole sweep's
+    /// results still land in `--cache` via one unconditional flush at the end, so `0` risks losing
+    /// an in-progress run to a crash, not losing a completed one. No-op under `--dry-run` or
+    /// without `--cache` (both force an in-memory cache with nothing to flush).
     #[arg(long, default_value_t = 10_000)]
     pub checkpoint_every: usize,
 

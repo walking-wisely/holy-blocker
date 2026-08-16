@@ -594,6 +594,19 @@ enum LivenessCache {
 }
 
 #[cfg(feature = "net")]
+impl LivenessCache {
+    /// Real `get` errors since this cache was opened — see [`cache_store::CacheStore::error_count`]
+    /// on why these are counted distinctly from ordinary cache misses. Always `0` for `Memory`,
+    /// which has no fallible I/O to fail.
+    fn error_count(&self) -> u64 {
+        match self {
+            Self::Redb(store) => store.error_count(),
+            Self::Memory(_) => 0,
+        }
+    }
+}
+
+#[cfg(feature = "net")]
 impl cache_store::CacheBackend for LivenessCache {
     fn get(&self, domain: &str) -> Option<domain_blocklist::CacheEntry> {
         match self {
@@ -628,15 +641,20 @@ impl cache_store::CacheBackend for LivenessCache {
 async fn run_liveness(cli: &cli::Cli, entries: Vec<MergedEntry>) -> Result<Vec<MergedEntry>> {
     let cache = if cli.dry_run {
         // A dry run must never write `--cache` back (its own doc comment: "do not persist
-        // `--cache`"), and `CacheBackend::for_each` — the only redb-wide read this module has —
-        // doesn't hand back domain keys, only entries, so there's no cheap way to seed an
-        // in-memory `HashMap` from an existing redb file's exact contents here. A dry run
-        // therefore always starts from an empty in-memory cache: every domain reads as due, which
-        // only affects *this preview run's* liveness decisions, not the real cache file (untouched
-        // either way) or the publish gates a dry run exists to preview. Narrower than the old
-        // bincode-`HashMap` `load`, which did seed dry runs from real prior state — recorded here
-        // rather than silently changed.
-        LivenessCache::Memory(HashMap::new())
+        // `--cache`"), but it should still *read* real prior state when `--cache` names an
+        // existing file, so it previews the gate decisions a real run would actually make (its
+        // own doc comment: "sees exactly the gate decisions a real run would") rather than every
+        // domain reading as due against a cold, empty cache. `cache_store::read_snapshot` is a
+        // read-only load (never creates the file, never opens a write transaction) into a plain
+        // `HashMap`, which `run_sweep_streaming` then sweeps against as `LivenessCache::Memory` —
+        // real prior state to read, but structurally nowhere to write back to, since `Memory`
+        // never touches the redb file at all.
+        let snapshot = match &cli.cache {
+            Some(path) => cache_store::read_snapshot(path)
+                .context("failed to read --cache for the dry-run preview")?,
+            None => HashMap::new(),
+        };
+        LivenessCache::Memory(snapshot)
     } else {
         let Some(path) = &cli.cache else {
             bail!(
@@ -724,18 +742,35 @@ async fn run_liveness(cli: &cli::Cli, entries: Vec<MergedEntry>) -> Result<Vec<M
     };
 
     let mut outcome = outcome;
+    let cache_errors = outcome.cache.error_count();
     tracing::info!(
         checked = outcome.checked_count,
         pruned = outcome.pruned_domains.len(),
+        cache_errors,
         "liveness sweep complete"
     );
+    if cache_errors > 0 {
+        // Not necessarily fatal (see `CacheStore::get`'s own doc comment: the caller already
+        // falls back to "treat as due/unknown" on any of these), but real errors during a
+        // multi-hour sweep are worth a human's attention, especially since a run's own
+        // `first_dead_at` quarantine bookkeeping can be silently reset by one on a `Dead` domain.
+        tracing::warn!(
+            cache_errors,
+            "the liveness cache reported real read errors during this sweep, not just ordinary \
+             misses — see CacheStore::get's doc comment for what this can silently do to \
+             first_dead_at quarantine bookkeeping"
+        );
+    }
     log_verdict_breakdown(&mut outcome.cache)?;
 
-    // `LivenessCache::Redb`'s durability is `run_sweep_streaming`'s own final `flush()` (real
-    // runs only — `config.checkpoint_every` is `0` for a dry run, so that flush is a no-op there,
-    // matching this function's own "a dry run never persists `--cache`" rule); `Memory` has
-    // nothing to persist. Nothing left to do here — kept only as the log line an operator greps
-    // for after a real run.
+    // `LivenessCache::Redb`'s durability is `run_sweep_streaming`'s own final `flush()`, which is
+    // now unconditional there (not gated on `config.checkpoint_every > 0` — see that function's
+    // own doc comment on why the gate was wrong: `checkpoint_every == 0` means "no mid-sweep
+    // checkpoints", not "never persist", and a real run reaching this line always has a real
+    // `CacheStore` to flush). The "a dry run never persists `--cache`" rule is enforced upstream
+    // instead, by this function always choosing `LivenessCache::Memory` for a dry run, which has
+    // nothing to flush to disk in the first place. Nothing left to do here — kept only as the log
+    // line an operator greps for after a real run.
     if let Some(path) = &cli.cache
         && !cli.dry_run
     {

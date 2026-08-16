@@ -466,16 +466,20 @@ pub async fn run_sweep_streaming<L: AsyncDnsLookup, C: CacheBackend>(
     // Whatever's still buffered from the last (sub-`checkpoint_every`) chunk must land on disk
     // before the pruning scan reads `cache` — `CacheBackend::get` only checks the pending buffer
     // on the same live handle, but the caller's next process (a real restart) would not see it.
-    // Gated on `checkpoint_every > 0`, the same signal `main.rs` derives from "dry run or no
-    // `--cache`": a caller that deliberately disabled checkpointing (dry run) must not have this
-    // final flush silently persist anyway — `HashMap`'s `flush` is a no-op regardless, so this
-    // only matters for a real `CacheStore`.
-    if config.checkpoint_every > 0 {
-        cache.flush().map_err(|e| SweepError::CheckpointFailed {
-            checked_before_failure: checked,
-            detail: e.to_string(),
-        })?;
-    }
+    // Unconditional, unlike the mid-sweep checkpoint above: `checkpoint_every == 0` means "no
+    // mid-sweep checkpoints", not "never persist" — a real (non-dry-run) run with
+    // `--checkpoint-every 0` still needs everything since the last (or only) checkpoint flushed
+    // here, or every `set()` since then sits only in `CacheStore::pending` and is lost, along
+    // with the cache file being written as an empty table for a corpus that was fully swept. The
+    // "a dry run never persists `--cache`" guarantee is enforced upstream by `main.rs` choosing
+    // `LivenessCache::Memory` for a dry run (never a real `CacheStore` at all, so there is no
+    // redb file for this flush to reach) — not by this gate, which is why removing the gate here
+    // is safe. `HashMap`'s `flush` is a no-op regardless, so this only matters for a real
+    // `CacheStore`.
+    cache.flush().map_err(|e| SweepError::CheckpointFailed {
+        checked_before_failure: checked,
+        detail: e.to_string(),
+    })?;
 
     let mut pruned_domains = std::collections::BTreeSet::new();
     let mut pruning_reader = crate::entries_store::EntryReader::open(entries_path)
@@ -951,6 +955,104 @@ mod tests {
         // flush (everything's already flushed by then, so it's a second call with the same count,
         // not a no-op skip) is the second entry.
         assert_eq!(outcome.cache.flush_calls, vec![4, 4]);
+    }
+
+    /// `--checkpoint-every 0` disables *mid-sweep* checkpoints only — regression test for the
+    /// bug where the final flush was also gated on `checkpoint_every > 0`, so a real run with `0`
+    /// silently buffered every `set()` since the sweep began in `CacheStore::pending` and never
+    /// reached disk (measured: `rss_final=1207.4 MB` and a 1.0 MB, i.e. empty, cache file for
+    /// 4.8M swept verdicts). With the fix, the final flush is unconditional, so exactly one
+    /// flush happens — at the end, covering everything.
+    #[tokio::test]
+    async fn checkpoint_every_zero_still_flushes_everything_once_at_the_end() {
+        let resolver = Arc::new(
+            FakeResolver::new()
+                .alive("alive.invalid")
+                .dead("dead.invalid")
+                .alive("d1.example")
+                .alive("d2.example")
+                .alive("d3.example")
+                .alive("d4.example"),
+        );
+        let entries = vec![
+            entry("d1.example"),
+            entry("d2.example"),
+            entry("d3.example"),
+            entry("d4.example"),
+        ];
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("entries.bin");
+        crate::entries_store::write(&path, &entries).unwrap();
+
+        let mut cfg = config();
+        cfg.canary_every = 2;
+        cfg.checkpoint_every = 0;
+
+        let outcome = run_sweep_streaming(
+            &path,
+            FlushCountingCache::default(),
+            &canary(),
+            &cfg,
+            1_000_000,
+            Arc::clone(&resolver),
+            Arc::clone(&resolver),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(outcome.checked_count, 4);
+        // No mid-sweep flush (checkpointing disabled) — only the final unconditional flush, and
+        // it must actually carry every checked domain, not an empty buffer.
+        assert_eq!(outcome.cache.flush_calls, vec![4]);
+    }
+
+    /// Same regression, but through the real [`crate::cache_store::CacheStore`] rather than the
+    /// counting fake — asserts the on-disk file is non-empty and every domain reads back after
+    /// the store is dropped and reopened, the way a real restart would see it.
+    #[tokio::test]
+    async fn checkpoint_every_zero_persists_to_a_real_redb_file() {
+        let resolver = Arc::new(
+            FakeResolver::new()
+                .alive("alive.invalid")
+                .dead("dead.invalid")
+                .alive("d1.example")
+                .alive("d2.example"),
+        );
+        let entries = vec![entry("d1.example"), entry("d2.example")];
+        let dir = tempfile::tempdir().unwrap();
+        let entries_path = dir.path().join("entries.bin");
+        crate::entries_store::write(&entries_path, &entries).unwrap();
+        let cache_path = dir.path().join("cache.redb");
+
+        let mut cfg = config();
+        cfg.canary_every = 2;
+        cfg.checkpoint_every = 0;
+
+        let store = crate::cache_store::CacheStore::open(&cache_path).unwrap();
+        let outcome = run_sweep_streaming(
+            &entries_path,
+            store,
+            &canary(),
+            &cfg,
+            1_000_000,
+            Arc::clone(&resolver),
+            Arc::clone(&resolver),
+        )
+        .await
+        .unwrap();
+        drop(outcome);
+
+        let file_bytes = std::fs::metadata(&cache_path).unwrap().len();
+        // An empty freshly-created redb file (header + empty table) is well under 100KB; a real
+        // write transaction landing two entries should not collapse back to that size.
+        assert!(
+            file_bytes > 0,
+            "cache file must not be empty after a checkpoint_every=0 real sweep"
+        );
+
+        let reopened = crate::cache_store::CacheStore::open(&cache_path).unwrap();
+        assert!(CacheBackend::get(&reopened, "d1.example").is_some());
+        assert!(CacheBackend::get(&reopened, "d2.example").is_some());
     }
 
     #[tokio::test]
