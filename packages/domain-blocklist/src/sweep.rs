@@ -75,6 +75,29 @@ pub struct SweepConfig {
     pub canary_every: usize,
     pub ttl_seconds: u64,
     pub quarantine_seconds: u64,
+    /// Checkpoints only fire at a canary-validated chunk boundary (see the loop in
+    /// `run_sweep_with_resolvers`), so this rounds up to the next multiple of `canary_every`.
+    /// `0` disables checkpointing.
+    pub checkpoint_every: usize,
+}
+
+/// Persistence seam for mid-sweep checkpoints, so this module doesn't do file I/O directly.
+/// A failure aborts the sweep rather than logging and continuing — silently degrading to
+/// "no longer actually checkpointing" would defeat the point of adding this.
+pub trait CheckpointSink: Send {
+    fn checkpoint(
+        &mut self,
+        cache: &HashMap<String, CacheEntry>,
+    ) -> impl std::future::Future<Output = anyhow::Result<()>> + Send;
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+pub struct NoCheckpoint;
+
+impl CheckpointSink for NoCheckpoint {
+    async fn checkpoint(&mut self, _cache: &HashMap<String, CacheEntry>) -> anyhow::Result<()> {
+        Ok(())
+    }
 }
 
 /// What one sweep run produced: the updated cache (every entry it touched) and which domains, of
@@ -93,7 +116,10 @@ pub struct SweepOutcome {
 #[derive(Debug, thiserror::Error)]
 pub enum SweepError {
     #[error("initial canary check failed against the {resolver} resolver: {detail}")]
-    InitialCanaryFailed { resolver: &'static str, detail: String },
+    InitialCanaryFailed {
+        resolver: &'static str,
+        detail: String,
+    },
     #[error(
         "canary check failed mid-sweep (after {checked_before_failure} domains) against the {resolver} resolver: {detail} — the whole sweep's results are discarded, per the plan's \"a partial sweep is not salvaged\" rule"
     )]
@@ -104,6 +130,11 @@ pub enum SweepError {
     },
     #[error("failed to start the DNS client: {0}")]
     Startup(#[from] std::io::Error),
+    #[error("checkpoint failed after {checked_before_failure} domains: {detail}")]
+    CheckpointFailed {
+        checked_before_failure: usize,
+        detail: String,
+    },
 }
 
 /// Async re-implementation of [`domain_blocklist::liveness::check`], driving
@@ -141,7 +172,9 @@ async fn canary_pass_async<L: AsyncDnsLookup>(
     for domain in &canary.alive_controls {
         let v = check_async(resolver, domain).await;
         if v != Verdict::Alive {
-            failures.push(format!("alive control {domain:?} expected Alive, got {v:?}"));
+            failures.push(format!(
+                "alive control {domain:?} expected Alive, got {v:?}"
+            ));
         }
     }
     for domain in &canary.dead_controls {
@@ -186,10 +219,14 @@ pub async fn run_sweep(
     canary: &CanaryConfig,
     config: &SweepConfig,
     now: Timestamp,
+    checkpoint: &mut impl CheckpointSink,
 ) -> Result<SweepOutcome, SweepError> {
     let primary = Arc::new(HickoryDnsLookup::new(config.primary)?);
     let secondary = Arc::new(HickoryDnsLookup::new(config.secondary)?);
-    run_sweep_with_resolvers(entries, cache, canary, config, now, primary, secondary).await
+    run_sweep_with_resolvers(
+        entries, cache, canary, config, now, primary, secondary, checkpoint,
+    )
+    .await
 }
 
 /// The real body of [`run_sweep`], generic over [`AsyncDnsLookup`] so a test can drive the canary
@@ -206,29 +243,36 @@ pub async fn run_sweep_with_resolvers<L: AsyncDnsLookup>(
     now: Timestamp,
     primary: Arc<L>,
     secondary: Arc<L>,
+    checkpoint: &mut impl CheckpointSink,
 ) -> Result<SweepOutcome, SweepError> {
     if let Err((resolver, detail)) = canary_pass_both(&*primary, &*secondary, canary).await {
         return Err(SweepError::InitialCanaryFailed { resolver, detail });
     }
 
-    let due_domains: Vec<String> = entries
+    // Indices, not cloned domain strings: holding a second full-corpus `Vec<String>` alongside
+    // `entries` for the length of the sweep roughly doubles the resident set at multi-million-entry
+    // scale. Only one chunk's worth of domains is ever cloned at a time, below.
+    let due_indices: Vec<usize> = entries
         .iter()
-        .filter(|e| due_for_check(cache.get(&e.domain), now, config.ttl_seconds))
-        .map(|e| e.domain.clone())
+        .enumerate()
+        .filter(|(_, e)| due_for_check(cache.get(&e.domain), now, config.ttl_seconds))
+        .map(|(i, _)| i)
         .collect();
 
     let mut checked = 0usize;
+    let mut since_checkpoint = 0usize;
     let canary_every = config.canary_every.max(1);
 
-    for chunk in due_domains.chunks(canary_every) {
+    for chunk in due_indices.chunks(canary_every) {
         let interval = Duration::from_secs_f64(1.0 / config.qps.max(0.001));
         let start = tokio::time::Instant::now();
-        let results: Vec<(String, Verdict)> = stream::iter(chunk.iter().cloned().enumerate())
-            .map(|(idx, domain)| {
+        let results: Vec<(String, Verdict)> = stream::iter(chunk.iter().copied().enumerate())
+            .map(|(pos, idx)| {
+                let domain = entries[idx].domain.clone();
                 let primary = Arc::clone(&primary);
                 let secondary = Arc::clone(&secondary);
                 async move {
-                    let deadline = start + interval * (idx as u32);
+                    let deadline = start + interval * (pos as u32);
                     tokio::time::sleep_until(deadline).await;
                     let verdict = check_corroborated_async(&*primary, &*secondary, &domain).await;
                     (domain, verdict)
@@ -257,6 +301,7 @@ pub async fn run_sweep_with_resolvers<L: AsyncDnsLookup>(
                 },
             );
             checked += 1;
+            since_checkpoint += 1;
         }
 
         if let Err((resolver, detail)) = canary_pass_both(&*primary, &*secondary, canary).await {
@@ -265,6 +310,17 @@ pub async fn run_sweep_with_resolvers<L: AsyncDnsLookup>(
                 checked_before_failure: checked,
                 detail,
             });
+        }
+
+        if config.checkpoint_every > 0 && since_checkpoint >= config.checkpoint_every {
+            checkpoint
+                .checkpoint(&cache)
+                .await
+                .map_err(|e| SweepError::CheckpointFailed {
+                    checked_before_failure: checked,
+                    detail: e.to_string(),
+                })?;
+            since_checkpoint = 0;
         }
     }
 
@@ -312,7 +368,10 @@ mod tests {
         }
 
         fn with(self, domain: &str, result: LookupResult) -> Self {
-            self.answers.lock().unwrap().insert(domain.to_string(), result);
+            self.answers
+                .lock()
+                .unwrap()
+                .insert(domain.to_string(), result);
             self
         }
 
@@ -326,7 +385,10 @@ mod tests {
         fn dead(self, domain: &str) -> Self {
             self.with(
                 domain,
-                LookupResult::NxDomain { authenticated: false, extended_error: None },
+                LookupResult::NxDomain {
+                    authenticated: false,
+                    extended_error: None,
+                },
             )
         }
     }
@@ -339,6 +401,22 @@ mod tests {
                 .get(domain)
                 .cloned()
                 .unwrap_or_else(|| panic!("FakeResolver has no configured answer for {domain:?}"))
+        }
+    }
+
+    #[derive(Default)]
+    struct FakeCheckpointSink {
+        calls: Vec<usize>,
+        fail_on_call: Option<usize>,
+    }
+
+    impl CheckpointSink for FakeCheckpointSink {
+        async fn checkpoint(&mut self, cache: &HashMap<String, CacheEntry>) -> anyhow::Result<()> {
+            self.calls.push(cache.len());
+            if self.fail_on_call == Some(self.calls.len()) {
+                anyhow::bail!("simulated checkpoint failure");
+            }
+            Ok(())
         }
     }
 
@@ -358,6 +436,7 @@ mod tests {
             canary_every: 1000,
             ttl_seconds: 90 * 24 * 60 * 60,
             quarantine_seconds: 180 * 24 * 60 * 60,
+            checkpoint_every: 0,
         }
     }
 
@@ -371,15 +450,22 @@ mod tests {
     }
 
     fn canary() -> CanaryConfig {
-        CanaryConfig::new(vec!["alive.invalid".to_string()], vec!["dead.invalid".to_string()])
-            .expect("non-empty control lists")
+        CanaryConfig::new(
+            vec!["alive.invalid".to_string()],
+            vec!["dead.invalid".to_string()],
+        )
+        .expect("non-empty control lists")
     }
 
     #[tokio::test]
     async fn initial_canary_failure_returns_initial_canary_failed_and_no_cache() {
         // The canary's own alive control resolves Dead — a resolver that can't even pass its own
         // sanity check must never reach the sweep loop at all.
-        let resolver = Arc::new(FakeResolver::new().dead("alive.invalid").dead("dead.invalid"));
+        let resolver = Arc::new(
+            FakeResolver::new()
+                .dead("alive.invalid")
+                .dead("dead.invalid"),
+        );
         let result = run_sweep_with_resolvers(
             &[entry("example.com")],
             HashMap::new(),
@@ -388,10 +474,14 @@ mod tests {
             1_000_000,
             Arc::clone(&resolver),
             Arc::clone(&resolver),
+            &mut NoCheckpoint,
         )
         .await;
 
-        assert!(matches!(result, Err(SweepError::InitialCanaryFailed { .. })));
+        assert!(matches!(
+            result,
+            Err(SweepError::InitialCanaryFailed { .. })
+        ));
     }
 
     /// A resolver whose answer for `dead.invalid` flips from `Dead` to `Alive` after
@@ -425,7 +515,10 @@ mod tests {
                         return LookupResult::Resolved(vec!["203.0.113.2".parse().unwrap()]);
                     }
                 }
-                return LookupResult::NxDomain { authenticated: false, extended_error: None };
+                return LookupResult::NxDomain {
+                    authenticated: false,
+                    extended_error: None,
+                };
             }
             if domain == self.due_domain {
                 return self.due_domain_answer.clone();
@@ -444,7 +537,10 @@ mod tests {
             alive_control: "alive.invalid".to_string(),
             dead_control: "dead.invalid".to_string(),
             due_domain: "flaky.example".to_string(),
-            due_domain_answer: LookupResult::NxDomain { authenticated: false, extended_error: None },
+            due_domain_answer: LookupResult::NxDomain {
+                authenticated: false,
+                extended_error: None,
+            },
             dead_control_a_queries: std::sync::atomic::AtomicUsize::new(0),
         });
 
@@ -459,18 +555,114 @@ mod tests {
             1_000_000,
             Arc::clone(&resolver),
             Arc::clone(&resolver),
+            &mut NoCheckpoint,
         )
         .await;
 
         match result {
-            Err(SweepError::MidSweepCanaryFailed { checked_before_failure, .. }) => {
-                assert_eq!(checked_before_failure, 1, "the one due domain was checked before the mid-sweep canary tripped");
+            Err(SweepError::MidSweepCanaryFailed {
+                checked_before_failure,
+                ..
+            }) => {
+                assert_eq!(
+                    checked_before_failure, 1,
+                    "the one due domain was checked before the mid-sweep canary tripped"
+                );
             }
             other => panic!("expected MidSweepCanaryFailed, got {other:?}"),
         }
         // The plan's "a partial sweep is not salvaged" rule: an Err carries no SweepOutcome at
         // all, so there is no cache update and no prune list to inspect — the type itself is the
         // guarantee, this assertion just makes that explicit for the reader.
+    }
+
+    #[tokio::test]
+    async fn checkpoint_fires_at_the_next_canary_chunk_boundary_after_the_threshold() {
+        let resolver = Arc::new(
+            FakeResolver::new()
+                .alive("alive.invalid")
+                .dead("dead.invalid")
+                .alive("d1.example")
+                .alive("d2.example")
+                .alive("d3.example")
+                .alive("d4.example")
+                .alive("d5.example")
+                .alive("d6.example"),
+        );
+        let entries: Vec<MergedEntry> = [
+            "d1.example",
+            "d2.example",
+            "d3.example",
+            "d4.example",
+            "d5.example",
+            "d6.example",
+        ]
+        .iter()
+        .map(|d| entry(d))
+        .collect();
+
+        let mut cfg = config();
+        cfg.canary_every = 2;
+        cfg.checkpoint_every = 4;
+        let mut sink = FakeCheckpointSink::default();
+
+        let outcome = run_sweep_with_resolvers(
+            &entries,
+            HashMap::new(),
+            &canary(),
+            &cfg,
+            1_000_000,
+            Arc::clone(&resolver),
+            Arc::clone(&resolver),
+            &mut sink,
+        )
+        .await
+        .expect("all-alive resolver never fails the canary");
+
+        assert_eq!(outcome.checked_count, 6);
+        // 3 chunks of 2; the threshold of 4 is only crossed after the 2nd chunk, so exactly one
+        // checkpoint fires, holding the 4 domains checked by then.
+        assert_eq!(sink.calls, vec![4]);
+    }
+
+    #[tokio::test]
+    async fn a_checkpoint_failure_aborts_the_sweep() {
+        let resolver = Arc::new(
+            FakeResolver::new()
+                .alive("alive.invalid")
+                .dead("dead.invalid")
+                .alive("d1.example")
+                .alive("d2.example"),
+        );
+        let entries = vec![entry("d1.example"), entry("d2.example")];
+
+        let mut cfg = config();
+        cfg.canary_every = 2;
+        cfg.checkpoint_every = 1;
+        let mut sink = FakeCheckpointSink {
+            fail_on_call: Some(1),
+            ..Default::default()
+        };
+
+        let result = run_sweep_with_resolvers(
+            &entries,
+            HashMap::new(),
+            &canary(),
+            &cfg,
+            1_000_000,
+            Arc::clone(&resolver),
+            Arc::clone(&resolver),
+            &mut sink,
+        )
+        .await;
+
+        assert!(matches!(
+            result,
+            Err(SweepError::CheckpointFailed {
+                checked_before_failure: 2,
+                ..
+            })
+        ));
     }
 
     #[tokio::test]
@@ -491,7 +683,11 @@ mod tests {
         // The initial canary still runs regardless of whether any entry is due for a fresh
         // lookup, so its two controls must be configured even though this test's own domain
         // never triggers a real lookup.
-        let resolver = Arc::new(FakeResolver::new().alive("alive.invalid").dead("dead.invalid"));
+        let resolver = Arc::new(
+            FakeResolver::new()
+                .alive("alive.invalid")
+                .dead("dead.invalid"),
+        );
 
         let outcome = run_sweep_with_resolvers(
             &[entry("recently-dead.dropped-domain.net")],
@@ -501,6 +697,7 @@ mod tests {
             now,
             Arc::clone(&resolver),
             Arc::clone(&resolver),
+            &mut NoCheckpoint,
         )
         .await
         .expect("no domain is due, so no lookup happens and no canary runs");
@@ -524,7 +721,11 @@ mod tests {
         let mut cfg = config();
         cfg.quarantine_seconds = 1_000;
         cfg.ttl_seconds = u64::MAX / 2;
-        let resolver = Arc::new(FakeResolver::new().alive("alive.invalid").dead("dead.invalid"));
+        let resolver = Arc::new(
+            FakeResolver::new()
+                .alive("alive.invalid")
+                .dead("dead.invalid"),
+        );
 
         let outcome = run_sweep_with_resolvers(
             &[entry("long-dead.dropped-domain.net")],
@@ -534,11 +735,15 @@ mod tests {
             now,
             Arc::clone(&resolver),
             Arc::clone(&resolver),
+            &mut NoCheckpoint,
         )
         .await
         .expect("no domain is due, so no lookup happens and no canary runs");
 
-        assert_eq!(outcome.pruned_domains, ["long-dead.dropped-domain.net".to_string()].into());
+        assert_eq!(
+            outcome.pruned_domains,
+            ["long-dead.dropped-domain.net".to_string()].into()
+        );
     }
 
     /// Live smoke test: runs one real sweep against the actual `1.1.1.1`/`8.8.8.8` resolvers over
@@ -576,6 +781,7 @@ mod tests {
             canary_every: 1000, // fewer domains than this, so exactly one canary check runs, at the end
             ttl_seconds: 90 * 24 * 60 * 60,
             quarantine_seconds: 180 * 24 * 60 * 60,
+            checkpoint_every: 0,
         };
 
         let canary = CanaryConfig::new(
@@ -591,16 +797,32 @@ mod tests {
         ];
 
         let start = std::time::Instant::now();
-        let outcome = run_sweep(&entries, HashMap::new(), &canary, &config, 1_000_000)
-            .await
-            .expect("live sweep against real resolvers should complete without a canary failure");
+        let outcome = run_sweep(
+            &entries,
+            HashMap::new(),
+            &canary,
+            &config,
+            1_000_000,
+            &mut NoCheckpoint,
+        )
+        .await
+        .expect("live sweep against real resolvers should complete without a canary failure");
         let elapsed = start.elapsed();
 
         assert_eq!(outcome.checked_count, entries.len());
-        assert_eq!(outcome.cache.get("mozilla.org").map(|e| e.verdict), Some(Verdict::Alive));
-        assert_eq!(outcome.cache.get("iana.org").map(|e| e.verdict), Some(Verdict::Alive));
         assert_eq!(
-            outcome.cache.get("holy-blocker-smoke-test-dead.invalid").map(|e| e.verdict),
+            outcome.cache.get("mozilla.org").map(|e| e.verdict),
+            Some(Verdict::Alive)
+        );
+        assert_eq!(
+            outcome.cache.get("iana.org").map(|e| e.verdict),
+            Some(Verdict::Alive)
+        );
+        assert_eq!(
+            outcome
+                .cache
+                .get("holy-blocker-smoke-test-dead.invalid")
+                .map(|e| e.verdict),
             Some(Verdict::Dead)
         );
 
@@ -611,5 +833,194 @@ mod tests {
             elapsed < Duration::from_secs(30),
             "smoke sweep took {elapsed:?} — investigate before trusting this as a quick check"
         );
+    }
+
+    /// Answers deterministically from the domain string itself (no stored per-domain table), so
+    /// this resolver costs no memory of its own regardless of corpus size — the point of the stress
+    /// test below is to isolate RAM growth to `entries`/`cache`, not incidentally add a second
+    /// multi-million-entry map to account for.
+    struct DeterministicResolver;
+
+    impl AsyncDnsLookup for DeterministicResolver {
+        async fn lookup_async(&self, domain: &str, _record: RecordType) -> LookupResult {
+            if domain == "alive.invalid" {
+                return LookupResult::Resolved(vec!["203.0.113.1".parse().unwrap()]);
+            }
+            if domain == "dead.invalid" {
+                return LookupResult::NxDomain {
+                    authenticated: false,
+                    extended_error: None,
+                };
+            }
+            let hash = domain
+                .bytes()
+                .fold(0u64, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u64));
+            if hash % 100 == 0 {
+                LookupResult::NxDomain {
+                    authenticated: false,
+                    extended_error: None,
+                }
+            } else {
+                LookupResult::Resolved(vec!["203.0.113.1".parse().unwrap()])
+            }
+        }
+    }
+
+    fn current_rss_mb() -> f64 {
+        let pid = std::process::id().to_string();
+        let output = std::process::Command::new("ps")
+            .args(["-o", "rss=", "-p", &pid])
+            .output()
+            .expect("`ps` should be available on macOS/Linux");
+        String::from_utf8_lossy(&output.stdout)
+            .trim()
+            .parse::<f64>()
+            .unwrap_or(0.0)
+            / 1024.0
+    }
+
+    struct MeasuringCheckpointSink {
+        path: std::path::PathBuf,
+        started: std::time::Instant,
+        checkpoints: usize,
+    }
+
+    impl CheckpointSink for MeasuringCheckpointSink {
+        async fn checkpoint(&mut self, cache: &HashMap<String, CacheEntry>) -> anyhow::Result<()> {
+            self.checkpoints += 1;
+            crate::cache_store::save(&self.path, cache)?;
+            let file_bytes = std::fs::metadata(&self.path).map(|m| m.len()).unwrap_or(0);
+            println!(
+                "[stress] checkpoint #{:>3}  t={:>7.1}s  cached={:>9}  rss={:>7.1} MB  cache_file={:>7.1} MB",
+                self.checkpoints,
+                self.started.elapsed().as_secs_f64(),
+                cache.len(),
+                current_rss_mb(),
+                file_bytes as f64 / (1024.0 * 1024.0),
+            );
+            Ok(())
+        }
+    }
+
+    /// No real network, no real ~4.75M-domain corpus fetch — this stands in for both with
+    /// [`DeterministicResolver`] and a synthetic `entries` vec, so it runs in seconds against
+    /// exactly the code path the real ~14h sweep runs, and reports RSS at every checkpoint. Answers
+    /// the question the change in this commit was made for: does the checkpointed cache actually
+    /// stay bounded, and does dropping the `due_domains` full-corpus clone actually show up in RSS.
+    #[tokio::test]
+    #[ignore = "long-running, memory-focused — run explicitly with `cargo test --bin domain-blocklist \
+                --features cli,net --release -- --ignored --nocapture stress_test_measures_memory_at_corpus_scale`"]
+    async fn stress_test_measures_memory_at_corpus_scale() {
+        const N: usize = 4_800_000; // matches the measured real merged-corpus size
+
+        println!(
+            "[stress] rss before building entries: {:.1} MB",
+            current_rss_mb()
+        );
+        let entries: Vec<MergedEntry> = (0..N)
+            .map(|i| entry(&format!("domain-{i}.example")))
+            .collect();
+        println!(
+            "[stress] rss after building {N} entries: {:.1} MB",
+            current_rss_mb()
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut cfg = config();
+        cfg.qps = 2_000_000.0;
+        cfg.concurrency = 1000;
+        cfg.canary_every = 100_000;
+        cfg.checkpoint_every = 400_000;
+
+        let resolver = Arc::new(DeterministicResolver);
+        let mut sink = MeasuringCheckpointSink {
+            path: dir.path().join("cache.bin"),
+            started: std::time::Instant::now(),
+            checkpoints: 0,
+        };
+
+        let outcome = run_sweep_with_resolvers(
+            &entries,
+            HashMap::new(),
+            &canary(),
+            &cfg,
+            1_000_000,
+            Arc::clone(&resolver),
+            Arc::clone(&resolver),
+            &mut sink,
+        )
+        .await
+        .expect("DeterministicResolver's canary controls always answer correctly");
+
+        println!(
+            "[stress] done: checked={} pruned={} rss_final={:.1} MB checkpoints={}",
+            outcome.checked_count,
+            outcome.pruned_domains.len(),
+            current_rss_mb(),
+            sink.checkpoints,
+        );
+        assert_eq!(outcome.checked_count, N);
+    }
+
+    /// Runs the same corpus through two sweeps sharing one cache file — the second constructed the
+    /// way a restart after a crash would be, by `cache_store::load`ing what the first checkpointed —
+    /// and asserts the second does zero DNS lookups. This is what "resume is free" actually means:
+    /// not a special resume code path, just `due_for_check`'s ordinary TTL logic seeing every domain
+    /// as already checked.
+    #[tokio::test]
+    #[ignore = "long-running — run explicitly with `cargo test --bin domain-blocklist --features cli,net \
+                --release -- --ignored --nocapture a_resumed_sweep_after_checkpointing_does_no_redundant_lookups`"]
+    async fn a_resumed_sweep_after_checkpointing_does_no_redundant_lookups() {
+        const N: usize = 500_000;
+        let entries: Vec<MergedEntry> = (0..N)
+            .map(|i| entry(&format!("domain-{i}.example")))
+            .collect();
+        let dir = tempfile::tempdir().unwrap();
+        let cache_path = dir.path().join("cache.bin");
+        let resolver = Arc::new(DeterministicResolver);
+        let mut cfg = config();
+        cfg.qps = 2_000_000.0;
+        cfg.concurrency = 1000;
+        cfg.canary_every = 100_000;
+        cfg.checkpoint_every = 100_000;
+        let now = 1_000_000;
+
+        let mut sink = MeasuringCheckpointSink {
+            path: cache_path.clone(),
+            started: std::time::Instant::now(),
+            checkpoints: 0,
+        };
+        let first = run_sweep_with_resolvers(
+            &entries,
+            HashMap::new(),
+            &canary(),
+            &cfg,
+            now,
+            Arc::clone(&resolver),
+            Arc::clone(&resolver),
+            &mut sink,
+        )
+        .await
+        .expect("first sweep should complete cleanly");
+        assert_eq!(first.checked_count, N);
+
+        // Simulates a restart: load exactly what the first run's last checkpoint persisted, and
+        // sweep the same corpus again at the same `now` — nothing should be due yet.
+        let resumed_cache = crate::cache_store::load(&cache_path).unwrap();
+        let mut resume_sink = FakeCheckpointSink::default();
+        let second = run_sweep_with_resolvers(
+            &entries,
+            resumed_cache,
+            &canary(),
+            &cfg,
+            now,
+            Arc::clone(&resolver),
+            Arc::clone(&resolver),
+            &mut resume_sink,
+        )
+        .await
+        .expect("resumed sweep should complete cleanly with nothing due");
+
+        assert_eq!(second.checked_count, 0);
     }
 }
