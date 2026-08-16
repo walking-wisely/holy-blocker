@@ -388,7 +388,8 @@ async fn run(cli: cli::Cli) -> Result<()> {
     tracing::info!(
         merged = merge_output.entries.len(),
         dropped_normalization_failed = merge_output.report.dropped_normalization_failed,
-        dropped_shared_hosting_denylisted = merge_output.report.dropped_shared_hosting_denylisted,
+dropped_public_suffix_or_denylisted =
+            merge_output.report.dropped_public_suffix_or_denylisted,
         dropped_ip_literal = merge_output.report.dropped_ip_literal,
         "merged sources"
     );
@@ -692,7 +693,7 @@ async fn run_liveness(
         cache_store::save(path, &outcome.cache)?;
     }
 
-    let report = domain_blocklist::negative_outcome_report(&outcome.cache);
+let report = domain_blocklist::negative_outcome_report(&outcome.cache);
     Ok((
         entries
             .into_iter()
@@ -802,7 +803,10 @@ fn log_verdict_breakdown(cache: &HashMap<String, domain_blocklist::CacheEntry>) 
         unknown_filtered,
         unknown_uncorroborated_dead,
         unknown_other,
-        unknown_pct = format!("{:.4}", (cache.len() - alive as usize - dead as usize) as f64 / total * 100.0),
+        unknown_pct = format!(
+            "{:.4}",
+            (cache.len() - alive as usize - dead as usize) as f64 / total * 100.0
+        ),
         "verdict breakdown"
     );
 }
