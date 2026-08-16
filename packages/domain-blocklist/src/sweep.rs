@@ -135,6 +135,8 @@ pub enum SweepError {
         checked_before_failure: usize,
         detail: String,
     },
+    #[error("failed to read the entry corpus: {0}")]
+    EntriesReadFailed(String),
 }
 
 /// Async re-implementation of [`domain_blocklist::liveness::check`], driving
@@ -213,6 +215,11 @@ async fn canary_pass_both<L: AsyncDnsLookup>(
 /// existing cached verdict, so a domain already inside its quarantine window (or already pruned
 /// with an established `first_dead_at` streak) stays correctly pruned/kept without needing a fresh
 /// lookup every run.
+///
+/// Kept for tests and small-corpus callers even though `main.rs` now always uses
+/// [`run_sweep_streaming`] for a real run — requiring `entries` resident is the whole thing
+/// [`run_sweep_streaming`] exists to avoid at real corpus scale.
+#[cfg_attr(not(test), allow(dead_code))]
 pub async fn run_sweep(
     entries: &[MergedEntry],
     cache: HashMap<String, CacheEntry>,
@@ -229,12 +236,68 @@ pub async fn run_sweep(
     .await
 }
 
+/// Runs one batch of already-due domains against both resolvers concurrently (paced by
+/// `config.qps`, bounded by `config.concurrency`) and writes every result into `cache`. Shared by
+/// [`run_sweep_with_resolvers`] and [`run_sweep_streaming`] so their DNS/cache logic — the part
+/// that decides what a domain's verdict is — can't drift apart between the two drivers.
+async fn process_batch<L: AsyncDnsLookup>(
+    batch: Vec<String>,
+    cache: &mut HashMap<String, CacheEntry>,
+    now: Timestamp,
+    config: &SweepConfig,
+    primary: &Arc<L>,
+    secondary: &Arc<L>,
+) -> usize {
+    let interval = Duration::from_secs_f64(1.0 / config.qps.max(0.001));
+    let start = tokio::time::Instant::now();
+    let results: Vec<(String, Verdict)> = stream::iter(batch.into_iter().enumerate())
+        .map(|(pos, domain)| {
+            let primary = Arc::clone(primary);
+            let secondary = Arc::clone(secondary);
+            async move {
+                let deadline = start + interval * (pos as u32);
+                tokio::time::sleep_until(deadline).await;
+                let verdict = check_corroborated_async(&*primary, &*secondary, &domain).await;
+                (domain, verdict)
+            }
+        })
+        .buffer_unordered(config.concurrency.max(1))
+        .collect()
+        .await;
+
+    let checked = results.len();
+    for (domain, verdict) in results {
+        let entry_before = cache.get(&domain).copied().unwrap_or(CacheEntry {
+            last_checked: 0,
+            verdict: Verdict::Unknown(UnknownReason::NoData),
+            first_dead_at: None,
+        });
+        let first_dead_at = match verdict {
+            Verdict::Dead => Some(entry_before.first_dead_at.unwrap_or(now)),
+            _ => None,
+        };
+        cache.insert(
+            domain,
+            CacheEntry {
+                last_checked: now,
+                verdict,
+                first_dead_at,
+            },
+        );
+    }
+    checked
+}
+
 /// The real body of [`run_sweep`], generic over [`AsyncDnsLookup`] so a test can drive the canary
 /// gate, the mid-sweep abort, the `first_dead_at` streak update, and the
 /// `should_prune_with_hysteresis` pass with no UDP/53 — the rules that decide whether a domain
 /// leaves a signed artifact, per this module's own doc comment on why an aborted sweep discards
 /// everything. `run_sweep` is the thin wrapper that constructs the real [`HickoryDnsLookup`]
 /// resolvers `main.rs` actually calls.
+///
+/// Requires `entries` fully resident — use [`run_sweep_streaming`] instead when the corpus is too
+/// large to hold in memory for the sweep's duration.
+#[cfg_attr(not(test), allow(dead_code))]
 pub async fn run_sweep_with_resolvers<L: AsyncDnsLookup>(
     entries: &[MergedEntry],
     mut cache: HashMap<String, CacheEntry>,
@@ -264,45 +327,14 @@ pub async fn run_sweep_with_resolvers<L: AsyncDnsLookup>(
     let canary_every = config.canary_every.max(1);
 
     for chunk in due_indices.chunks(canary_every) {
-        let interval = Duration::from_secs_f64(1.0 / config.qps.max(0.001));
-        let start = tokio::time::Instant::now();
-        let results: Vec<(String, Verdict)> = stream::iter(chunk.iter().copied().enumerate())
-            .map(|(pos, idx)| {
-                let domain = entries[idx].domain.clone();
-                let primary = Arc::clone(&primary);
-                let secondary = Arc::clone(&secondary);
-                async move {
-                    let deadline = start + interval * (pos as u32);
-                    tokio::time::sleep_until(deadline).await;
-                    let verdict = check_corroborated_async(&*primary, &*secondary, &domain).await;
-                    (domain, verdict)
-                }
-            })
-            .buffer_unordered(config.concurrency.max(1))
-            .collect()
-            .await;
-
-        for (domain, verdict) in results {
-            let entry_before = cache.get(&domain).copied().unwrap_or(CacheEntry {
-                last_checked: 0,
-                verdict: Verdict::Unknown(UnknownReason::NoData),
-                first_dead_at: None,
-            });
-            let first_dead_at = match verdict {
-                Verdict::Dead => Some(entry_before.first_dead_at.unwrap_or(now)),
-                _ => None,
-            };
-            cache.insert(
-                domain,
-                CacheEntry {
-                    last_checked: now,
-                    verdict,
-                    first_dead_at,
-                },
-            );
-            checked += 1;
-            since_checkpoint += 1;
-        }
+        let batch: Vec<String> = chunk
+            .iter()
+            .map(|&idx| entries[idx].domain.clone())
+            .collect();
+        let batch_checked =
+            process_batch(batch, &mut cache, now, config, &primary, &secondary).await;
+        checked += batch_checked;
+        since_checkpoint += batch_checked;
 
         if let Err((resolver, detail)) = canary_pass_both(&*primary, &*secondary, canary).await {
             return Err(SweepError::MidSweepCanaryFailed {
@@ -336,6 +368,112 @@ pub async fn run_sweep_with_resolvers<L: AsyncDnsLookup>(
             )
         {
             pruned_domains.insert(entry.domain.clone());
+        }
+    }
+
+    Ok(SweepOutcome {
+        cache,
+        pruned_domains,
+        checked_count: checked,
+    })
+}
+
+/// Same as [`run_sweep_with_resolvers`], except the entry corpus is never resident: due-domain
+/// batches are read directly from `entries_path` (an [`crate::entries_store::write`] output)
+/// `canary_every` domains at a time, and the final pruning scan reopens the same file for an
+/// independent second pass. Memory cost is bounded by batch size, not corpus size — `entries`
+/// only ever needs sequential access (see `entries_store`'s own doc comment), so a plain reopened
+/// file reader is sufficient; there is no random access to serve.
+pub async fn run_sweep_streaming<L: AsyncDnsLookup>(
+    entries_path: &std::path::Path,
+    mut cache: HashMap<String, CacheEntry>,
+    canary: &CanaryConfig,
+    config: &SweepConfig,
+    now: Timestamp,
+    primary: Arc<L>,
+    secondary: Arc<L>,
+    checkpoint: &mut impl CheckpointSink,
+) -> Result<SweepOutcome, SweepError> {
+    if let Err((resolver, detail)) = canary_pass_both(&*primary, &*secondary, canary).await {
+        return Err(SweepError::InitialCanaryFailed { resolver, detail });
+    }
+
+    let canary_every = config.canary_every.max(1);
+    let mut checked = 0usize;
+    let mut since_checkpoint = 0usize;
+
+    let mut reader = crate::entries_store::EntryReader::open(entries_path)
+        .map_err(|e| SweepError::EntriesReadFailed(e.to_string()))?;
+
+    loop {
+        let mut batch = Vec::with_capacity(canary_every);
+        let mut eof = false;
+        while batch.len() < canary_every {
+            match reader
+                .next()
+                .map_err(|e| SweepError::EntriesReadFailed(e.to_string()))?
+            {
+                Some(entry) => {
+                    if due_for_check(cache.get(&entry.domain), now, config.ttl_seconds) {
+                        batch.push(entry.domain);
+                    }
+                }
+                None => {
+                    eof = true;
+                    break;
+                }
+            }
+        }
+
+        if !batch.is_empty() {
+            let batch_checked =
+                process_batch(batch, &mut cache, now, config, &primary, &secondary).await;
+            checked += batch_checked;
+            since_checkpoint += batch_checked;
+
+            if let Err((resolver, detail)) = canary_pass_both(&*primary, &*secondary, canary).await
+            {
+                return Err(SweepError::MidSweepCanaryFailed {
+                    resolver,
+                    checked_before_failure: checked,
+                    detail,
+                });
+            }
+
+            if config.checkpoint_every > 0 && since_checkpoint >= config.checkpoint_every {
+                checkpoint
+                    .checkpoint(&cache)
+                    .await
+                    .map_err(|e| SweepError::CheckpointFailed {
+                        checked_before_failure: checked,
+                        detail: e.to_string(),
+                    })?;
+                since_checkpoint = 0;
+            }
+        }
+
+        if eof {
+            break;
+        }
+    }
+
+    let mut pruned_domains = std::collections::BTreeSet::new();
+    let mut pruning_reader = crate::entries_store::EntryReader::open(entries_path)
+        .map_err(|e| SweepError::EntriesReadFailed(e.to_string()))?;
+    while let Some(entry) = pruning_reader
+        .next()
+        .map_err(|e| SweepError::EntriesReadFailed(e.to_string()))?
+    {
+        if let Some(cached) = cache.get(&entry.domain)
+            && should_prune_with_hysteresis(
+                cached,
+                &entry.domain,
+                cached.verdict,
+                now,
+                config.quarantine_seconds,
+            )
+        {
+            pruned_domains.insert(entry.domain);
         }
     }
 
@@ -665,6 +803,149 @@ mod tests {
         ));
     }
 
+    /// The core promise of [`run_sweep_streaming`]: reading the same corpus from a scratch file
+    /// instead of an in-memory slice must not change what gets checked, cached, or pruned. Runs an
+    /// identical sweep both ways and asserts the outcomes match exactly.
+    #[tokio::test]
+    async fn streaming_and_slice_based_sweeps_produce_identical_results() {
+        let entries = vec![
+            entry("alive-1.example"),
+            entry("alive-2.example"),
+            entry("dead-1.example"),
+            entry("dead-2.example"),
+        ];
+        let resolver = Arc::new(
+            FakeResolver::new()
+                .alive("alive.invalid")
+                .dead("dead.invalid")
+                .alive("alive-1.example")
+                .alive("alive-2.example")
+                .dead("dead-1.example")
+                .dead("dead-2.example"),
+        );
+        let mut cfg = config();
+        cfg.canary_every = 2;
+
+        let slice_outcome = run_sweep_with_resolvers(
+            &entries,
+            HashMap::new(),
+            &canary(),
+            &cfg,
+            1_000_000,
+            Arc::clone(&resolver),
+            Arc::clone(&resolver),
+            &mut NoCheckpoint,
+        )
+        .await
+        .unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("entries.bin");
+        crate::entries_store::write(&path, &entries).unwrap();
+
+        let stream_outcome = run_sweep_streaming(
+            &path,
+            HashMap::new(),
+            &canary(),
+            &cfg,
+            1_000_000,
+            Arc::clone(&resolver),
+            Arc::clone(&resolver),
+            &mut NoCheckpoint,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(slice_outcome.cache, stream_outcome.cache);
+        assert_eq!(slice_outcome.pruned_domains, stream_outcome.pruned_domains);
+        assert_eq!(slice_outcome.checked_count, stream_outcome.checked_count);
+    }
+
+    #[tokio::test]
+    async fn streaming_checkpoint_fires_at_the_next_canary_chunk_boundary() {
+        let resolver = Arc::new(
+            FakeResolver::new()
+                .alive("alive.invalid")
+                .dead("dead.invalid")
+                .alive("d1.example")
+                .alive("d2.example")
+                .alive("d3.example")
+                .alive("d4.example"),
+        );
+        let entries = vec![
+            entry("d1.example"),
+            entry("d2.example"),
+            entry("d3.example"),
+            entry("d4.example"),
+        ];
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("entries.bin");
+        crate::entries_store::write(&path, &entries).unwrap();
+
+        let mut cfg = config();
+        cfg.canary_every = 2;
+        cfg.checkpoint_every = 3;
+        let mut sink = FakeCheckpointSink::default();
+
+        let outcome = run_sweep_streaming(
+            &path,
+            HashMap::new(),
+            &canary(),
+            &cfg,
+            1_000_000,
+            Arc::clone(&resolver),
+            Arc::clone(&resolver),
+            &mut sink,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(outcome.checked_count, 4);
+        // 2 chunks of 2; threshold 3 is only crossed after the 2nd chunk.
+        assert_eq!(sink.calls, vec![4]);
+    }
+
+    #[tokio::test]
+    async fn streaming_mid_sweep_canary_failure_aborts_with_no_partial_state() {
+        let resolver = Arc::new(FlippingDeadControl {
+            alive_control: "alive.invalid".to_string(),
+            dead_control: "dead.invalid".to_string(),
+            due_domain: "flaky.example".to_string(),
+            due_domain_answer: LookupResult::NxDomain {
+                authenticated: false,
+                extended_error: None,
+            },
+            dead_control_a_queries: std::sync::atomic::AtomicUsize::new(0),
+        });
+        let entries = vec![entry("flaky.example")];
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("entries.bin");
+        crate::entries_store::write(&path, &entries).unwrap();
+
+        let mut cfg = config();
+        cfg.canary_every = 1;
+
+        let result = run_sweep_streaming(
+            &path,
+            HashMap::new(),
+            &canary(),
+            &cfg,
+            1_000_000,
+            Arc::clone(&resolver),
+            Arc::clone(&resolver),
+            &mut NoCheckpoint,
+        )
+        .await;
+
+        assert!(matches!(
+            result,
+            Err(SweepError::MidSweepCanaryFailed {
+                checked_before_failure: 1,
+                ..
+            })
+        ));
+    }
+
     #[tokio::test]
     async fn a_dead_verdict_inside_its_quarantine_window_is_not_pruned() {
         let now: Timestamp = 1_000_000;
@@ -941,6 +1222,73 @@ mod tests {
 
         let outcome = run_sweep_with_resolvers(
             &entries,
+            HashMap::new(),
+            &canary(),
+            &cfg,
+            1_000_000,
+            Arc::clone(&resolver),
+            Arc::clone(&resolver),
+            &mut sink,
+        )
+        .await
+        .expect("DeterministicResolver's canary controls always answer correctly");
+
+        println!(
+            "[stress] done: checked={} pruned={} rss_final={:.1} MB checkpoints={}",
+            outcome.checked_count,
+            outcome.pruned_domains.len(),
+            current_rss_mb(),
+            sink.checkpoints,
+        );
+        assert_eq!(outcome.checked_count, N);
+    }
+
+    /// Same corpus, same size, but through [`run_sweep_streaming`] the way `main.rs` actually runs
+    /// it now: `entries` is written to a scratch file and dropped *before* the sweep starts, so
+    /// this measures whether that ~500MB actually stops showing up in RSS during the sweep, not
+    /// just whether the code compiles.
+    #[tokio::test]
+    #[ignore = "long-running, memory-focused — run explicitly with `cargo test --bin domain-blocklist \
+                --features cli,net --release -- --ignored --nocapture stress_test_streaming_sweep_avoids_holding_the_full_corpus`"]
+    async fn stress_test_streaming_sweep_avoids_holding_the_full_corpus() {
+        const N: usize = 4_800_000;
+
+        println!(
+            "[stress] rss before building entries: {:.1} MB",
+            current_rss_mb()
+        );
+        let entries: Vec<MergedEntry> = (0..N)
+            .map(|i| entry(&format!("domain-{i}.example")))
+            .collect();
+        println!(
+            "[stress] rss after building {N} entries: {:.1} MB",
+            current_rss_mb()
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        let entries_path = dir.path().join("entries.bin");
+        crate::entries_store::write(&entries_path, &entries).unwrap();
+        drop(entries);
+        println!(
+            "[stress] rss after writing to disk and dropping entries: {:.1} MB",
+            current_rss_mb()
+        );
+
+        let mut cfg = config();
+        cfg.qps = 2_000_000.0;
+        cfg.concurrency = 1000;
+        cfg.canary_every = 100_000;
+        cfg.checkpoint_every = 400_000;
+
+        let resolver = Arc::new(DeterministicResolver);
+        let mut sink = MeasuringCheckpointSink {
+            path: dir.path().join("cache.bin"),
+            started: std::time::Instant::now(),
+            checkpoints: 0,
+        };
+
+        let outcome = run_sweep_streaming(
+            &entries_path,
             HashMap::new(),
             &canary(),
             &cfg,

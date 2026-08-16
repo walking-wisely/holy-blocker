@@ -9,6 +9,8 @@
 #[cfg_attr(not(feature = "net"), allow(dead_code))]
 mod cache_store;
 mod cli;
+#[cfg_attr(not(feature = "net"), allow(dead_code))]
+mod entries_store;
 mod publish_policy;
 mod slots;
 #[cfg(feature = "net")]
@@ -658,16 +660,49 @@ async fn run_liveness(cli: &cli::Cli, entries: Vec<MergedEntry>) -> Result<Vec<M
     let mut checkpoint = CacheStoreCheckpoint {
         path: cli.cache.clone(),
     };
-    let outcome = sweep::run_sweep(
-        &entries,
+
+    // `entries` is never resident during the sweep: written once to a scratch file, then dropped,
+    // so a multi-hour sweep doesn't hold the full merged corpus in memory the whole time — see
+    // `entries_store`'s doc comment. Reconstructed after the sweep from the same file (filtered by
+    // `pruned_domains`) below, since gates/`build()` run in seconds and can afford to hold it.
+    let scratch_path = std::env::temp_dir().join(format!(
+        "domain-blocklist-entries-{}.bin",
+        std::process::id()
+    ));
+    entries_store::write(&scratch_path, &entries)
+        .context("failed to write the entry corpus scratch file")?;
+    drop(entries);
+
+    let primary = domain_blocklist::liveness::HickoryDnsLookup::new(sweep_config.primary)
+        .map(std::sync::Arc::new)
+        .context("failed to start the primary DNS client")?;
+    let secondary = domain_blocklist::liveness::HickoryDnsLookup::new(sweep_config.secondary)
+        .map(std::sync::Arc::new)
+        .context("failed to start the secondary DNS client")?;
+
+    let sweep_result = sweep::run_sweep_streaming(
+        &scratch_path,
         cache,
         &canary,
         &sweep_config,
         now,
+        primary,
+        secondary,
         &mut checkpoint,
     )
     .await
-    .map_err(|e| anyhow::anyhow!("{e}"))?;
+    .map_err(|e| anyhow::anyhow!("{e}"));
+
+    let outcome = match sweep_result {
+        Ok(outcome) => outcome,
+        Err(e) => {
+            // The scratch file is only useful while a sweep might still read it; on failure
+            // there's nothing left to recover from it (the cache checkpoint already covers that).
+            let _ = std::fs::remove_file(&scratch_path);
+            return Err(e);
+        }
+    };
+
     tracing::info!(
         checked = outcome.checked_count,
         pruned = outcome.pruned_domains.len(),
@@ -681,10 +716,18 @@ async fn run_liveness(cli: &cli::Cli, entries: Vec<MergedEntry>) -> Result<Vec<M
         cache_store::save(path, &outcome.cache)?;
     }
 
-    Ok(entries
-        .into_iter()
-        .filter(|e| !outcome.pruned_domains.contains(&e.domain))
-        .collect())
+    let mut reader = entries_store::EntryReader::open(&scratch_path).context(
+        "failed to reopen the entry corpus scratch file to rebuild the pruned entry list",
+    )?;
+    let mut kept = Vec::new();
+    while let Some(entry) = reader.next()? {
+        if !outcome.pruned_domains.contains(&entry.domain) {
+            kept.push(entry);
+        }
+    }
+    let _ = std::fs::remove_file(&scratch_path);
+
+    Ok(kept)
 }
 
 /// Tallies `outcome.cache`'s verdicts into a log line naming each `Unknown` reason separately —

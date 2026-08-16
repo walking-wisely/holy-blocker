@@ -1097,7 +1097,32 @@ decision doc's [Distribution](../../decisions/domain-blocklist-sourcing.md#distr
    `Vec<MergedEntry>` in memory for the sweep's duration (~500-600MB at the measured 4.75M-domain
    corpus size) is unchanged and not yet addressed — paging it from an on-disk intermediate file
    would also require `build()`/`gates.rs`/`review_queue()` to stop assuming a resident `Vec`, which
-   is a larger change than this pass's scope.
+   is a larger change than this pass's scope. **That follow-up is done, in a second pass**:
+   `entries_store.rs` writes the merged corpus to a length-prefixed bincode-per-record scratch file
+   right after merge, and `sweep::run_sweep_streaming` reads due-domain batches from it
+   `canary_every` at a time (never pre-collecting a full due list) plus a second reopened pass for
+   final pruning — sufficient because `entries` only ever needs sequential access, never random,
+   so no index or mmap is needed, just a plain reopened file reader. `main.rs` writes and drops
+   `entries` before the sweep starts and only reconstructs it (filtered by `pruned_domains`)
+   afterward, for the fast gates/build phase. `run_sweep`/`run_sweep_with_resolvers` are kept
+   unchanged for tests and small-corpus callers, sharing the per-batch DNS/cache logic
+   (`process_batch`) with the new streaming driver so the two can't silently diverge; a new test
+   asserts they produce byte-identical outcomes over the same input. **Measured, and the honest
+   result is smaller than expected**: a fresh-process stress test shows RSS barely moves
+   immediately after writing `entries` to disk and dropping it (516.1MB vs. 515.9MB) — `drop()`
+   returns memory to the process allocator, not the OS, and macOS's `malloc` doesn't eagerly return
+   millions of small fragmented `String` allocations, so the freed space is mostly silently reused
+   by the cache's own later growth rather than showing as a visible RSS drop. A real but modest
+   ~86MB reduction in final RSS (1960MB → 1874MB) was measured across two independent fresh
+   processes — not the ~516MB a naive "the Vec is gone" story predicts. This is very likely a
+   macOS-allocator artifact (Linux's `ptmalloc` typically returns large freed regions more
+   eagerly) but that is an unverified claim about the real deployment host, not a measured one.
+   What's guaranteed regardless of allocator behavior: no live reference to the full corpus exists
+   during the sweep's duration, a structural fact independent of what `ps` reports. The cache
+   remains the dominant driver of the ~1.9-2GB peak either way — an embedded KV store bounding
+   cache RSS by a page budget instead of corpus size (replacing the `HashMap` +
+   whole-file-bincode design) is the real lever for that number, tracked as a separate follow-up,
+   not attempted here.
  8. ~~`net-shield` integration — the precedence table and the shared `normalize()`, per module 6.~~
     **Done.** `packages/net-shield/src/blocklist.rs` — `BlocklistArtifact` (a `fst::Map<Mmap>` that
     owns the mapping, avoiding the plan's `Arc<Mmap>`-plus-`Map` self-reference while keeping the
