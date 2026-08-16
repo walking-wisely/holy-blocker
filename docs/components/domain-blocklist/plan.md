@@ -1083,7 +1083,21 @@ decision doc's [Distribution](../../decisions/domain-blocklist-sourcing.md#distr
    allowlist a real run needs (`--allow-license`) defaults, with a loud warning, to an unratified
    starting set (MIT, CC0-1.0, GPL-3.0, CC-BY-SA-4.0) — ratifying that list, including whether
    copyleft (GPL-3.0) inputs are acceptable for this project, is a human licensing decision this
-   code deliberately does not make silently.
+   code deliberately does not make silently; (7) ~~the sweep held its entire cache in memory and
+   wrote it to disk exactly once, at the end~~ **Done, in a follow-up pass, prompted by a real
+   ~14-hour VPS run with no checkpointing.** `sweep::CheckpointSink` + `--checkpoint-every` (default
+   10,000, rounding up to the next `--canary-every` chunk boundary, since only a canary-validated
+   chunk is trustworthy enough to persist) periodically flushes the accumulated cache via
+   `cache_store::save` mid-sweep, so a crash loses at most one interval instead of the whole run — a
+   restart resumes for free through `due_for_check`'s existing TTL logic, no separate resume state
+   needed. A checkpoint failure aborts the sweep rather than logging and continuing. Also fixed in
+   the same pass: `due_domains` was a second full-corpus `Vec<String>` cloned alongside `entries`,
+   roughly doubling the resident set at multi-million-domain scale — replaced with a `Vec<usize>` of
+   indices, cloning only one chunk's worth of domain strings at a time. Holding the full merged
+   `Vec<MergedEntry>` in memory for the sweep's duration (~500-600MB at the measured 4.75M-domain
+   corpus size) is unchanged and not yet addressed — paging it from an on-disk intermediate file
+   would also require `build()`/`gates.rs`/`review_queue()` to stop assuming a resident `Vec`, which
+   is a larger change than this pass's scope.
  8. ~~`net-shield` integration — the precedence table and the shared `normalize()`, per module 6.~~
     **Done.** `packages/net-shield/src/blocklist.rs` — `BlocklistArtifact` (a `fst::Map<Mmap>` that
     owns the mapping, avoiding the plan's `Arc<Mmap>`-plus-`Map` self-reference while keeping the
