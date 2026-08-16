@@ -9,6 +9,8 @@
 #[cfg_attr(not(feature = "net"), allow(dead_code))]
 mod cache_store;
 mod cli;
+#[cfg_attr(not(feature = "net"), allow(dead_code))]
+mod entries_store;
 mod publish_policy;
 mod slots;
 #[cfg(feature = "net")]
@@ -670,16 +672,49 @@ async fn run_liveness(
     let mut checkpoint = CacheStoreCheckpoint {
         path: cli.cache.clone(),
     };
-    let outcome = sweep::run_sweep(
-        &entries,
+
+    // `entries` is never resident during the sweep: written once to a scratch file, then dropped,
+    // so a multi-hour sweep doesn't hold the full merged corpus in memory the whole time — see
+    // `entries_store`'s doc comment. Reconstructed after the sweep from the same file (filtered by
+    // `pruned_domains`) below, since gates/`build()` run in seconds and can afford to hold it.
+    let scratch_path = std::env::temp_dir().join(format!(
+        "domain-blocklist-entries-{}.bin",
+        std::process::id()
+    ));
+    entries_store::write(&scratch_path, &entries)
+        .context("failed to write the entry corpus scratch file")?;
+    drop(entries);
+
+    let primary = domain_blocklist::liveness::HickoryDnsLookup::new(sweep_config.primary)
+        .map(std::sync::Arc::new)
+        .context("failed to start the primary DNS client")?;
+    let secondary = domain_blocklist::liveness::HickoryDnsLookup::new(sweep_config.secondary)
+        .map(std::sync::Arc::new)
+        .context("failed to start the secondary DNS client")?;
+
+    let sweep_result = sweep::run_sweep_streaming(
+        &scratch_path,
         cache,
         &canary,
         &sweep_config,
         now,
+        primary,
+        secondary,
         &mut checkpoint,
     )
     .await
-    .map_err(|e| anyhow::anyhow!("{e}"))?;
+    .map_err(|e| anyhow::anyhow!("{e}"));
+
+    let outcome = match sweep_result {
+        Ok(outcome) => outcome,
+        Err(e) => {
+            // The scratch file is only useful while a sweep might still read it; on failure
+            // there's nothing left to recover from it (the cache checkpoint already covers that).
+            let _ = std::fs::remove_file(&scratch_path);
+            return Err(e);
+        }
+    };
+
     tracing::info!(
         checked = outcome.checked_count,
         pruned = outcome.pruned_domains.len(),
@@ -693,68 +728,21 @@ async fn run_liveness(
         cache_store::save(path, &outcome.cache)?;
     }
 
-let report = domain_blocklist::negative_outcome_report(&outcome.cache);
-    Ok((
-        entries
-            .into_iter()
-            .filter(|e| !outcome.pruned_domains.contains(&e.domain))
-            .collect(),
-        report,
-    ))
-}
-
-/// Tallies `outcome.cache`'s verdicts into a log line naming each `Unknown` reason separately —
-/// operational visibility for a qps ramp, per the plan's own recorded finding that the aggregate
-/// `Unknown` rate alone hides which failure mode (`Timeout` vs. cross-resolver
-/// `UncorroboratedDead` vs. resolver-side `ServFail`/`NoData`) is actually driving degradation
-/// (see `docs/decisions/domain-blocklist-sourcing.md`'s "Measured 2026-08-15/16" section).
-#[cfg(feature = "net")]
-fn log_verdict_breakdown(cache: &HashMap<String, domain_blocklist::CacheEntry>) {
-    use domain_blocklist::{UnknownReason, Verdict};
-    let mut alive = 0u64;
-    let mut dead = 0u64;
-    let mut unknown_nodata = 0u64;
-    let mut unknown_servfail = 0u64;
-    let mut unknown_refused = 0u64;
-    let mut unknown_timeout = 0u64;
-    let mut unknown_malformed = 0u64;
-    let mut unknown_filtered = 0u64;
-    let mut unknown_uncorroborated_dead = 0u64;
-    let mut unknown_other = 0u64;
-    for entry in cache.values() {
-        match &entry.verdict {
-            Verdict::Alive => alive += 1,
-            Verdict::Dead => dead += 1,
-            Verdict::Unknown(reason) => match reason {
-                UnknownReason::NoData => unknown_nodata += 1,
-                UnknownReason::ServFail => unknown_servfail += 1,
-                UnknownReason::Refused => unknown_refused += 1,
-                UnknownReason::Timeout => unknown_timeout += 1,
-                UnknownReason::Malformed => unknown_malformed += 1,
-                UnknownReason::FilteredByResolver => unknown_filtered += 1,
-                UnknownReason::UncorroboratedDead => unknown_uncorroborated_dead += 1,
-                _ => unknown_other += 1,
-            },
+let mut reader = entries_store::EntryReader::open(&scratch_path).context(
+        "failed to reopen the entry corpus scratch file to rebuild the pruned entry list",
+    )?;
+    let mut kept = Vec::new();
+    while let Some(entry) = reader.next()? {
+        if !outcome.pruned_domains.contains(&entry.domain) {
+            kept.push(entry);
         }
     }
-    let total = cache.len().max(1) as f64;
-    tracing::info!(
-        alive,
-        dead,
-        unknown_nodata,
-        unknown_servfail,
-        unknown_refused,
-        unknown_timeout,
-        unknown_malformed,
-        unknown_filtered,
-        unknown_uncorroborated_dead,
-        unknown_other,
-        unknown_pct = format!(
-            "{:.4}",
-            (cache.len() - alive as usize - dead as usize) as f64 / total * 100.0
-        ),
-        "verdict breakdown"
-    );
+    let _ = std::fs::remove_file(&scratch_path);
+
+    Ok((
+        kept,
+        domain_blocklist::negative_outcome_report(&outcome.cache),
+    ))
 }
 
 /// Tallies `outcome.cache`'s verdicts into a log line naming each `Unknown` reason separately —
