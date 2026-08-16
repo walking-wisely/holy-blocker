@@ -35,9 +35,12 @@ pub struct Cli {
     #[arg(long, default_value = "blocklist-output")]
     pub output: PathBuf,
 
-    /// Persistent liveness cache file (bincode). Real (non-dry, non-`--skip-liveness`) runs
-    /// require this — "a sweep that cannot persist must not run," since losing verified `Dead`
-    /// verdicts silently is how a dead domain re-enters a future signed artifact.
+    /// Persistent liveness cache file — a redb database (see `cache_store::CacheStore`), not the
+    /// legacy single bincode blob. Real (non-dry, non-`--skip-liveness`) runs require this — "a
+    /// sweep that cannot persist must not run," since losing verified `Dead` verdicts silently is
+    /// how a dead domain re-enters a future signed artifact. There is no automatic converter from
+    /// an old bincode `cache.bin` — per `cache_store`'s own doc comment, a deployment switching
+    /// to this starts one cold sweep rather than migrating stale state.
     #[arg(long)]
     pub cache: Option<PathBuf>,
 
