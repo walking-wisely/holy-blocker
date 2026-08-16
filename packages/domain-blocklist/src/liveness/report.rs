@@ -32,6 +32,26 @@ impl NegativeOutcomeReport {
     pub fn total(&self) -> usize {
         self.dead.len() + self.unknown_by_reason.values().map(Vec::len).sum::<usize>()
     }
+
+    pub fn record(&mut self, domain: &str, entry: &CacheEntry) {
+        match entry.verdict {
+            Verdict::Alive => {}
+            Verdict::Dead => self.dead.push(domain.to_string()),
+            Verdict::Unknown(reason) => self
+                .unknown_by_reason
+                .entry(format!("{reason:?}"))
+                .or_default()
+                .push(domain.to_string()),
+        }
+    }
+
+    /// Sorts every list; call once after the last [`record`](Self::record).
+    pub fn finish(&mut self) {
+        self.dead.sort();
+        for domains in self.unknown_by_reason.values_mut() {
+            domains.sort();
+        }
+    }
 }
 
 /// Builds a [`NegativeOutcomeReport`] from a sweep's finished cache. Pure — takes the already-
@@ -40,22 +60,9 @@ impl NegativeOutcomeReport {
 pub fn negative_outcome_report(cache: &HashMap<String, CacheEntry>) -> NegativeOutcomeReport {
     let mut report = NegativeOutcomeReport::default();
     for (domain, entry) in cache {
-        match entry.verdict {
-            Verdict::Alive => {}
-            Verdict::Dead => report.dead.push(domain.clone()),
-            Verdict::Unknown(reason) => {
-                report
-                    .unknown_by_reason
-                    .entry(format!("{reason:?}"))
-                    .or_default()
-                    .push(domain.clone());
-            }
-        }
+        report.record(domain, entry);
     }
-    report.dead.sort();
-    for domains in report.unknown_by_reason.values_mut() {
-        domains.sort();
-    }
+    report.finish();
     report
 }
 

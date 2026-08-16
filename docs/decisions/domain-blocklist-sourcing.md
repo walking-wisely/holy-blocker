@@ -759,10 +759,30 @@ matters on a VPS shared with unrelated workloads whose own memory demand can gro
   400μs–17ms cold-fault lookups measured above) than visiting them in whatever order the corpus
   happened to be merged in, at no cost beyond sorting the due list once per sweep.
 
-This section documents the decision and the measurements backing it; the implementation itself
-(swapping `cache_store.rs`'s `HashMap`-based `load`/`save` for a redb-backed store, wiring batched
-commits into `sweep::CheckpointSink`, and adding a compaction cadence) is tracked as the next module
-7 follow-up in `docs/components/domain-blocklist/plan.md`, not yet built.
+This section documents the decision and the measurements backing it; the implementation
+(`cache_store::CacheStore`, `CacheBackend`, and a `CacheBackend`-generic `sweep::run_sweep_streaming`)
+is built — see `docs/components/domain-blocklist/plan.md`'s module 7 entry for what shipped and the
+one narrowing it cost (a dry run can no longer cheaply seed itself from an existing cache file's
+exact prior state, so it always starts cold now).
+
+**Measured 2026-08-16, same day: the stress-harness comparison, and why it undershoots this
+section's VPS figure.** Running the streaming sweep's own 4.8M-synthetic-domain stress test
+(`sweep::tests::stress_test_streaming_sweep_avoids_holding_the_full_corpus`, already in this repo)
+both ways — a `HashMap`-backed cache and a `CacheStore`-backed one, same process shape, same machine
+— gives final RSS 1353.8MB vs. 1126.7MB: a real ~17% reduction, not the ~5x this section's own
+production-VPS measurement (2.71GB → an estimated 500MB–1GB) projected. The redb file itself
+measured 514.0MB on disk, matching this section's independent ~515MB figure closely, so the
+on-disk encoding is behaving as measured — the gap is in *resident* memory, not the data size. The
+likely explanation: this stress test writes and reads the entire cache inside one continuous
+process with no other memory pressure, so the OS has no reason to reclaim the pages redb just wrote
+(dirty/recently-touched mmap pages stay resident until something evicts them); the 5x figure above
+was reasoned from a real multi-hour sweep on a *shared-tenant* VPS, where other tenants' memory
+demand gives the kernel both a reason and an opportunity to reclaim colder pages the synthetic
+single-process harness never creates. This is the same class of gap the streaming-corpus pass
+already flagged between a macOS development machine and the Linux VPS deployment target — recorded
+here as unverified against the real host, not reconciled into a bigger number by argument. A real
+multi-hour sweep against the production VPS, under its actual co-tenant memory pressure, is the only
+way to confirm which figure the real deployment sees.
 
 #### Egress: a documented estimate, not a measurement
 
