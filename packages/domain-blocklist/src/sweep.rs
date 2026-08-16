@@ -21,6 +21,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::cache_store::CacheBackend;
 use domain_blocklist::liveness::{HickoryDnsLookup, ResolverConfig};
 use domain_blocklist::{
     CacheEntry, CanaryConfig, LookupResult, MergedEntry, RecordType, Timestamp, UnknownReason,
@@ -101,10 +102,12 @@ impl CheckpointSink for NoCheckpoint {
 }
 
 /// What one sweep run produced: the updated cache (every entry it touched) and which domains, of
-/// those the caller asked about, are now pruned.
+/// those the caller asked about, are now pruned. Generic over [`CacheBackend`] so
+/// [`run_sweep_streaming`] can return a [`crate::cache_store::CacheStore`] as easily as the plain
+/// `HashMap` [`run_sweep`]/[`run_sweep_with_resolvers`] still use.
 #[derive(Debug)]
-pub struct SweepOutcome {
-    pub cache: HashMap<String, CacheEntry>,
+pub struct SweepOutcome<C> {
+    pub cache: C,
     pub pruned_domains: std::collections::BTreeSet<String>,
     pub checked_count: usize,
 }
@@ -227,7 +230,7 @@ pub async fn run_sweep(
     config: &SweepConfig,
     now: Timestamp,
     checkpoint: &mut impl CheckpointSink,
-) -> Result<SweepOutcome, SweepError> {
+) -> Result<SweepOutcome<HashMap<String, CacheEntry>>, SweepError> {
     let primary = Arc::new(HickoryDnsLookup::new(config.primary)?);
     let secondary = Arc::new(HickoryDnsLookup::new(config.secondary)?);
     run_sweep_with_resolvers(
@@ -240,9 +243,9 @@ pub async fn run_sweep(
 /// `config.qps`, bounded by `config.concurrency`) and writes every result into `cache`. Shared by
 /// [`run_sweep_with_resolvers`] and [`run_sweep_streaming`] so their DNS/cache logic — the part
 /// that decides what a domain's verdict is — can't drift apart between the two drivers.
-async fn process_batch<L: AsyncDnsLookup>(
+async fn process_batch<L: AsyncDnsLookup, C: CacheBackend>(
     batch: Vec<String>,
-    cache: &mut HashMap<String, CacheEntry>,
+    cache: &mut C,
     now: Timestamp,
     config: &SweepConfig,
     primary: &Arc<L>,
@@ -267,7 +270,7 @@ async fn process_batch<L: AsyncDnsLookup>(
 
     let checked = results.len();
     for (domain, verdict) in results {
-        let entry_before = cache.get(&domain).copied().unwrap_or(CacheEntry {
+        let entry_before = cache.get(&domain).unwrap_or(CacheEntry {
             last_checked: 0,
             verdict: Verdict::Unknown(UnknownReason::NoData),
             first_dead_at: None,
@@ -276,7 +279,7 @@ async fn process_batch<L: AsyncDnsLookup>(
             Verdict::Dead => Some(entry_before.first_dead_at.unwrap_or(now)),
             _ => None,
         };
-        cache.insert(
+        cache.set(
             domain,
             CacheEntry {
                 last_checked: now,
@@ -307,7 +310,7 @@ pub async fn run_sweep_with_resolvers<L: AsyncDnsLookup>(
     primary: Arc<L>,
     secondary: Arc<L>,
     checkpoint: &mut impl CheckpointSink,
-) -> Result<SweepOutcome, SweepError> {
+) -> Result<SweepOutcome<HashMap<String, CacheEntry>>, SweepError> {
     if let Err((resolver, detail)) = canary_pass_both(&*primary, &*secondary, canary).await {
         return Err(SweepError::InitialCanaryFailed { resolver, detail });
     }
@@ -384,16 +387,22 @@ pub async fn run_sweep_with_resolvers<L: AsyncDnsLookup>(
 /// independent second pass. Memory cost is bounded by batch size, not corpus size — `entries`
 /// only ever needs sequential access (see `entries_store`'s own doc comment), so a plain reopened
 /// file reader is sufficient; there is no random access to serve.
-pub async fn run_sweep_streaming<L: AsyncDnsLookup>(
+///
+/// Generic over [`CacheBackend`] (unlike [`run_sweep_with_resolvers`], kept `HashMap`-only for
+/// tests/small-corpus callers) so `cache` can be a [`crate::cache_store::CacheStore`] — the whole
+/// point being that *this* function, the one `main.rs` actually calls for a real run, never has to
+/// hold the full multi-million-entry cache as a live `HashMap` either. Checkpointing is therefore
+/// just `cache.flush()` at each chunk boundary rather than a separate [`CheckpointSink`] callback —
+/// `HashMap`'s `flush` is a no-op, so a `HashMap`-backed streaming sweep costs nothing extra.
+pub async fn run_sweep_streaming<L: AsyncDnsLookup, C: CacheBackend>(
     entries_path: &std::path::Path,
-    mut cache: HashMap<String, CacheEntry>,
+    mut cache: C,
     canary: &CanaryConfig,
     config: &SweepConfig,
     now: Timestamp,
     primary: Arc<L>,
     secondary: Arc<L>,
-    checkpoint: &mut impl CheckpointSink,
-) -> Result<SweepOutcome, SweepError> {
+) -> Result<SweepOutcome<C>, SweepError> {
     if let Err((resolver, detail)) = canary_pass_both(&*primary, &*secondary, canary).await {
         return Err(SweepError::InitialCanaryFailed { resolver, detail });
     }
@@ -414,7 +423,7 @@ pub async fn run_sweep_streaming<L: AsyncDnsLookup>(
                 .map_err(|e| SweepError::EntriesReadFailed(e.to_string()))?
             {
                 Some(entry) => {
-                    if due_for_check(cache.get(&entry.domain), now, config.ttl_seconds) {
+                    if due_for_check(cache.get(&entry.domain).as_ref(), now, config.ttl_seconds) {
                         batch.push(entry.domain);
                     }
                 }
@@ -441,13 +450,10 @@ pub async fn run_sweep_streaming<L: AsyncDnsLookup>(
             }
 
             if config.checkpoint_every > 0 && since_checkpoint >= config.checkpoint_every {
-                checkpoint
-                    .checkpoint(&cache)
-                    .await
-                    .map_err(|e| SweepError::CheckpointFailed {
-                        checked_before_failure: checked,
-                        detail: e.to_string(),
-                    })?;
+                cache.flush().map_err(|e| SweepError::CheckpointFailed {
+                    checked_before_failure: checked,
+                    detail: e.to_string(),
+                })?;
                 since_checkpoint = 0;
             }
         }
@@ -455,6 +461,20 @@ pub async fn run_sweep_streaming<L: AsyncDnsLookup>(
         if eof {
             break;
         }
+    }
+
+    // Whatever's still buffered from the last (sub-`checkpoint_every`) chunk must land on disk
+    // before the pruning scan reads `cache` — `CacheBackend::get` only checks the pending buffer
+    // on the same live handle, but the caller's next process (a real restart) would not see it.
+    // Gated on `checkpoint_every > 0`, the same signal `main.rs` derives from "dry run or no
+    // `--cache`": a caller that deliberately disabled checkpointing (dry run) must not have this
+    // final flush silently persist anyway — `HashMap`'s `flush` is a no-op regardless, so this
+    // only matters for a real `CacheStore`.
+    if config.checkpoint_every > 0 {
+        cache.flush().map_err(|e| SweepError::CheckpointFailed {
+            checked_before_failure: checked,
+            detail: e.to_string(),
+        })?;
     }
 
     let mut pruned_domains = std::collections::BTreeSet::new();
@@ -466,7 +486,7 @@ pub async fn run_sweep_streaming<L: AsyncDnsLookup>(
     {
         if let Some(cached) = cache.get(&entry.domain)
             && should_prune_with_hysteresis(
-                cached,
+                &cached,
                 &entry.domain,
                 cached.verdict,
                 now,
@@ -851,7 +871,6 @@ mod tests {
             1_000_000,
             Arc::clone(&resolver),
             Arc::clone(&resolver),
-            &mut NoCheckpoint,
         )
         .await
         .unwrap();
@@ -859,6 +878,35 @@ mod tests {
         assert_eq!(slice_outcome.cache, stream_outcome.cache);
         assert_eq!(slice_outcome.pruned_domains, stream_outcome.pruned_domains);
         assert_eq!(slice_outcome.checked_count, stream_outcome.checked_count);
+    }
+
+    /// A [`CacheBackend`] wrapping a plain `HashMap` but counting `flush` calls — the seam
+    /// `run_sweep_streaming` now uses for checkpointing (`cache.flush()` at each chunk boundary,
+    /// per its own doc comment) in place of the old `CheckpointSink` callback `run_sweep_streaming`
+    /// no longer takes.
+    #[derive(Default)]
+    struct FlushCountingCache {
+        inner: HashMap<String, CacheEntry>,
+        flush_calls: Vec<usize>,
+    }
+
+    impl CacheBackend for FlushCountingCache {
+        fn get(&self, domain: &str) -> Option<CacheEntry> {
+            CacheBackend::get(&self.inner, domain)
+        }
+
+        fn set(&mut self, domain: String, entry: CacheEntry) {
+            CacheBackend::set(&mut self.inner, domain, entry);
+        }
+
+        fn flush(&mut self) -> anyhow::Result<()> {
+            self.flush_calls.push(self.inner.len());
+            Ok(())
+        }
+
+        fn for_each(&mut self, f: &mut dyn FnMut(&CacheEntry)) -> anyhow::Result<()> {
+            CacheBackend::for_each(&mut self.inner, f)
+        }
     }
 
     #[tokio::test]
@@ -885,24 +933,24 @@ mod tests {
         let mut cfg = config();
         cfg.canary_every = 2;
         cfg.checkpoint_every = 3;
-        let mut sink = FakeCheckpointSink::default();
 
         let outcome = run_sweep_streaming(
             &path,
-            HashMap::new(),
+            FlushCountingCache::default(),
             &canary(),
             &cfg,
             1_000_000,
             Arc::clone(&resolver),
             Arc::clone(&resolver),
-            &mut sink,
         )
         .await
         .unwrap();
 
         assert_eq!(outcome.checked_count, 4);
-        // 2 chunks of 2; threshold 3 is only crossed after the 2nd chunk.
-        assert_eq!(sink.calls, vec![4]);
+        // 2 chunks of 2; threshold 3 is only crossed after the 2nd chunk. The unconditional final
+        // flush (everything's already flushed by then, so it's a second call with the same count,
+        // not a no-op skip) is the second entry.
+        assert_eq!(outcome.cache.flush_calls, vec![4, 4]);
     }
 
     #[tokio::test]
@@ -933,7 +981,6 @@ mod tests {
             1_000_000,
             Arc::clone(&resolver),
             Arc::clone(&resolver),
-            &mut NoCheckpoint,
         )
         .await;
 
@@ -1281,11 +1328,6 @@ mod tests {
         cfg.checkpoint_every = 400_000;
 
         let resolver = Arc::new(DeterministicResolver);
-        let mut sink = MeasuringCheckpointSink {
-            path: dir.path().join("cache.bin"),
-            started: std::time::Instant::now(),
-            checkpoints: 0,
-        };
 
         let outcome = run_sweep_streaming(
             &entries_path,
@@ -1295,17 +1337,83 @@ mod tests {
             1_000_000,
             Arc::clone(&resolver),
             Arc::clone(&resolver),
-            &mut sink,
         )
         .await
         .expect("DeterministicResolver's canary controls always answer correctly");
 
         println!(
-            "[stress] done: checked={} pruned={} rss_final={:.1} MB checkpoints={}",
+            "[stress] done: checked={} pruned={} rss_final={:.1} MB",
             outcome.checked_count,
             outcome.pruned_domains.len(),
             current_rss_mb(),
-            sink.checkpoints,
+        );
+        assert_eq!(outcome.checked_count, N);
+    }
+
+    /// Same corpus, same size, but the cache itself is now [`crate::cache_store::CacheStore`]
+    /// (redb) instead of a resident `HashMap` — the module 7 follow-up the two stress tests above
+    /// predate. Answers the question this session exists to answer: does the cache's own RSS
+    /// actually stay bounded now, not just the entry corpus (already handled by streaming above).
+    #[tokio::test]
+    #[ignore = "long-running, memory-focused — run explicitly with `cargo test --bin domain-blocklist \
+                --features cli,net --release -- --ignored --nocapture stress_test_streaming_sweep_with_redb_cache_bounds_rss`"]
+    async fn stress_test_streaming_sweep_with_redb_cache_bounds_rss() {
+        const N: usize = 4_800_000;
+
+        println!(
+            "[stress] rss before building entries: {:.1} MB",
+            current_rss_mb()
+        );
+        let entries: Vec<MergedEntry> = (0..N)
+            .map(|i| entry(&format!("domain-{i}.example")))
+            .collect();
+        println!(
+            "[stress] rss after building {N} entries: {:.1} MB",
+            current_rss_mb()
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        let entries_path = dir.path().join("entries.bin");
+        crate::entries_store::write(&entries_path, &entries).unwrap();
+        drop(entries);
+        println!(
+            "[stress] rss after writing to disk and dropping entries: {:.1} MB",
+            current_rss_mb()
+        );
+
+        let mut cfg = config();
+        cfg.qps = 2_000_000.0;
+        cfg.concurrency = 1000;
+        cfg.canary_every = 100_000;
+        cfg.checkpoint_every = 400_000;
+
+        let resolver = Arc::new(DeterministicResolver);
+        let cache = crate::cache_store::CacheStore::open(&dir.path().join("cache.redb")).unwrap();
+
+        let start = std::time::Instant::now();
+        let outcome = run_sweep_streaming(
+            &entries_path,
+            cache,
+            &canary(),
+            &cfg,
+            1_000_000,
+            Arc::clone(&resolver),
+            Arc::clone(&resolver),
+        )
+        .await
+        .expect("DeterministicResolver's canary controls always answer correctly");
+        let elapsed = start.elapsed();
+
+        let cache_file_bytes = std::fs::metadata(dir.path().join("cache.redb"))
+            .map(|m| m.len())
+            .unwrap_or(0);
+        println!(
+            "[stress] done: checked={} pruned={} elapsed={:.1}s rss_final={:.1} MB cache_file={:.1} MB",
+            outcome.checked_count,
+            outcome.pruned_domains.len(),
+            elapsed.as_secs_f64(),
+            current_rss_mb(),
+            cache_file_bytes as f64 / (1024.0 * 1024.0),
         );
         assert_eq!(outcome.checked_count, N);
     }

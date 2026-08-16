@@ -581,48 +581,72 @@ async fn run(cli: cli::Cli) -> Result<()> {
     Ok(())
 }
 
-/// [`sweep::CheckpointSink`] backed by [`cache_store::save`]. `path: None` means checkpointing is
-/// disabled for this run (`--dry-run` or no `--cache`) — `sweep::SweepConfig::checkpoint_every` is
-/// set to `0` in that case, so `checkpoint` never actually gets called, but the no-op fallback
-/// keeps this type total instead of panicking if that invariant is ever violated.
+/// The cache backend a real `run_liveness` picks between: a real [`cache_store::CacheStore`] when
+/// `--cache` names a path (the only durable, checkpointable choice), or a plain in-memory
+/// `HashMap` when it doesn't (`--dry-run` with no `--cache` — results are never persisted anyway,
+/// per this function's own bail-out for the non-dry-run/no-`--cache` case). One enum rather than
+/// two separate `run_liveness` bodies, since `sweep::run_sweep_streaming` only needs one concrete
+/// [`cache_store::CacheBackend`] type per call.
 #[cfg(feature = "net")]
-struct CacheStoreCheckpoint {
-    path: Option<std::path::PathBuf>,
+enum LivenessCache {
+    Redb(cache_store::CacheStore),
+    Memory(HashMap<String, domain_blocklist::CacheEntry>),
 }
 
 #[cfg(feature = "net")]
-impl sweep::CheckpointSink for CacheStoreCheckpoint {
-    async fn checkpoint(
-        &mut self,
-        cache: &HashMap<String, domain_blocklist::CacheEntry>,
-    ) -> Result<()> {
-        let Some(path) = &self.path else {
-            return Ok(());
-        };
-        cache_store::save(path, cache)?;
-        tracing::info!(cached = cache.len(), path = %path.display(), "checkpointed liveness cache");
-        Ok(())
+impl cache_store::CacheBackend for LivenessCache {
+    fn get(&self, domain: &str) -> Option<domain_blocklist::CacheEntry> {
+        match self {
+            Self::Redb(store) => store.get(domain),
+            Self::Memory(map) => cache_store::CacheBackend::get(map, domain),
+        }
+    }
+
+    fn set(&mut self, domain: String, entry: domain_blocklist::CacheEntry) {
+        match self {
+            Self::Redb(store) => store.set(domain, entry),
+            Self::Memory(map) => cache_store::CacheBackend::set(map, domain, entry),
+        }
+    }
+
+    fn flush(&mut self) -> anyhow::Result<()> {
+        match self {
+            Self::Redb(store) => store.flush(),
+            Self::Memory(map) => cache_store::CacheBackend::flush(map),
+        }
+    }
+
+    fn for_each(&mut self, f: &mut dyn FnMut(&domain_blocklist::CacheEntry)) -> anyhow::Result<()> {
+        match self {
+            Self::Redb(store) => store.for_each(f),
+            Self::Memory(map) => cache_store::CacheBackend::for_each(map, f),
+        }
     }
 }
 
 #[cfg(feature = "net")]
 async fn run_liveness(cli: &cli::Cli, entries: Vec<MergedEntry>) -> Result<Vec<MergedEntry>> {
-    let cache = match &cli.cache {
-        Some(path) => cache_store::load(path)?,
-        None => {
-            if !cli.dry_run {
-                bail!(
-                    "refusing a real (non-dry-run) liveness sweep with no --cache: a sweep that \
-                     cannot persist loses every verified Dead verdict, so the quarantine window \
-                     can never elapse and no domain is ever pruned — pass --cache, or add \
-                     --dry-run/--skip-liveness"
-                );
-            }
-            tracing::warn!(
-                "no --cache given: the liveness sweep runs with no prior state and its results are not persisted"
+    let cache = if cli.dry_run {
+        // A dry run must never write `--cache` back (its own doc comment: "do not persist
+        // `--cache`"), and `CacheBackend::for_each` — the only redb-wide read this module has —
+        // doesn't hand back domain keys, only entries, so there's no cheap way to seed an
+        // in-memory `HashMap` from an existing redb file's exact contents here. A dry run
+        // therefore always starts from an empty in-memory cache: every domain reads as due, which
+        // only affects *this preview run's* liveness decisions, not the real cache file (untouched
+        // either way) or the publish gates a dry run exists to preview. Narrower than the old
+        // bincode-`HashMap` `load`, which did seed dry runs from real prior state — recorded here
+        // rather than silently changed.
+        LivenessCache::Memory(HashMap::new())
+    } else {
+        let Some(path) = &cli.cache else {
+            bail!(
+                "refusing a real (non-dry-run) liveness sweep with no --cache: a sweep that \
+                 cannot persist loses every verified Dead verdict, so the quarantine window \
+                 can never elapse and no domain is ever pruned — pass --cache, or add \
+                 --dry-run/--skip-liveness"
             );
-            Default::default()
-        }
+        };
+        LivenessCache::Redb(cache_store::CacheStore::open(path)?)
     };
 
     if cli.canary_alive.is_empty() || cli.canary_dead.is_empty() {
@@ -657,9 +681,6 @@ async fn run_liveness(cli: &cli::Cli, entries: Vec<MergedEntry>) -> Result<Vec<M
     };
 
     let now = now_timestamp();
-    let mut checkpoint = CacheStoreCheckpoint {
-        path: cli.cache.clone(),
-    };
 
     // `entries` is never resident during the sweep: written once to a scratch file, then dropped,
     // so a multi-hour sweep doesn't hold the full merged corpus in memory the whole time — see
@@ -688,7 +709,6 @@ async fn run_liveness(cli: &cli::Cli, entries: Vec<MergedEntry>) -> Result<Vec<M
         now,
         primary,
         secondary,
-        &mut checkpoint,
     )
     .await
     .map_err(|e| anyhow::anyhow!("{e}"));
@@ -703,17 +723,23 @@ async fn run_liveness(cli: &cli::Cli, entries: Vec<MergedEntry>) -> Result<Vec<M
         }
     };
 
+    let mut outcome = outcome;
     tracing::info!(
         checked = outcome.checked_count,
         pruned = outcome.pruned_domains.len(),
         "liveness sweep complete"
     );
-    log_verdict_breakdown(&outcome.cache);
+    log_verdict_breakdown(&mut outcome.cache)?;
 
+    // `LivenessCache::Redb`'s durability is `run_sweep_streaming`'s own final `flush()` (real
+    // runs only — `config.checkpoint_every` is `0` for a dry run, so that flush is a no-op there,
+    // matching this function's own "a dry run never persists `--cache`" rule); `Memory` has
+    // nothing to persist. Nothing left to do here — kept only as the log line an operator greps
+    // for after a real run.
     if let Some(path) = &cli.cache
         && !cli.dry_run
     {
-        cache_store::save(path, &outcome.cache)?;
+        tracing::info!(path = %path.display(), "liveness cache persisted");
     }
 
     let mut reader = entries_store::EntryReader::open(&scratch_path).context(
@@ -736,8 +762,14 @@ async fn run_liveness(cli: &cli::Cli, entries: Vec<MergedEntry>) -> Result<Vec<M
 /// `UncorroboratedDead` vs. resolver-side `ServFail`/`NoData`) is actually driving degradation
 /// (see `docs/decisions/domain-blocklist-sourcing.md`'s "Measured 2026-08-15/16" section).
 #[cfg(feature = "net")]
-fn log_verdict_breakdown(cache: &HashMap<String, domain_blocklist::CacheEntry>) {
+/// Generic over [`cache_store::CacheBackend`] — `for_each` (rather than `.values()`) is what lets
+/// this walk a [`cache_store::CacheStore`]'s redb table as a sequential, page-at-a-time scan
+/// instead of requiring the cache to already be a resident `HashMap`, the whole point of this
+/// module's redb follow-up.
+#[cfg(feature = "net")]
+fn log_verdict_breakdown(cache: &mut impl cache_store::CacheBackend) -> Result<()> {
     use domain_blocklist::{UnknownReason, Verdict};
+    let mut total = 0u64;
     let mut alive = 0u64;
     let mut dead = 0u64;
     let mut unknown_nodata = 0u64;
@@ -748,7 +780,8 @@ fn log_verdict_breakdown(cache: &HashMap<String, domain_blocklist::CacheEntry>) 
     let mut unknown_filtered = 0u64;
     let mut unknown_uncorroborated_dead = 0u64;
     let mut unknown_other = 0u64;
-    for entry in cache.values() {
+    cache.for_each(&mut |entry| {
+        total += 1;
         match &entry.verdict {
             Verdict::Alive => alive += 1,
             Verdict::Dead => dead += 1,
@@ -763,8 +796,8 @@ fn log_verdict_breakdown(cache: &HashMap<String, domain_blocklist::CacheEntry>) 
                 _ => unknown_other += 1,
             },
         }
-    }
-    let total = cache.len().max(1) as f64;
+    })?;
+    let total_f = (total.max(1)) as f64;
     tracing::info!(
         alive,
         dead,
@@ -776,12 +809,10 @@ fn log_verdict_breakdown(cache: &HashMap<String, domain_blocklist::CacheEntry>) 
         unknown_filtered,
         unknown_uncorroborated_dead,
         unknown_other,
-        unknown_pct = format!(
-            "{:.4}",
-            (cache.len() - alive as usize - dead as usize) as f64 / total * 100.0
-        ),
+        unknown_pct = format!("{:.4}", (total - alive - dead) as f64 / total_f * 100.0),
         "verdict breakdown"
     );
+    Ok(())
 }
 
 #[cfg(not(feature = "net"))]

@@ -1121,18 +1121,37 @@ decision doc's [Distribution](../../decisions/domain-blocklist-sourcing.md#distr
    during the sweep's duration, a structural fact independent of what `ps` reports. The cache
    remains the dominant driver of the ~1.9-2GB peak either way — an embedded KV store bounding
    cache RSS by a page budget instead of corpus size (replacing the `HashMap` +
-   whole-file-bincode design) is the real lever for that number. **Now spec'd, not yet built**:
-   `docs/decisions/domain-blocklist-sourcing.md`'s "Measured 2026-08-16: the cache's in-process
-   representation — redb, not a `HashMap` blob" section measures the actual production VPS (RAM,
-   real `O_DIRECT` disk-latency percentiles, real corpus) and a real redb file built from the
-   project's actual pinned sources (4,767,348 domains → 515MB compacted, vs. 2.71GB observed live
-   for the current in-memory `HashMap`). The follow-up implementation swaps `cache_store.rs`'s
-   `HashMap`-based `load`/`save` for a redb-backed store with batched write transactions (one
-   commit per `--checkpoint-every` chunk, not per domain), needs a periodic compaction cadence
-   (515MB is a freshly-compacted single-writer measurement, not a steady-state-after-churn one —
-   unmeasured, flagged as an open gap in that section), an explicit decision on migrating or
-   discarding the existing bincode `cache.bin` format, and should take the free win of sorting the
-   due-list traversal into key order first, for B-tree page locality.
+   whole-file-bincode design) is the real lever for that number. ~~Now spec'd, not yet built~~
+   **Built.** `docs/decisions/domain-blocklist-sourcing.md`'s "Measured 2026-08-16: the cache's
+   in-process representation — redb, not a `HashMap` blob" section measured the actual production
+   VPS (RAM, real `O_DIRECT` disk-latency percentiles, real corpus) and a real redb file built from
+   the project's actual pinned sources (4,767,348 domains → 515MB compacted, vs. 2.71GB observed
+   live for the then-current in-memory `HashMap`). `cache_store::CacheStore` is now the redb-backed
+   store that section speced: a single-file mmap-backed table (domain → bincode `CacheEntryDto`,
+   the same DTO `load`/`save` already used, kept unchanged for tests/small-corpus callers) behind a
+   new `CacheBackend` trait, with `set` buffering into an in-memory pending map and `flush`
+   committing one batched write transaction — sorted by key first, the free B-tree-locality win the
+   plan named — rather than one transaction per domain. `sweep::run_sweep_streaming` (the function
+   `main.rs` calls for a real run) is now generic over `CacheBackend`, so `main.rs` passes a real
+   `CacheStore` there instead of a resident `HashMap`; checkpointing is `cache.flush()` at each
+   `canary_every` boundary plus one final flush, gated on `checkpoint_every > 0` so a dry run (which
+   forces that to `0`) still never persists `--cache`. **On-disk migration was decided, not
+   discovered mid-migration, per this section's own instruction**: no automatic bincode→redb
+   converter was built, because no real production `cache.bin` exists to migrate — a deployment
+   switching to this starts one cold sweep. One real narrowing this decision costs: a dry run can no
+   longer cheaply seed itself from an existing cache file's exact prior state (`CacheBackend::for_each`
+   has no key-yielding variant to reconstruct a `HashMap` from), so a dry run now always starts
+   cold — recorded inline in `main.rs`, affecting only the dry-run preview path. **Measured against
+   the same 4.8M-synthetic-domain stress harness the streaming-corpus pass above used, same machine,
+   same process shape**: `HashMap`-backed streaming final RSS 1353.8MB vs. redb-backed 1126.7MB
+   (cache file 514.0MB on disk, matching this section's independent ~515MB measurement) — a real but
+   modest ~17% reduction, not the ~5x the production-VPS figure above projected. Reported honestly
+   rather than reconciled away: the likely cause is that a synthetic single-process stress test never
+   gives the OS a reason to reclaim the mmap pages redb just wrote, unlike a real multi-hour sweep on
+   a memory-pressured shared-tenant VPS — the same class of allocator/OS-behavior caveat the
+   streaming-corpus pass already flagged for macOS vs. the Linux VPS target, unverified against the
+   real host rather than assumed away. Periodic compaction cadence for steady-state churn remains
+   this section's own named open gap — still unmeasured, not built here.
  8. ~~`net-shield` integration — the precedence table and the shared `normalize()`, per module 6.~~
     **Done.** `packages/net-shield/src/blocklist.rs` — `BlocklistArtifact` (a `fst::Map<Mmap>` that
     owns the mapping, avoiding the plan's `Arc<Mmap>`-plus-`Map` self-reference while keeping the
