@@ -834,4 +834,193 @@ mod tests {
             "smoke sweep took {elapsed:?} — investigate before trusting this as a quick check"
         );
     }
+
+    /// Answers deterministically from the domain string itself (no stored per-domain table), so
+    /// this resolver costs no memory of its own regardless of corpus size — the point of the stress
+    /// test below is to isolate RAM growth to `entries`/`cache`, not incidentally add a second
+    /// multi-million-entry map to account for.
+    struct DeterministicResolver;
+
+    impl AsyncDnsLookup for DeterministicResolver {
+        async fn lookup_async(&self, domain: &str, _record: RecordType) -> LookupResult {
+            if domain == "alive.invalid" {
+                return LookupResult::Resolved(vec!["203.0.113.1".parse().unwrap()]);
+            }
+            if domain == "dead.invalid" {
+                return LookupResult::NxDomain {
+                    authenticated: false,
+                    extended_error: None,
+                };
+            }
+            let hash = domain
+                .bytes()
+                .fold(0u64, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u64));
+            if hash % 100 == 0 {
+                LookupResult::NxDomain {
+                    authenticated: false,
+                    extended_error: None,
+                }
+            } else {
+                LookupResult::Resolved(vec!["203.0.113.1".parse().unwrap()])
+            }
+        }
+    }
+
+    fn current_rss_mb() -> f64 {
+        let pid = std::process::id().to_string();
+        let output = std::process::Command::new("ps")
+            .args(["-o", "rss=", "-p", &pid])
+            .output()
+            .expect("`ps` should be available on macOS/Linux");
+        String::from_utf8_lossy(&output.stdout)
+            .trim()
+            .parse::<f64>()
+            .unwrap_or(0.0)
+            / 1024.0
+    }
+
+    struct MeasuringCheckpointSink {
+        path: std::path::PathBuf,
+        started: std::time::Instant,
+        checkpoints: usize,
+    }
+
+    impl CheckpointSink for MeasuringCheckpointSink {
+        async fn checkpoint(&mut self, cache: &HashMap<String, CacheEntry>) -> anyhow::Result<()> {
+            self.checkpoints += 1;
+            crate::cache_store::save(&self.path, cache)?;
+            let file_bytes = std::fs::metadata(&self.path).map(|m| m.len()).unwrap_or(0);
+            println!(
+                "[stress] checkpoint #{:>3}  t={:>7.1}s  cached={:>9}  rss={:>7.1} MB  cache_file={:>7.1} MB",
+                self.checkpoints,
+                self.started.elapsed().as_secs_f64(),
+                cache.len(),
+                current_rss_mb(),
+                file_bytes as f64 / (1024.0 * 1024.0),
+            );
+            Ok(())
+        }
+    }
+
+    /// No real network, no real ~4.75M-domain corpus fetch — this stands in for both with
+    /// [`DeterministicResolver`] and a synthetic `entries` vec, so it runs in seconds against
+    /// exactly the code path the real ~14h sweep runs, and reports RSS at every checkpoint. Answers
+    /// the question the change in this commit was made for: does the checkpointed cache actually
+    /// stay bounded, and does dropping the `due_domains` full-corpus clone actually show up in RSS.
+    #[tokio::test]
+    #[ignore = "long-running, memory-focused — run explicitly with `cargo test --bin domain-blocklist \
+                --features cli,net --release -- --ignored --nocapture stress_test_measures_memory_at_corpus_scale`"]
+    async fn stress_test_measures_memory_at_corpus_scale() {
+        const N: usize = 4_800_000; // matches the measured real merged-corpus size
+
+        println!(
+            "[stress] rss before building entries: {:.1} MB",
+            current_rss_mb()
+        );
+        let entries: Vec<MergedEntry> = (0..N)
+            .map(|i| entry(&format!("domain-{i}.example")))
+            .collect();
+        println!(
+            "[stress] rss after building {N} entries: {:.1} MB",
+            current_rss_mb()
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut cfg = config();
+        cfg.qps = 2_000_000.0;
+        cfg.concurrency = 1000;
+        cfg.canary_every = 100_000;
+        cfg.checkpoint_every = 400_000;
+
+        let resolver = Arc::new(DeterministicResolver);
+        let mut sink = MeasuringCheckpointSink {
+            path: dir.path().join("cache.bin"),
+            started: std::time::Instant::now(),
+            checkpoints: 0,
+        };
+
+        let outcome = run_sweep_with_resolvers(
+            &entries,
+            HashMap::new(),
+            &canary(),
+            &cfg,
+            1_000_000,
+            Arc::clone(&resolver),
+            Arc::clone(&resolver),
+            &mut sink,
+        )
+        .await
+        .expect("DeterministicResolver's canary controls always answer correctly");
+
+        println!(
+            "[stress] done: checked={} pruned={} rss_final={:.1} MB checkpoints={}",
+            outcome.checked_count,
+            outcome.pruned_domains.len(),
+            current_rss_mb(),
+            sink.checkpoints,
+        );
+        assert_eq!(outcome.checked_count, N);
+    }
+
+    /// Runs the same corpus through two sweeps sharing one cache file — the second constructed the
+    /// way a restart after a crash would be, by `cache_store::load`ing what the first checkpointed —
+    /// and asserts the second does zero DNS lookups. This is what "resume is free" actually means:
+    /// not a special resume code path, just `due_for_check`'s ordinary TTL logic seeing every domain
+    /// as already checked.
+    #[tokio::test]
+    #[ignore = "long-running — run explicitly with `cargo test --bin domain-blocklist --features cli,net \
+                --release -- --ignored --nocapture a_resumed_sweep_after_checkpointing_does_no_redundant_lookups`"]
+    async fn a_resumed_sweep_after_checkpointing_does_no_redundant_lookups() {
+        const N: usize = 500_000;
+        let entries: Vec<MergedEntry> = (0..N)
+            .map(|i| entry(&format!("domain-{i}.example")))
+            .collect();
+        let dir = tempfile::tempdir().unwrap();
+        let cache_path = dir.path().join("cache.bin");
+        let resolver = Arc::new(DeterministicResolver);
+        let mut cfg = config();
+        cfg.qps = 2_000_000.0;
+        cfg.concurrency = 1000;
+        cfg.canary_every = 100_000;
+        cfg.checkpoint_every = 100_000;
+        let now = 1_000_000;
+
+        let mut sink = MeasuringCheckpointSink {
+            path: cache_path.clone(),
+            started: std::time::Instant::now(),
+            checkpoints: 0,
+        };
+        let first = run_sweep_with_resolvers(
+            &entries,
+            HashMap::new(),
+            &canary(),
+            &cfg,
+            now,
+            Arc::clone(&resolver),
+            Arc::clone(&resolver),
+            &mut sink,
+        )
+        .await
+        .expect("first sweep should complete cleanly");
+        assert_eq!(first.checked_count, N);
+
+        // Simulates a restart: load exactly what the first run's last checkpoint persisted, and
+        // sweep the same corpus again at the same `now` — nothing should be due yet.
+        let resumed_cache = crate::cache_store::load(&cache_path).unwrap();
+        let mut resume_sink = FakeCheckpointSink::default();
+        let second = run_sweep_with_resolvers(
+            &entries,
+            resumed_cache,
+            &canary(),
+            &cfg,
+            now,
+            Arc::clone(&resolver),
+            Arc::clone(&resolver),
+            &mut resume_sink,
+        )
+        .await
+        .expect("resumed sweep should complete cleanly with nothing due");
+
+        assert_eq!(second.checked_count, 0);
+    }
 }
