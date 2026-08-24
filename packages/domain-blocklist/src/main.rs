@@ -51,7 +51,9 @@ fn main() {
     let rt = match tokio::runtime::Runtime::new() {
         Ok(rt) => rt,
         Err(e) => {
-            eprintln!("domain-blocklist: failed to start async runtime: {e}");
+            // `tracing` rather than `eprintln!` so a fatal error is timestamped and matches an
+            // `ERROR|WARN` grep over the log file.
+            tracing::error!("domain-blocklist: failed to start async runtime: {e}");
             std::process::exit(1);
         }
     };
@@ -59,7 +61,7 @@ fn main() {
     match rt.block_on(run(cli)) {
         Ok(()) => {}
         Err(e) => {
-            eprintln!("domain-blocklist: {e:#}");
+            tracing::error!("domain-blocklist: {e:#}");
             std::process::exit(1);
         }
     }
