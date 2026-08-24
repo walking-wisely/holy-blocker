@@ -167,15 +167,70 @@ async fn check_corroborated_async<L: AsyncDnsLookup>(
     corroborate(v1, v2)
 }
 
+/// How many times a canary control's check is retried when the *only* problem was a transient
+/// no-answer ([`UnknownReason::Timeout`]/[`UnknownReason::Transport`]) before the canary treats it
+/// as a real mismatch — see this constant's sibling [`CANARY_RETRY_GAP`] and
+/// [`is_transient_no_answer`] for the rest of the policy. Measured on the production VPS host
+/// this was written for (2026-08-24, `62.171.174.238`): 0 failures across two independent
+/// 500-query bursts at 150-way concurrency (matching the real run's `--concurrency`) against both
+/// 1.1.1.1 and 8.8.8.8 — an upper bound of ~0.6% per-attempt loss at 95% confidence (rule of
+/// three: `3/500`). The one real mid-sweep failure this retry exists for
+/// ([GitHub #40](https://github.com/walking-wisely/holy-blocker/issues/40)) was 1 timeout across
+/// roughly 870 canary DNS round-trips on that same host (~0.11%), consistent with that bound.
+/// Three independent attempts push the false-abort probability from ordinary packet loss down to
+/// roughly `0.006^3 ≈ 2e-7` per control check, while a resolver that is genuinely
+/// lying/filtering fails every attempt — that's a persistent condition of the resolver, not an
+/// independent per-attempt coin flip — so the sweep still aborts on it exactly as before, just
+/// `(CANARY_RETRY_ATTEMPTS - 1) * CANARY_RETRY_GAP` later.
+const CANARY_RETRY_ATTEMPTS: usize = 3;
+
+/// Gap between canary retry attempts. Long enough to look like an ordinary re-query rather than a
+/// retransmit storm; short enough that exhausting all [`CANARY_RETRY_ATTEMPTS`] costs at most
+/// ~1s per control, negligible against a multi-hour sweep.
+const CANARY_RETRY_GAP: Duration = Duration::from_millis(500);
+
+/// Whether a verdict represents "the resolver never answered", as opposed to "the resolver
+/// answered, and the answer was wrong" — the exact distinction
+/// [GitHub #40](https://github.com/walking-wisely/holy-blocker/issues/40) asks the canary to make.
+/// Only these two reasons mean no response was ever received to judge; every other `Unknown`
+/// reason (`ServFail`, `Refused`, `NoData`, `FilteredByResolver`, …) is the resolver actively
+/// responding, which is real evidence and must not be retried away.
+fn is_transient_no_answer(v: Verdict) -> bool {
+    matches!(
+        v,
+        Verdict::Unknown(UnknownReason::Timeout) | Verdict::Unknown(UnknownReason::Transport)
+    )
+}
+
+/// Checks one canary control against `resolver`, retrying only while the result so far is both
+/// wrong and a transient no-answer (see [`is_transient_no_answer`]) — a wrong-but-answered verdict
+/// (e.g. an alive control resolving `Dead`) returns immediately on the first attempt, since a
+/// retry there would only delay catching a genuinely lying/filtering resolver.
+async fn check_control_with_retry<L: AsyncDnsLookup>(
+    resolver: &L,
+    domain: &str,
+    expected: Verdict,
+) -> Verdict {
+    let mut v = check_async(resolver, domain).await;
+    let mut attempt = 1;
+    while v != expected && is_transient_no_answer(v) && attempt < CANARY_RETRY_ATTEMPTS {
+        tokio::time::sleep(CANARY_RETRY_GAP).await;
+        v = check_async(resolver, domain).await;
+        attempt += 1;
+    }
+    v
+}
+
 /// Async re-implementation of [`domain_blocklist::canary_check`]'s pass/fail evaluation against one
-/// resolver — same alive/dead-control equality rule, no policy divergence, just async-native.
+/// resolver — same alive/dead-control equality rule, no policy divergence, just async-native, plus
+/// the bounded transient-no-answer retry [`check_control_with_retry`] documents.
 async fn canary_pass_async<L: AsyncDnsLookup>(
     resolver: &L,
     canary: &CanaryConfig,
 ) -> Result<(), String> {
     let mut failures = Vec::new();
     for domain in &canary.alive_controls {
-        let v = check_async(resolver, domain).await;
+        let v = check_control_with_retry(resolver, domain, Verdict::Alive).await;
         if v != Verdict::Alive {
             failures.push(format!(
                 "alive control {domain:?} expected Alive, got {v:?}"
@@ -183,7 +238,7 @@ async fn canary_pass_async<L: AsyncDnsLookup>(
         }
     }
     for domain in &canary.dead_controls {
-        let v = check_async(resolver, domain).await;
+        let v = check_control_with_retry(resolver, domain, Verdict::Dead).await;
         if v != Verdict::Dead {
             failures.push(format!("dead control {domain:?} expected Dead, got {v:?}"));
         }
@@ -617,6 +672,123 @@ mod tests {
             vec!["dead.invalid".to_string()],
         )
         .expect("non-empty control lists")
+    }
+
+    /// A resolver whose answer for one named domain is `Unknown(Timeout)` for its first
+    /// [`fail_first_n`] calls (both A and AAAA, so `combine` can't route around it via the other
+    /// record type — see [`combine`]'s short-circuit-only-on-`Resolved` rule), then falls back to
+    /// a fixed steady-state answer. Every other configured domain answers a fixed result
+    /// throughout. Models GitHub #40's actual failure mode: an ordinary transient timeout on a
+    /// canary control, not a resolver that's actually lying.
+    struct TransientlyTimingOutControl {
+        flaky_domain: String,
+        steady_state: LookupResult,
+        fail_first_n: usize,
+        other_answers: StdHashMap<String, LookupResult>,
+        calls_so_far: std::sync::atomic::AtomicUsize,
+    }
+
+    impl AsyncDnsLookup for TransientlyTimingOutControl {
+        async fn lookup_async(&self, domain: &str, _record: RecordType) -> LookupResult {
+            if domain == self.flaky_domain {
+                let seen = self
+                    .calls_so_far
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                if seen < self.fail_first_n {
+                    return LookupResult::Unknown(UnknownReason::Timeout);
+                }
+                return self.steady_state.clone();
+            }
+            self.other_answers
+                .get(domain)
+                .cloned()
+                .unwrap_or_else(|| panic!("no configured answer for {domain:?}"))
+        }
+    }
+
+    fn always_alive_control_map() -> StdHashMap<String, LookupResult> {
+        let mut m = StdHashMap::new();
+        m.insert(
+            "alive.invalid".to_string(),
+            LookupResult::Resolved(vec!["203.0.113.1".parse().unwrap()]),
+        );
+        m
+    }
+
+    /// The core regression test for GitHub #40: a dead control that times out on its first two
+    /// checks (both under `CANARY_RETRY_ATTEMPTS`) but answers correctly on the third must not
+    /// fail the canary — the sweep proceeds exactly as if the control had answered cleanly the
+    /// first time.
+    #[tokio::test]
+    async fn a_dead_control_that_recovers_within_retry_budget_does_not_fail_the_canary() {
+        let resolver = Arc::new(TransientlyTimingOutControl {
+            flaky_domain: "dead.invalid".to_string(),
+            steady_state: LookupResult::NxDomain {
+                authenticated: false,
+                extended_error: None,
+            },
+            fail_first_n: 2 * (CANARY_RETRY_ATTEMPTS - 1), // A+AAAA per failed attempt
+            other_answers: always_alive_control_map(),
+            calls_so_far: std::sync::atomic::AtomicUsize::new(0),
+        });
+
+        let result = canary_pass_async(&*resolver, &canary()).await;
+
+        assert!(
+            result.is_ok(),
+            "a transient timeout that recovers within budget must not fail the canary: {result:?}"
+        );
+    }
+
+    /// The other half of the same regression: a control that times out on *every* attempt (a
+    /// resolver that's actually down, or genuinely lying by never answering) must still fail the
+    /// canary once the retry budget is exhausted — the fix bounds the retry, it doesn't remove
+    /// the abort.
+    #[tokio::test]
+    async fn a_dead_control_that_never_recovers_still_fails_the_canary_after_retries_exhaust() {
+        let resolver = Arc::new(TransientlyTimingOutControl {
+            flaky_domain: "dead.invalid".to_string(),
+            steady_state: LookupResult::NxDomain {
+                authenticated: false,
+                extended_error: None,
+            },
+            fail_first_n: usize::MAX,
+            other_answers: always_alive_control_map(),
+            calls_so_far: std::sync::atomic::AtomicUsize::new(0),
+        });
+
+        let result = canary_pass_async(&*resolver, &canary()).await;
+
+        assert!(
+            result.is_err(),
+            "a control that never answers must still fail the canary once retries exhaust"
+        );
+        // Exactly CANARY_RETRY_ATTEMPTS attempts were made (2 queries each: A + AAAA), not an
+        // unbounded retry loop.
+        assert_eq!(
+            resolver
+                .calls_so_far
+                .load(std::sync::atomic::Ordering::SeqCst),
+            2 * CANARY_RETRY_ATTEMPTS
+        );
+    }
+
+    /// A wrong-but-answered verdict (the resolver responded, and the response was wrong) must
+    /// fail immediately, on the first attempt — retrying here would only delay catching a
+    /// genuinely lying/filtering resolver, which is exactly the failure mode the canary exists to
+    /// catch. Distinguishes this from the two tests above, where the verdict was never actually
+    /// answered.
+    #[tokio::test]
+    async fn a_wrong_answer_fails_the_canary_immediately_without_retrying() {
+        let resolver = Arc::new(
+            FakeResolver::new()
+                .dead("alive.invalid") // wrong: an alive control resolving Dead
+                .dead("dead.invalid"),
+        );
+
+        let result = canary_pass_async(&*resolver, &canary()).await;
+
+        assert!(result.is_err());
     }
 
     #[tokio::test]

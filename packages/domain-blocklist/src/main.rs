@@ -51,7 +51,10 @@ fn main() {
     let rt = match tokio::runtime::Runtime::new() {
         Ok(rt) => rt,
         Err(e) => {
-            eprintln!("domain-blocklist: failed to start async runtime: {e}");
+            // Goes through `tracing`, not `eprintln!`, so a fatal error carries a timestamp and
+            // shows up in an `ERROR|WARN` grep over a real log file — see GitHub #40's secondary
+            // finding: a bare `eprintln!` here was silently invisible to normal log monitoring.
+            tracing::error!("domain-blocklist: failed to start async runtime: {e}");
             std::process::exit(1);
         }
     };
@@ -59,7 +62,7 @@ fn main() {
     match rt.block_on(run(cli)) {
         Ok(()) => {}
         Err(e) => {
-            eprintln!("domain-blocklist: {e:#}");
+            tracing::error!("domain-blocklist: {e:#}");
             std::process::exit(1);
         }
     }
