@@ -197,7 +197,7 @@ fn default_source_jobs() -> Vec<SourceJob> {
             config: SourceConfig {
                 source: SourceId::Ut1,
                 url: "https://dsi.ut-capitole.fr/blacklists/download/adult.tar.gz".to_string(),
-                pinned_revision: "last-modified=Sat, 15 Aug 2026 20:50:17 GMT".to_string(),
+                pinned_revision: "last-modified=Sun, 23 Aug 2026 20:50:16 GMT".to_string(),
                 expected_license: LicenseId("CC-BY-SA-4.0".to_string()),
             },
             category: Category::Adult,
@@ -208,7 +208,7 @@ fn default_source_jobs() -> Vec<SourceJob> {
             config: SourceConfig {
                 source: SourceId::Ut1,
                 url: "https://dsi.ut-capitole.fr/blacklists/download/gambling.tar.gz".to_string(),
-                pinned_revision: "last-modified=Sat, 15 Aug 2026 20:50:17 GMT".to_string(),
+                pinned_revision: "last-modified=Sun, 23 Aug 2026 20:50:16 GMT".to_string(),
                 expected_license: LicenseId("CC-BY-SA-4.0".to_string()),
             },
             category: Category::Gambling,
@@ -219,7 +219,7 @@ fn default_source_jobs() -> Vec<SourceJob> {
             config: SourceConfig {
                 source: SourceId::Ut1,
                 url: "https://dsi.ut-capitole.fr/blacklists/download/dating.tar.gz".to_string(),
-                pinned_revision: "last-modified=Sat, 15 Aug 2026 20:50:17 GMT".to_string(),
+                pinned_revision: "last-modified=Sun, 23 Aug 2026 20:50:16 GMT".to_string(),
                 expected_license: LicenseId("CC-BY-SA-4.0".to_string()),
             },
             category: Category::Dating,
