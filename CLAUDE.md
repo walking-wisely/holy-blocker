@@ -171,7 +171,57 @@ and leave the rest to them. An earlier request to hold does not carry over to la
 If a check fails or something in the work is genuinely blocked, that is not "complete": say so
 instead of opening a PR over it.
 
-## Verification Expectations
+## Tooling — Plan Management Scripts
+
+Internal Python tools under `tools/plan/` drive the worktree lifecycle and step-tracking. Run them
+from the repo root. **Always pull master before running any of these**:
+
+```
+git pull origin master
+```
+
+### Worktree lifecycle
+
+List worktrees and their classification (merged, abandoned, open, dirty, etc.):
+
+```
+python -m tools.plan.worktrees report
+```
+
+Reap merged/abandoned worktrees (dry run first, then add `--yes`):
+
+```
+python -m tools.plan.worktrees reap            # dry run
+python -m tools.plan.worktrees reap --yes      # actually remove
+python -m tools.plan.worktrees reap --yes --force   # also reap worktrees with ignored state
+```
+
+Branches are never deleted by the reaper — that decision is left to a human.
+
+### Pending-step discovery
+
+Scan every worktree for `steps.toml` manifests and report pending steps alongside each
+worktree's health state:
+
+```
+python -m tools.plan.todos               # pending steps only
+python -m tools.plan.todos --all         # all steps (pending + done)
+python -m tools.plan.todos --blockers    # only worktrees with issues (dirty, open, etc.)
+```
+
+### Per-package step ledger
+
+Validate that a package's `steps.toml` is consistent with its `plan.md`, render the step
+table, or find the next actionable step:
+
+```
+python -m tools.plan.ledger validate docs/components/text-policy
+python -m tools.plan.ledger render   docs/components/text-policy
+python -m tools.plan.ledger next     docs/components/text-policy
+```
+
+Run `validate` on any package whose steps you modify, and run `next` before starting a new
+implementation session to confirm what is unblocked.
 
 Before finishing a code change, run the narrowest relevant checks:
 
