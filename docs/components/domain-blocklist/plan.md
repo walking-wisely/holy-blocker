@@ -793,7 +793,7 @@ decision doc's [Distribution](../../decisions/domain-blocklist-sourcing.md#distr
    literal's `:`/`[`/`]` stay rejected, unchanged from before) but not underscore. Rerunning the
    same ~4.78M-domain merge afterward: `dropped_normalization_failed` 1029 → 0, all 1,027 distinct
    previously-rejected domains now present in the merged set. Consumed by `domain-blocklist`
-   (module 1+, done — see that row) and `net-shield` (module 6, done — see that row).
+   (module 1+, done — see that row) and `net-shield` (module 6, done — see that row). <!-- step: domain-blocklist.domain-normalize -->
 2. ~~`merge.rs` — pure functions (the union/provenance merge, scope resolution, category filtering,
    `flag_personal_name`) with no I/O. Test against hand-built `RawEntry` fixtures.~~ **Done.**
    `packages/domain-blocklist` created — `types.rs` defines `SourceId`, `Category` (`Adult`,
@@ -836,7 +836,7 @@ decision doc's [Distribution](../../decisions/domain-blocklist-sourcing.md#distr
    domain flagged `adult` by one source and `gambling` by another keeps both categories; the bare
    `example.com`/`www.example.com` pair stays two distinct entries with distinct scopes) and the
    review-driven regression tests above. Not yet consumed by `sources`, `gates`, or `fst_build`
-   (modules 1, 3, 4 — all still unbuilt).
+   (modules 1, 3, 4 — all still unbuilt). <!-- step: domain-blocklist.merge -->
 3. ~~`gates.rs` — pure functions against synthetic counts and key sets. Built early precisely because
    they are cheap, pure, and are what stops every category of bad build; leaving them for last means
    the first real run has no guardrail.~~ **Done, including an adversarial (Opus) review's fixes.**
@@ -896,7 +896,7 @@ decision doc's [Distribution](../../decisions/domain-blocklist-sourcing.md#distr
    percentage against the limit, capped at 20 named hits with a count of the remainder) rather than
    a bare boolean, per the plan's "refuses publication and requires explicit human sign-off"
    framing. 80 tests. Not yet consumed by `cli` (module 7, unbuilt) — the pipeline that would call
-   these gates in sequence and act on a `Fail` doesn't exist yet.
+   these gates in sequence and act on a `Fail` doesn't exist yet. <!-- step: domain-blocklist.gates -->
 4. ~~`sources/` — one parser per source against small fixture files first (a few lines of each
    source's real format, not a live fetch), covering every row of the input-shape table above, then
    wire in the real pinned `SourceFetcher` HTTP path last.~~ **Done, minus the real HTTP client.**
@@ -925,7 +925,7 @@ decision doc's [Distribution](../../decisions/domain-blocklist-sourcing.md#distr
    category `SourceConfig` list, are left to `cli` (module 7, unbuilt) per this module's own text
    ("the pipeline binary wires in a real HTTP client") — nothing here needs live network access to
    test. Not yet consumed by `liveness`, `fst_build`, or `cli` (modules 3, 4, 7 — all still
-   unbuilt).
+   unbuilt). <!-- step: domain-blocklist.sources -->
 5. ~~`liveness.rs` — `due_for_check` first as a pure function against a fake clock and fake cache
    entries with cadence ≠ TTL (this is the part with the trickiest edge cases: reappeared-stale vs.
    genuinely-revived entries). Then `canary_check` against a fake resolver that simulates a
@@ -981,7 +981,7 @@ decision doc's [Distribution](../../decisions/domain-blocklist-sourcing.md#distr
    NXDOMAIN at `example.com` implies every `*.example.com` entry is also dead, with zero extra
    queries — is deferred because nothing in this module's shape expresses shared context between
    per-domain `check()` calls, which a real optimization lever for module 7's per-domain sweep
-   would need.
+   would need. <!-- step: domain-blocklist.liveness -->
 6. ~~`fst_build.rs` — pin against a small hand-built key set first (a handful of domains sharing
    prefixes and suffixes, mixed `Apex` and `ExactHost`) and assert exact-match, label-boundary
    scoping, and **anchored** prefix-streaming behavior before building the real list.~~ **Done.**
@@ -1007,7 +1007,7 @@ decision doc's [Distribution](../../decisions/domain-blocklist-sourcing.md#distr
    combination, manifest bincode round-trip, a two-signature rotation manifest verifying against
    old-key-only/new-key-only/both clients, and tampering with `fst_digest` after signing
    invalidating every signature entry. Not yet consumed by `cli` (module 7, unbuilt) — the
-   pipeline that would call `build` and act on the manifest doesn't exist yet.
+   pipeline that would call `build` and act on the manifest doesn't exist yet. <!-- step: domain-blocklist.fst-build -->
 7. ~~`cli` — wire the whole pipeline together; the first real run is a dry run against the three
    fixture sources, not a live fetch.~~ **Done, with the real qps-paced sweep's production hardening
    (24h pacing at real scale, a genuinely random per-run nonce, a vetted in-category canary control)
@@ -1093,7 +1093,7 @@ decision doc's [Distribution](../../decisions/domain-blocklist-sourcing.md#distr
    allowlist a real run needs (`--allow-license`) defaults, with a loud warning, to an unratified
    starting set (MIT, CC0-1.0, GPL-3.0, CC-BY-SA-4.0) — ratifying that list, including whether
    copyleft (GPL-3.0) inputs are acceptable for this project, is a human licensing decision this
-   code deliberately does not make silently.
+   code deliberately does not make silently. <!-- step: domain-blocklist.cli -->
  8. ~~`net-shield` integration — the precedence table and the shared `normalize()`, per module 6.~~
     **Done.** `packages/net-shield/src/blocklist.rs` — `BlocklistArtifact` (a `fst::Map<Mmap>` that
     owns the mapping, avoiding the plan's `Arc<Mmap>`-plus-`Map` self-reference while keeping the
@@ -1137,12 +1137,12 @@ decision doc's [Distribution](../../decisions/domain-blocklist-sourcing.md#distr
     unbuilt), now called out in `radix.rs`'s own doc comment rather than left implicit. One test-
     coverage gap was closed: `rule_for` returning `None` at a branch node that has children but no
     action of its own (the shape the precedence table's `Some(Proxy)`-vs-miss distinction depends on)
-    had no direct test; one was added. Net-shield total now 92.
-9. **The mmap benchmark** (below) — after there is a real artifact to map.
+    had no direct test; one was added. Net-shield total now 92. <!-- step: domain-blocklist.net-shield-integration -->
+9. **The mmap benchmark** (below) — after there is a real artifact to map. <!-- step: domain-blocklist.mmap-benchmark -->
 10. `overlay.rs` — after `fst_build` and `net-shield` integration both exist, since it reuses
     module 4's manifest/signing contract wholesale and slots into module 6's precedence table rather
     than defining either from scratch. Pin the size and publish-size gates against synthetic entry
-    sets first, the same way `gates.rs` was built ahead of a real artifact to test against.
+    sets first, the same way `gates.rs` was built ahead of a real artifact to test against. <!-- step: domain-blocklist.overlay -->
 
 ## Benchmarking plan — the mmap major-fault tail
 

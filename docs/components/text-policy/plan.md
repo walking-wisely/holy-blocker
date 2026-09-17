@@ -136,11 +136,11 @@ impl PolicyEngine {
 
 ## Implementation order
 
-1. ~~`verdict.rs` — types only, no logic; tests are trivial.~~ **Done.**
-2. ~~`scorer.rs` — pure function; test with synthetic matches and known expected scores.~~ **Done.**
-3. ~~`evaluator.rs` — pure function; test all three bands and edge cases at thresholds.~~ **Done.**
-4. ~~`policy.rs` — integration; test end-to-end from raw text to `Verdict`.~~ **Done.**
-5. ~~FFI surface — once `PolicyEngine` is stable, add a thin `#[no_mangle]` wrapper or UniFFI descriptor so the daemon and proxy can call it. Keep FFI in a separate `src/ffi.rs` or a sibling crate.~~ **Done** — built as the sibling crate `packages/text-policy-ffi` using UniFFI, driven by the Android MVP's need for Kotlin bindings (see [mobile/plan.md](../mobile/plan.md)). Exposes `PolicyEngine` + `evaluate`; evidence is deliberately not carried across the boundary.
+1. ~~`verdict.rs` — types only, no logic; tests are trivial.~~ **Done.** <!-- step: text-policy.verdict -->
+2. ~~`scorer.rs` — pure function; test with synthetic matches and known expected scores.~~ **Done.** <!-- step: text-policy.scorer -->
+3. ~~`evaluator.rs` — pure function; test all three bands and edge cases at thresholds.~~ **Done.** <!-- step: text-policy.evaluator -->
+4. ~~`policy.rs` — integration; test end-to-end from raw text to `Verdict`.~~ **Done.** <!-- step: text-policy.policy -->
+5. ~~FFI surface — once `PolicyEngine` is stable, add a thin `#[no_mangle]` wrapper or UniFFI descriptor so the daemon and proxy can call it. Keep FFI in a separate `src/ffi.rs` or a sibling crate.~~ **Done** — built as the sibling crate `packages/text-policy-ffi` using UniFFI, driven by the Android MVP's need for Kotlin bindings (see [mobile/plan.md](../mobile/plan.md)). Exposes `PolicyEngine` + `evaluate`; evidence is deliberately not carried across the boundary. <!-- step: text-policy.ffi -->
 
 ## What this does not cover
 
