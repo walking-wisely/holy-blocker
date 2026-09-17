@@ -57,5 +57,95 @@ class RenderTest(unittest.TestCase):
         self.assertIn("| `p.a` | done | commit abc |", rendered)
 
 
+class NextPlanTest(unittest.TestCase):
+    def test_all_done_is_distinct_from_blocked(self):
+        step, reason = ledger.next_plan([ledger.Step("p.a", "a", "done", "obs")])
+        self.assertIsNone(step)
+        self.assertEqual(reason, "all steps are done")
+
+    def test_blocked_reports_the_unmet_dependency(self):
+        steps = [ledger.Step("p.a", "a", "pending", "", depends_on=("p.ghost",))]
+        step, reason = ledger.next_plan(steps)
+        self.assertIsNone(step)
+        self.assertIn("blocked", reason)
+        self.assertIn("p.ghost", reason)
+
+    def test_actionable_step_has_empty_reason(self):
+        step, reason = ledger.next_plan([ledger.Step("p.a", "a", "pending", "")])
+        self.assertEqual(step.id, "p.a")
+        self.assertEqual(reason, "")
+
+
+class NextStepTest(unittest.TestCase):
+    def test_returns_first_pending_with_satisfied_dependencies(self):
+        steps = [
+            ledger.Step("p.a", "a", "done", "obs"),
+            ledger.Step("p.b", "b", "pending", ""),
+            ledger.Step("p.c", "c", "pending", "", depends_on=("p.b",)),
+        ]
+        self.assertEqual(ledger.next_step(steps).id, "p.b")
+
+    def test_skips_pending_whose_dependency_is_not_done(self):
+        steps = [
+            ledger.Step("p.a", "a", "pending", ""),
+            ledger.Step("p.b", "b", "pending", "", depends_on=("p.a",)),
+        ]
+        self.assertEqual(ledger.next_step(steps).id, "p.a")
+
+    def test_returns_none_when_all_done(self):
+        steps = [ledger.Step("p.a", "a", "done", "obs")]
+        self.assertIsNone(ledger.next_step(steps))
+
+    def test_returns_none_when_only_blocked_pending_remain(self):
+        steps = [
+            ledger.Step("p.b", "b", "pending", "", depends_on=("p.c",)),
+            ledger.Step("p.c", "c", "pending", "", depends_on=("p.b",)),
+        ]
+        self.assertIsNone(ledger.next_step(steps))
+
+
+class AcceptanceTest(unittest.TestCase):
+    def test_default_acceptance_is_observation(self):
+        step = ledger.Step("p.a", "a", "pending", "")
+        self.assertEqual(step.acceptance, "observation")
+
+    def test_code_acceptance_is_valid(self):
+        steps = [ledger.Step("p.a", "a", "pending", "", acceptance="code")]
+        self.assertEqual(ledger.validate(steps, ["p.a"]), [])
+
+    def test_invalid_acceptance(self):
+        steps = [ledger.Step("p.a", "a", "pending", "", acceptance="maybe")]
+        problems = ledger.validate(steps, ["p.a"])
+        self.assertTrue(any("invalid acceptance" in p for p in problems))
+
+
+class DependencyValidationTest(unittest.TestCase):
+    def test_unknown_dependency(self):
+        steps = [ledger.Step("p.a", "a", "pending", "", depends_on=("p.ghost",))]
+        problems = ledger.validate(steps, ["p.a"])
+        self.assertTrue(any("unknown dependency" in p for p in problems))
+
+    def test_self_dependency(self):
+        steps = [ledger.Step("p.a", "a", "pending", "", depends_on=("p.a",))]
+        problems = ledger.validate(steps, ["p.a"])
+        self.assertTrue(any("depends on itself" in p for p in problems))
+
+    def test_done_with_unmet_dependency(self):
+        steps = [
+            ledger.Step("p.a", "a", "pending", ""),
+            ledger.Step("p.b", "b", "done", "obs", depends_on=("p.a",)),
+        ]
+        problems = ledger.validate(steps, ["p.a", "p.b"])
+        self.assertTrue(any("dependency 'p.a' is not" in p for p in problems))
+
+    def test_cycle_is_reported(self):
+        steps = [
+            ledger.Step("p.a", "a", "pending", "", depends_on=("p.b",)),
+            ledger.Step("p.b", "b", "pending", "", depends_on=("p.a",)),
+        ]
+        problems = ledger.validate(steps, ["p.a", "p.b"])
+        self.assertTrue(any("dependency cycle" in p for p in problems))
+
+
 if __name__ == "__main__":
     unittest.main()
