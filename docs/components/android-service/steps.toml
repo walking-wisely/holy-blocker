@@ -12,7 +12,10 @@
 # where the step landed (commit, PR, or the plan's own wording), not an argument.
 #
 # This component was planned but never created; the work shipped as apps/mobile.
-# There is exactly one settled step: the supersession itself.
+# There is exactly one settled step: the supersession itself. For this manifest
+# only, `done` describes a settled decision rather than a build -- the replacement
+# plan and apps/mobile exist on master, so there is nothing here left to build and
+# `ledger next` correctly reports all steps done.
 
 [[step]]
 id = "android-service.superseded"
