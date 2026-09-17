@@ -25,7 +25,7 @@ No claim was unverifiable here. The one false claim changed the extraction conve
 not the module's purpose: the remaining plans still yield steps, just from their
 implementation-order lists rather than a heading family.
 
-## Step 1 — ledger coverage
+## Step 1 — ledger coverage **Done.**
 
 <!-- step: engineering.ledger-coverage -->
 

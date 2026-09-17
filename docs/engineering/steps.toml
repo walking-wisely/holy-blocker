@@ -15,8 +15,8 @@
 [[step]]
 id = "engineering.ledger-coverage"
 title = "ledger coverage — a steps.toml and plan markers for every component"
-status = "pending"
-evidence = ""
+status = "done"
+evidence = "13 new docs/components/*/steps.toml + tools/plan/tests/test_manifests.py on branch infra/ledger-coverage (commit 68e836a); lands on master at merge of this PR"
 acceptance = "code"
 verify = "python -m unittest discover -s tools/plan/tests -t . && python -m tools.plan.ledger validate docs/components/*/ docs/engineering"
 
