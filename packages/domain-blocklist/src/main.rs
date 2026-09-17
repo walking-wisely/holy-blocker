@@ -51,7 +51,10 @@ fn main() {
     let rt = match tokio::runtime::Runtime::new() {
         Ok(rt) => rt,
         Err(e) => {
-            eprintln!("domain-blocklist: failed to start async runtime: {e}");
+            // Goes through `tracing`, not `eprintln!`, so a fatal error carries a timestamp and
+            // shows up in an `ERROR|WARN` grep over a real log file — see GitHub #40's secondary
+            // finding: a bare `eprintln!` here was silently invisible to normal log monitoring.
+            tracing::error!("domain-blocklist: failed to start async runtime: {e}");
             std::process::exit(1);
         }
     };
@@ -59,7 +62,7 @@ fn main() {
     match rt.block_on(run(cli)) {
         Ok(()) => {}
         Err(e) => {
-            eprintln!("domain-blocklist: {e:#}");
+            tracing::error!("domain-blocklist: {e:#}");
             std::process::exit(1);
         }
     }
@@ -194,7 +197,7 @@ fn default_source_jobs() -> Vec<SourceJob> {
             config: SourceConfig {
                 source: SourceId::Ut1,
                 url: "https://dsi.ut-capitole.fr/blacklists/download/adult.tar.gz".to_string(),
-                pinned_revision: "last-modified=Sat, 15 Aug 2026 20:50:17 GMT".to_string(),
+                pinned_revision: "last-modified=Mon, 24 Aug 2026 20:50:16 GMT".to_string(),
                 expected_license: LicenseId("CC-BY-SA-4.0".to_string()),
             },
             category: Category::Adult,
@@ -205,7 +208,7 @@ fn default_source_jobs() -> Vec<SourceJob> {
             config: SourceConfig {
                 source: SourceId::Ut1,
                 url: "https://dsi.ut-capitole.fr/blacklists/download/gambling.tar.gz".to_string(),
-                pinned_revision: "last-modified=Sat, 15 Aug 2026 20:50:17 GMT".to_string(),
+                pinned_revision: "last-modified=Mon, 24 Aug 2026 20:50:16 GMT".to_string(),
                 expected_license: LicenseId("CC-BY-SA-4.0".to_string()),
             },
             category: Category::Gambling,
@@ -216,7 +219,7 @@ fn default_source_jobs() -> Vec<SourceJob> {
             config: SourceConfig {
                 source: SourceId::Ut1,
                 url: "https://dsi.ut-capitole.fr/blacklists/download/dating.tar.gz".to_string(),
-                pinned_revision: "last-modified=Sat, 15 Aug 2026 20:50:17 GMT".to_string(),
+                pinned_revision: "last-modified=Mon, 24 Aug 2026 20:50:16 GMT".to_string(),
                 expected_license: LicenseId("CC-BY-SA-4.0".to_string()),
             },
             category: Category::Dating,
