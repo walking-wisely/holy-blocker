@@ -164,18 +164,26 @@ def render(steps: list[Step]) -> str:
     return "\n".join(lines)
 
 
-def _packages(paths: list[str]) -> tuple[list[Path], list[Path]]:
+def _packages(paths: list[str]) -> tuple[list[Path], list[Path], list[Path]]:
+    """Classify path arguments into validated, plan-only, and missing.
+
+    A path that is not a directory is reported as missing rather than dropped:
+    a shell that failed to expand a glob, or a caller that passed argv without a
+    shell, must fail loudly instead of silently validating nothing.
+    """
     selected: list[Path] = []
     skipped: list[Path] = []
+    missing: list[Path] = []
     for raw in paths:
         path = Path(raw)
         if not path.is_dir():
+            missing.append(path)
             continue
         if (path / "steps.toml").exists():
             selected.append(path)
         elif (path / "plan.md").exists():
             skipped.append(path)
-    return selected, skipped
+    return selected, skipped, missing
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -184,7 +192,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("packages", nargs="+")
     args = parser.parse_args(argv)
 
-    packages, skipped = _packages(args.packages)
+    packages, skipped, missing = _packages(args.packages)
+    for path in missing:
+        print(f"no such directory: {path}", file=sys.stderr)
     if not packages:
         print("no steps.toml found in the given paths", file=sys.stderr)
         return 1
@@ -216,7 +226,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"### {package.name}\n")
             print(render(steps))
             print()
-    return 1 if failures else 0
+    return 1 if failures or missing else 0
 
 
 if __name__ == "__main__":

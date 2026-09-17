@@ -1,4 +1,8 @@
+import contextlib
+import io
+import tempfile
 import unittest
+from pathlib import Path
 
 from tools.plan import ledger
 
@@ -145,6 +149,24 @@ class DependencyValidationTest(unittest.TestCase):
         ]
         problems = ledger.validate(steps, ["p.a", "p.b"])
         self.assertTrue(any("dependency cycle" in p for p in problems))
+
+
+class MissingPathTest(unittest.TestCase):
+    def test_non_directory_path_is_reported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            good = Path(tmp) / "good"
+            good.mkdir()
+            (good / "steps.toml").write_text("", encoding="utf-8")
+            selected, _skipped, missing = ledger._packages([str(good), str(Path(tmp) / "nope")])
+            self.assertEqual(selected, [good])
+            self.assertEqual(missing, [Path(tmp) / "nope"])
+
+    def test_main_fails_on_unexpanded_glob(self):
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            code = ledger.main(["validate", "docs/components/*/"])
+        self.assertEqual(code, 1)
+        self.assertIn("no such directory", stderr.getvalue())
 
 
 if __name__ == "__main__":
