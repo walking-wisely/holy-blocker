@@ -20,6 +20,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
+from typing import Sequence
 
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 
@@ -60,3 +61,31 @@ def load_corpus(spec: CorpusSpec) -> list[Path]:
         for path in spec.root.rglob("*")
         if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS
     )
+
+
+def discover_corpora(
+    base_dir: Path, wanted: Sequence[tuple[str, CorpusKind]]
+) -> tuple[list[CorpusSpec], list[str]]:
+    """Split `wanted` corpora into those present under `base_dir / name` and
+    those that are not, instead of `load_corpus`'s loud-failure contract.
+
+    Some corpora here are generated on demand (`synth_ui.generate_corpus`)
+    and always present after a first run; others (e.g. a manually captured
+    real-screenshot batch) are placed by hand, are not reproducible from
+    code, and legitimately may not exist on a given checkout. Callers that
+    want "evaluate whatever real corpora happen to be here, skip the rest"
+    need a non-raising check — `load_corpus`'s FileNotFoundError intentionally
+    stays loud for a corpus a caller explicitly named and expects to exist.
+
+    A path that exists but is not a directory (e.g. a stray file) counts as
+    missing, matching `load_corpus`'s own `is_dir()` check.
+    """
+    found: list[CorpusSpec] = []
+    missing: list[str] = []
+    for name, kind in wanted:
+        root = base_dir / name
+        if root.is_dir():
+            found.append(CorpusSpec(name=name, root=root, kind=kind))
+        else:
+            missing.append(name)
+    return found, missing

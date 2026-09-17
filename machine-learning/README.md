@@ -38,12 +38,16 @@ production operating point.
   captured screen content, no third-party images — nothing that needs review
   or licensing.
 - `src/holy_blocker_ml/corpus.py` — loads a labeled-by-directory corpus from
-  a gitignored local path.
+  a gitignored local path; `discover_corpora` finds which of a set of named
+  corpora exist under a base directory without raising on the ones that
+  don't, for corpora (like the real-screenshot one below) that this repo
+  cannot generate for you.
 - `src/holy_blocker_ml/eval.py` — pure scoring: score distribution
   (mean/median/p90/p95/p99) plus a threshold sweep, no single threshold
   picked yet.
-- `scripts/run_baseline_eval.py` — generates the synthetic corpus if needed
-  and runs the full baseline eval, printing a report.
+- `scripts/run_baseline_eval.py` — generates the synthetic corpus if needed,
+  evaluates it plus any present real-screenshot corpora, printing a report
+  per corpus.
 
 ## Setup
 
@@ -66,7 +70,9 @@ First run downloads the model from the Hugging Face Hub (a one-time local
 fetch for offline inference afterward, not a runtime cloud call — the same
 pattern `packages/image-sandbox` uses for its bundled ONNX model) and
 generates the synthetic corpus into `data/eval/synthetic-ui/`
-(gitignored). Example output:
+(gitignored). It also evaluates `data/eval/real-world-macbook/` (see below)
+if that directory exists, and prints a one-line skip note if it doesn't.
+Example output:
 
 ```
 Corpus: synthetic-ui (benign, n=300)
@@ -135,16 +141,23 @@ and write to a temp directory.
   a held-out explicit corpus, which this repo deliberately does not source
   or store (see `corpus.py`'s docstring and the top of
   `docs/components/machine-learning/plan.md`).
-- **Real screenshots, and photographic/illustrated content generally.** The
-  corpus is 100% synthetic and contains **only rectangles, grid lines and
-  rendered text** — no photos, avatars, icons, thumbnails, video frames, or
-  browser-rendered pages. Those are the content types that actually drive
-  NSFW-classifier false positives on real screens, and none of them are
-  represented here, so the measured FPR is best read as a lower bound on
-  "chrome and body text only", not a claim about a real screen's FPR. A small
-  batch of real local screenshots (never committed) would sanity-check the
-  synthetic set against reality — flagged as a fast-follow, not done in this
-  pass.
+- **Photographic/illustrated content generally.** The synthetic corpus
+  contains **only rectangles, grid lines and rendered text** — no photos,
+  avatars, icons, thumbnails, or video frames. Those are the content types
+  that actually drive NSFW-classifier false positives on real screens, and
+  none of them are represented here, so the synthetic-corpus FPR is best read
+  as a lower bound on "chrome and body text only".
+
+  **Real screenshots** are now sanity-checked, though: a manually captured
+  9-image batch (`data/eval/real-world-macbook/`, gitignored, never
+  committed — Finder, four real Safari tabs, Calculator, TextEdit, System
+  Settings, Maps) confirms the tail the synthetic corpus predicted is real,
+  not a generator artifact — a plain macOS Calculator screenshot scored
+  0.71, in the same range as the synthetic corpus's `document`-scene tail
+  (max 0.77). Full sweep: 11.1% FPR at every threshold from 0.10 through
+  0.70 (1 of 9 images — `05_calculator.png`), 0% at 0.90. n=9 is too small
+  for a real rate estimate; it exists to confirm the synthetic signal isn't
+  spurious, not to replace a larger real corpus.
 - **Statistical precision at the tail.** At n=300, the `>= 0.70` row is 2
   images and p99 is the 4th-highest score of 300 — both should be read as
   "a handful of samples", not as precise rates. No confidence intervals are
@@ -157,6 +170,17 @@ and write to a temp directory.
   image's color theme independently of its scene, so most images pair a
   scene (e.g. `spreadsheet`) with an unrelated theme (e.g. the dark
   `terminal` palette) despite the theme comments implying otherwise.
-- **Fine-tuning.** Out of scope for this pass by request; `plan.md` still
-  describes the training-oriented path (`dataset.py`, `export_tflite.py`,
-  `gate.py`) for whenever that's picked up.
+- **Fine-tuning.** Deliberately not attempted against the corpora here, and
+  not just out of scope — doing it would be unvalidated by construction.
+  Fine-tuning on `synthetic-ui`/`real-world-macbook` alone would only ever
+  have *safe*-labeled examples to train against, and this repo's `corpus.py`
+  intentionally never sources or stores an explicit corpus (see its
+  docstring), so there is nothing to measure recall against before/after —
+  a regression would be silent. Separately, 300 images from one procedural
+  generator (fixed fonts, fixed layout templates) is a narrow enough style
+  that fine-tuning the whole head against it risks learning "not this
+  specific synthetic look" rather than "UI is safe", with no held-out check
+  to catch that. `plan.md` still describes the training-oriented path
+  (`dataset.py`, `train.py`, `gate.py` — the last one gates a release on
+  recall specifically) for once a real held-out safe+explicit validation
+  split exists to run it against.
