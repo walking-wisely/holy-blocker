@@ -561,10 +561,111 @@ or late swings the check volume wildly.
 
 A domain cached as **alive**, or brand new to every source, is checked on every sweep.
 
+#### Measured 2026-08-15/16: the sizing and pacing numbers above are stale, and the fix is not a bare qps bump
+
+The `~23 qps` / `~1,000,000 domains` / `~24 hours` figures above were a sizing estimate made before
+`sources` (module 1) or `cli` (module 7) existed. With both now built, three things were measured
+directly against real sources and real resolvers rather than re-derived on paper.
+
+**The corpus is ~4.75x bigger than assumed, using less than the full source list.** Fetching and
+merging just StevenBlack's porn-only hosts file, Hagezi's NSFW wildcard list, and UT1's adult and
+gambling categories (4 of the plan's 6 planned source/category lists — missing UT1 dating and
+Hagezi's other tiers) produced **4,752,920 merged unique domains**, not ~1,000,000. UT1 adult alone
+is 4,599,280 raw lines before merge. The `~23 qps` figure was sized to sweep ~1,000,000 domains in
+24 hours; the real number, even undercounted, needs roughly **4.75x that dispatch rate** to hit the
+same 24-hour window — this is the honest reason a qps increase is on the table at all, not a desire
+for a faster sweep for its own sake.
+
+**The per-chunk `.collect()` barrier in `sweep.rs`'s dispatch loop was investigated and cleared at
+the shipped default.** A real dead/lame domain can cost close to the client's ~15-second worst-case
+query budget (`liveness/net.rs`'s `TOTAL_QUERY_BUDGET`), and because each `canary_every`-sized chunk
+must fully complete (`.collect()`) before the next chunk's canary re-check and dispatch can begin,
+one straggler taxes its whole chunk. At `--canary-every 50` (a value chosen only to get more canary
+observations in a quick local test, never a real setting) this cost 601 real domains a 1.83x wall-
+clock overhead (95.7s actual vs. 52.3s naive-ideal) against real dead/lame entries from the corpus
+above. At the CLI's actual shipped default, `--canary-every 2000`, the identical sample and domain
+mix measured **1.03x** — the straggler cost is real but amortizes to near-nothing once a chunk is
+production-sized. No code change was needed here; the concern was specific to an artificially small
+test value, not the shipped default.
+
+**A naive 5x qps bump (matching the 4.75x corpus-size gap, landing at `--qps 57.5` / ≈115 raw
+queries/sec) was tested against a real, canary_every-sized chunk of the merged corpus and showed
+real degradation, not just a wall-clock cost.** At the current default (`--qps 11.5`,
+`--concurrency 50`), a 2001-domain real sample resolved with **0.67–0.7% `Unknown`** verdicts. At
+5x qps with concurrency scaled to match (`--concurrency 200`, keeping headroom per Little's Law),
+the identical corpus sample produced **10.6% `Unknown`** — over 15x worse, not proportional — broken
+down as `Timeout: 116 (5.8%)`, `UncorroboratedDead: 88 (4.4%, the two resolvers disagreeing on an
+NXDOMAIN)`, `ServFail: 4`, `NoData: 4`. Local resource exhaustion was checked and ruled out as the
+cause: the test machine's `ulimit -n` was effectively unbounded (1,048,576) and the breakdown
+contains zero `Malformed`/`Transport` entries, which is what socket exhaustion or a client bug would
+produce instead. What's left — real timeouts and cross-resolver disagreement — is the signature this
+document's earlier "watch the canary" reasoning predicted a real ceiling would look like.
+
+**This result does not tell us where the real ceiling is, and must not be read as one.** It was
+measured from one development machine's residential/office network and its own, unrelated IP
+reputation history at 1.1.1.1/8.8.8.8 — a VPS's datacenter uplink and IP history could show a higher
+ceiling, a lower one, or a different failure signature entirely. What it *does* tell us: the
+instinct to just multiply the default qps by the corpus-size growth factor and ship that as the new
+default is not safe, because the first real test of that exact jump produced a real degradation
+signal, not a clean pass. **The correct next step is the incremental, canary-monitored qps ramp this
+document already prescribes, run against the actual deployment host** (starting at the current
+default, stepping up, watching the `Unknown` breakdown — specifically `Timeout` and
+`UncorroboratedDead` rates, not just the aggregate — for degradation before each step), not a single
+jump sized to the corpus-growth factor. The CLI's `--qps 11.5` / `--concurrency 50` defaults are
+therefore left unchanged pending that ramp; changing them now would be encoding an untested guess
+in the exact place this project's own review history keeps finding them (the image-sandbox
+threshold, the FST floor, the DNSSEC-authentication requirement — see `CLAUDE.md`'s `image-sandbox`
+and `domain-blocklist` rows).
+
 **Batching multiple domains into one DNS query is not practically available** — RFC 1035's QDCOUNT
 field permits it in principle, but essentially no real-world resolver answers more than one question
 per message. The available lever is **concurrency** (many in-flight query packets at once,
 rate-limited to the chosen qps), not batching.
+
+#### Measured 2026-08-16: the incremental qps ramp, run against the real deployment VPS
+
+The section above prescribed running the qps ramp against the real deployment host rather than
+guessing from the dev-machine result. That ramp was run on the production VPS (4 vCPU, datacenter
+uplink), each step a real `--sample` slice (a new CLI flag added for exactly this purpose — see its
+own doc comment in `cli.rs`) of the actual fetched 4.75M-domain corpus, against real 1.1.1.1/8.8.8.8
+resolvers, canary passing at every step:
+
+| qps / concurrency | sample | Unknown% | Timeouts | UncorroboratedDead |
+|---|---|---|---|---|
+| 11.5 / 50 (shipped default) | 2,000 | 2.35% | 0 | 0 |
+| 23 / 100 | 4,000 | 1.98% | 5 | 0 |
+| 46 / 200 | 8,000 | 1.80% | 10 | 0 |
+| 92 / 400 | 16,000 | 1.43% | 14 | 0 |
+
+No degradation signal anywhere in this ramp, unlike the dev-machine measurement above, which broke
+down at 57.5 qps (10.6% Unknown, 15x worse). This VPS's datacenter uplink and IP reputation history
+tolerate roughly 8x the shipped default cleanly — confirming the section above's own caveat that a
+VPS could show a materially different ceiling than a residential/office network, in either
+direction. **This does not change the shipped CLI defaults** — the defaults are a safe floor for an
+unknown deployment host, and this result is evidence for *this* host's operator to raise `--qps`
+explicitly for its own scheduled runs, not a reason to move the shipped default itself. A full
+92 qps / 400-concurrency production sweep against the complete real corpus was then launched from
+this measurement, detached from the invoking shell (`setsid`/`disown`, reparented to PID 1) so it
+survives an SSH disconnect, logging to `dbl-run/logs/production.log` on the host.
+
+Two real defects were found and fixed while getting the real (non-fixture) fetch path to run at
+all, neither previously exercised end-to-end against live sources:
+
+- `SourceConfig.pinned_revision` for the two GitHub sources and the three UT1 categories were
+  literal `"UNPINNED"` placeholders (`main.rs`'s own doc comment: "left as a placeholder ... so a
+  real fetch fails loudly and closed"). Moved to real pins via the reviewed pin-bump process this
+  file's "Pinned revisions, never floating HEAD" section requires: StevenBlack `35db0ae9...`,
+  hagezi `3975aafc...` (both `git commit` SHAs baked into the raw-content URL path), and the three
+  UT1 categories to `last-modified=Sat, 15 Aug 2026 20:50:17 GMT` (UT1 publishes no ETag;
+  `fetchers::ut1::pick_revision` falls back to the `Last-Modified` header, prefixed — the prefix
+  format was undocumented outside the function body and cost one failed real-fetch attempt to
+  discover).
+- `fetchers::ut1::MAX_MEMBER_BYTES` was 64 MiB on the doc comment's claim that "UT1's largest
+  `domains`/`urls` member measures a few MB" (2026-08-15 assumption audit). A real fetch of
+  `adult.tar.gz` hit the ceiling: `adult/domains` is **124,529,768 bytes** (4,599,280 lines), not
+  "a few MB" — the assumption audit measured the wrong file, or measured before UT1's adult list
+  grew to its current size. Raised to 256 MiB (~2x headroom over the measured real file), documented
+  in the constant's own doc comment as measured-wrong rather than silently widened.
 
 #### The TTL cache needs a real home
 
@@ -579,6 +680,137 @@ It is **not committed into the public repository tree**, consistent with this pr
 convention of gitignoring corpora and model artifacts. A run that cannot load the cache starts cold
 and does a full sweep; a run that cannot write it back fails loudly rather than silently discarding
 three months of accumulated state.
+
+#### Measured 2026-08-16: the cache's in-process representation — redb, not a `HashMap` blob
+
+The persistent-storage question above (*where* the cache lives between runs) is separate from *how*
+it's held while a run is using it, and the second question turned out to be the one actually driving
+memory cost. `cache_store.rs` currently loads the whole cache into a `HashMap<String, CacheEntry>`
+for the sweep's duration and reserializes the entire map to one bincode blob on every checkpoint.
+Measured live on the production VPS mid-sweep: **2.71GB RSS** for the real ~4.75M-domain corpus —
+about 569 bytes per entry, all of it Rust heap (a separately-allocated `String` per key, `HashMap`
+bucket-array slack below 100% load factor, struct alignment padding), none of it structurally needed
+by the ~25-byte domain strings and ~13–21-byte `CacheEntryDto` values being stored.
+
+The fix is to stop holding the cache as a live Rust collection at all and read/write it through
+[redb](https://docs.rs/redb) 4.1.0 — a pure-Rust, single-file, transactional embedded key-value
+store ([repository](https://github.com/cberner/redb)), with the domain string as key and a
+bincode-encoded `CacheEntryDto` as value, matching the DTO shape already defined in
+`cache_store.rs`. **Correction (2026-08-16, same day, after implementation and measurement): redb
+is not mmap-backed.** An earlier draft of this section claimed it was, on the strength of the crate
+description alone rather than reading its actual storage code; that claim was wrong and is corrected
+here rather than left standing. redb 4.1.0 keeps its own in-process page cache
+(`redb::Builder::set_cache_size`, defaulting to 1 GiB) over a single file it manages with its own
+I/O, not a `mmap()`ed region the kernel pages in the sense the rest of this section originally
+assumed. This matters for the "how does this bound memory" argument below, which the mmap framing
+got backwards — see the corrected "Net effect" paragraph. This was evaluated rather than assumed,
+using real data from the actual deployment host rather than synthetic benchmarks:
+
+- **VPS specs** (`ssh` to the production Contabo box): 7.8GB RAM, of which only ~4.0GB was
+  "available" (free + reclaimable buff/cache) while the current sweep held its 2.71GB `HashMap`
+  resident alongside ~1GB from unrelated tenants on the same box (n8n, an `openclaw` gateway,
+  `dockerd`, `tailscaled`). 4 vCPUs. Disk reports `ROTA=0` but is `QEMU HARDDISK` — a virtio block
+  device on a KVM host — which does **not** prove local NVMe; that flag alone cannot distinguish
+  local flash from network-attached block storage.
+- **Real disk latency**, measured directly rather than inferred from the rotational flag: a 500MB
+  scratch file, `posix_fadvise(..., POSIX_FADV_DONTNEED)` to evict it from page cache, then 500
+  `O_DIRECT` random 4KB `pread`s to force genuine disk I/O. Result: **p50 405μs, p90 1.37ms, p99
+  7.4ms, max 16.9ms, mean 744μs** — an order of magnitude worse than local NVMe's typical tens of
+  microseconds, consistent with network-backed virtual storage rather than local flash. This matters
+  because it sets the cost of a redb page fault: roughly 4,000–7,000x a `HashMap` hit on average, and
+  70,000x+ at the tail, if a lookup actually has to go to disk.
+- **Real corpus**, not a synthetic one: the project's actual pinned sources (StevenBlack `porn-only`,
+  hagezi `nsfw-onlydomains`, UT1 `adult`/`gambling`/`dating`, at the same pins recorded in the
+  "Measured 2026-08-16" ramp section above) were fetched and normalized on the VPS itself, producing
+  **4,767,348 distinct domains** — matching the corpus-size figure already measured elsewhere in this
+  document. Average domain length: 25.7 bytes.
+- **Real redb file size**, built from those real keys plus the real `CacheEntryDto` value shape
+  (synthetic verdicts, since no on-disk `production.bin` exists yet on this pre-checkpointing binary —
+  see the "Left explicitly undone" list in the plan's module 7 for why): **515MB, compacted**. For
+  comparison, the same data as a flat (non-B-tree) bincode `HashMap` blob would run an estimated
+  ~228MB (8-byte length prefix + ~26-byte key + ~8-byte timestamp + ~4-byte enum discriminant +
+  ~2-byte average `Option<u64>` per entry) — so redb's B-tree page/checksum overhead costs roughly
+  **2.25x** the flat format, but the absolute number is what matters: 515MB against 4.0–7GB of
+  available RAM is a comfortable fit with room to spare, not the 2.5–3.5GB this document originally,
+  and wrongly, guessed before measuring (that guess anchored on the inflated 2.71GB in-memory figure
+  as its baseline, which was already the wrong number to add B-tree overhead on top of).
+
+**Net effect of the swap, corrected:** steady-state resident memory for the cache drops for the
+boring reason that Rust's live `HashMap<String, T>` carries per-object heap overhead redb's packed
+encoding doesn't — but that drop is bounded by **an explicit cache-size budget passed to
+`redb::Builder::set_cache_size`, not by OS reclaim of mmap pages**, since no such pages exist. redb's
+page cache is process-owned anonymous heap the kernel can, at best, swap under pressure — it cannot
+drop it the cheap way it drops a clean file-backed mapping, so leaving the 1 GiB default in place
+(as the first implementation of `CacheStore::open` did, before this correction) trades one unbounded
+allocator (a resident `HashMap`) for a differently-shaped one. The actual lever, and the one this
+section's "bounding cache RSS by a page budget instead of corpus size" goal describes, is choosing
+`set_cache_size` explicitly — `cache_store::DEFAULT_CACHE_SIZE_BYTES` (128 MiB) is what
+`CacheStore::open` now passes; see that constant's own doc comment for the measurement that picked
+128 MiB specifically. This is graceful in a different sense than originally claimed: it is a hard,
+predictable ceiling set at open time, not a hope that the kernel reclaims something under pressure.
+
+**What implementing this needs to account for, not treated as free:**
+
+- **Batched write transactions**, replacing the current whole-map reserialize-on-checkpoint. A
+  transaction per domain would fsync every write (~1–10ms each per typical SSD fsync latency,
+  unmeasured on this specific VPS) and cap sweep throughput far below what's needed at 4.75M domains;
+  batch commits every `--checkpoint-every` domains (mirroring the existing checkpoint cadence) rather
+  than per-entry.
+- **Periodic compaction.** The 515MB figure is a freshly compacted, single-writer build — it does
+  **not** measure steady-state size after months of incremental updates (`last_checked` bumps,
+  verdict flips) fragmenting the B-tree across repeated commits. This needs its own measurement
+  before shipping a maintenance cadence; call it an open gap, not an assumption to build against
+  silently.
+- **On-disk format migration.** redb's file format is not bincode-`HashMap`-compatible, so an
+  existing `cache.bin` written by the current `cache_store::save` cannot be opened directly by a
+  redb-based reader. Either a one-time conversion pass or accepting that in-flight caches finish
+  their current cycle on the old format and new caches start clean is a decision the implementing
+  PR must make explicitly, not one to discover mid-migration.
+- **Due-list key ordering** is a free lever worth taking at the same time: today's due-domain
+  traversal order has no particular relationship to redb's key-sorted B-tree layout, so a sweep that
+  visits domains in sorted-key order gets meaningfully better page locality (and fewer of the
+  400μs–17ms cold-fault lookups measured above) than visiting them in whatever order the corpus
+  happened to be merged in, at no cost beyond sorting the due list once per sweep.
+
+This section documents the decision and the measurements backing it; the implementation
+(`cache_store::CacheStore`, `CacheBackend`, and a `CacheBackend`-generic `sweep::run_sweep_streaming`)
+is built — see `docs/components/domain-blocklist/plan.md`'s module 7 entry for what shipped and the
+one narrowing it cost (a dry run can no longer cheaply seed itself from an existing cache file's
+exact prior state, so it always starts cold now).
+
+**Measured 2026-08-16, same day: the stress-harness comparison, its first (wrong) explanation, and
+the correction.** Running the streaming sweep's own 4.8M-synthetic-domain stress test
+(`sweep::tests::stress_test_streaming_sweep_avoids_holding_the_full_corpus`, already in this repo)
+both ways — a `HashMap`-backed cache and a `CacheStore`-backed one, same process shape, same machine
+— gave final RSS 1353.8MB vs. 1126.7MB: a real ~17% reduction, not the ~5x this section's own
+production-VPS estimate projected. **That comparison's explanation was wrong**, not just optimistic:
+it attributed the shortfall to "dirty/recently-touched mmap pages stay resident until something
+evicts them," reasoning the production VPS's shared-tenant memory pressure would let the kernel
+reclaim more than a quiet single-process stress test would. There are no mmap pages — see the
+correction above — so there is nothing for the kernel to reclaim either way, on a quiet dev machine
+or a busy VPS; a 1 GiB redb cache is 1 GiB of anonymous heap regardless of who else is running.
+**The real cause was the unbounded 1 GiB `redb::Builder` default itself, left unset by the first
+`CacheStore::open`.** Fixed by passing `set_cache_size(cache_store::DEFAULT_CACHE_SIZE_BYTES)`
+(128 MiB — see that constant's doc comment) explicitly. Re-measured on the same stress harness,
+same machine, after the fix: **rss_final=942.8 MB**, cache file still 514.0MB on disk (unchanged —
+this is a resident-memory fix, not a format change). That's a real reduction from the 1 GiB-default
+redb run (1126.7MB → 942.8MB, ~16%) and from the `HashMap` baseline (1353.8MB → 942.8MB, ~30%), but
+notably **not** as large as `redb::Builder`'s cache-size delta alone would suggest — a separately
+reproduced run of the same before/after comparison (see `cache_store::DEFAULT_CACHE_SIZE_BYTES`'s
+own doc comment) measured a larger gap (1126.7MB → 613.9MB) under conditions not fully pinned down
+here; the two runs agree on direction and rough magnitude but not on the exact number, most likely
+because this stress test's own ~516MB entry-corpus build-then-drop overhead (documented in the
+streaming-corpus pass above as **not actually released back to the OS by macOS's allocator**) sits
+underneath both numbers and doesn't cancel out cleanly between runs. Reported honestly rather than
+reconciled: the bounded-cache-size fix is confirmed real and correctly targeted at the right root
+cause, but this repo does not yet have a single trusted number for its exact size on this dev
+machine, and — per every other caveat this document already carries about macOS vs. the Linux VPS
+target — neither number has been confirmed against the real deployment host. Unlike the original
+mmap-based reasoning, though, the fixed mechanism does not depend on kernel reclaim behavior varying
+by host at all: `set_cache_size` is an explicit, host-independent ceiling, so the VPS should see the
+same order-of-magnitude reduction this stress harness does, not a host-specific bonus the way the
+original (wrong) mmap story implied. A real multi-hour sweep against the production VPS is still the
+only way to confirm the exact number there.
 
 #### Egress: a documented estimate, not a measurement
 

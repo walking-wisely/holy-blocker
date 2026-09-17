@@ -35,9 +35,12 @@ pub struct Cli {
     #[arg(long, default_value = "blocklist-output")]
     pub output: PathBuf,
 
-    /// Persistent liveness cache file (bincode). Real (non-dry, non-`--skip-liveness`) runs
-    /// require this — "a sweep that cannot persist must not run," since losing verified `Dead`
-    /// verdicts silently is how a dead domain re-enters a future signed artifact.
+    /// Persistent liveness cache file — a redb database (see `cache_store::CacheStore`), not the
+    /// legacy single bincode blob. Real (non-dry, non-`--skip-liveness`) runs require this — "a
+    /// sweep that cannot persist must not run," since losing verified `Dead` verdicts silently is
+    /// how a dead domain re-enters a future signed artifact. There is no automatic converter from
+    /// an old bincode `cache.bin` — per `cache_store`'s own doc comment, a deployment switching
+    /// to this starts one cold sweep rather than migrating stale state.
     #[arg(long)]
     pub cache: Option<PathBuf>,
 
@@ -115,6 +118,16 @@ pub struct Cli {
     #[arg(long, default_value_t = 2000)]
     pub canary_every: usize,
 
+    /// Persist the liveness cache to `--cache` after roughly this many newly-checked domains, so a
+    /// crash mid-sweep loses at most one checkpoint interval instead of the whole run. Rounds up
+    /// to the next multiple of `--canary-every`, since a checkpoint only fires once that chunk's
+    /// canary re-check has passed. `0` disables *mid-sweep* checkpoints only — the whole sweep's
+    /// results still land in `--cache` via one unconditional flush at the end, so `0` risks losing
+    /// an in-progress run to a crash, not losing a completed one. No-op under `--dry-run` or
+    /// without `--cache` (both force an in-memory cache with nothing to flush).
+    #[arg(long, default_value_t = 10_000)]
+    pub checkpoint_every: usize,
+
     /// Liveness cache TTL, seconds. Plan default: 3x the run cadence (~monthly), so ~90 days.
     #[arg(long, default_value_t = 90 * 24 * 60 * 60)]
     pub ttl_seconds: u64,
@@ -162,6 +175,17 @@ pub struct Cli {
     /// Size gate ceiling, bytes. Plan default: 32 MiB.
     #[arg(long, default_value_t = 32 * 1024 * 1024)]
     pub size_ceiling_bytes: u64,
+
+    /// Operational testing only, never for a real publish: truncates the merged entry set to the
+    /// first N (post-merge, pre-liveness) domains before the liveness sweep and every gate below
+    /// it. Exists so a qps ramp or a canary check can be exercised against a small slice of a
+    /// *real* fetched corpus without waiting out a full-corpus sweep — `--fixture-dir` cannot
+    /// serve this purpose, since it deliberately forces `--skip-liveness` (see
+    /// `effective_skip_liveness`'s doc comment) and this flag's whole point is to reach the real
+    /// DNS sweep. Every gate still runs and can still fail (most obviously `shrinkage_gate`
+    /// against a real previous build) — that is intentional signal, not a bug to suppress.
+    #[arg(long)]
+    pub sample: Option<usize>,
 }
 
 impl Cli {
@@ -174,7 +198,8 @@ impl Cli {
                  domain's Dead verdict can be pruned before the next sweep ever gets a chance to \
                  re-check and confirm it, defeating the quarantine window's whole purpose (see \
                  liveness/cache.rs's hysteresis doc comment)",
-                self.quarantine_seconds, self.ttl_seconds
+                self.quarantine_seconds,
+                self.ttl_seconds
             );
         }
         Ok(())
@@ -238,7 +263,9 @@ mod tests {
     fn final_shipped_defaults_satisfy_validate() {
         // Post-fix shipped defaults: ttl 90d, quarantine 180d (== 2 * ttl), so a fresh,
         // un-overridden run passes its own new invariant.
-        default_cli().validate().expect("shipped defaults must satisfy validate");
+        default_cli()
+            .validate()
+            .expect("shipped defaults must satisfy validate");
     }
 
     #[test]
