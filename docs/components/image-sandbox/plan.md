@@ -289,25 +289,33 @@ The order below is the original plan. What was actually built is recorded under
 **Current state** — steps 1 and 2 are deferred, and the model path was built first.
 
 1. `hash.rs` — pHash computation and Hamming distance; unit test with known image pairs and known hash values to pin the algorithm output. **Deferred** — no hash database exists to look into.
+<!-- step: image-sandbox.hash -->
 2. `db.rs` — SQLite wrapper; test with an in-memory database (`rusqlite::Connection::open_in_memory()`), insert known hashes, verify lookup returns the correct match and correct distance. **Deferred** for the same reason.
+<!-- step: image-sandbox.db -->
 3. ~~`sandbox.rs`~~ **Done**, though with `db: None` rather than `classifier: None` — the model is what blocks, so the stub went on the other side.
+<!-- step: image-sandbox.sandbox -->
 4. ~~`onnx.rs` behind the `onnx` feature flag~~ **Done** as `classifier.rs`. Non-default feature; without it the crate compiles and allows everything, so a build without an ONNX Runtime is a functioning build. `tests/inference.rs` exercises the real exported artifact and skips when it is absent, since `data/models/` is gitignored.
+<!-- step: image-sandbox.classifier -->
 5. ~~Wire `ImageSandbox` into `packages/mitm-proxy` at the Phase 4 hook~~ **Done.** Inference runs under `tokio::task::spawn_blocking` — `image_scanner` is a sync `Fn` invoked inside the async handler, so running a MobileNetV3 forward pass inline would hold a tokio worker and stall every other connection it drives.
+<!-- step: image-sandbox.mitm-wiring -->
 
 6. ~~Replace the provisional threshold and size floor with measured values from
    `holy_blocker_ml.inputs`, and adopt whichever geometry that experiment selects.~~
    **Done.** Threshold 0.20 → **0.4650**, floor 32px → **96px**, and the centre crop replaced by
    **tile-max**. See [Measured constants](#measured-constants) and the
    [experiment](../machine-learning/experiments/input-handling.md).
+<!-- step: image-sandbox.measured-geometry -->
 
 Still to do:
 
 7. `hash.rs` + `db.rs` as a short-circuit cache, if and when a hash database exists.
+<!-- step: image-sandbox.hash-cache -->
 8. A **fully convolutional** equivalent of tile-max, if the per-image cost of up to 15 forward
    passes becomes a problem. MobileNetV3's `AdaptiveAvgPool2d(1) → Linear(576,1024) →
    Linear(1024,2)` head converts mechanically to 1×1 convolutions with identical weights, so one
    pass over a larger input yields a spatial logit grid whose max equals the tiled max — and, as
    a side effect, the coarse heatmap the screen-capture path will need for localisation.
+<!-- step: image-sandbox.fcn-tile-max -->
 
 ## What this does not cover
 

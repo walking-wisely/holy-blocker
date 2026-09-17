@@ -229,12 +229,19 @@ Logic-only source files (`scan_loop.cpp`, `ipc.cpp`) should be compiled into a s
 ## Implementation order
 
 1. `capture.h/cpp` — pure GDI capture; test with a synthetic off-screen bitmap to confirm pixel layout and empty-frame behavior on a null HWND.
+   <!-- step: win-daemon.capture -->
 2. `scanner.h` — interface plus `NullScanner` stub; no ONNX yet; verify that `NullScanner::Scan` compiles and returns `Allow`.
+   <!-- step: win-daemon.scanner -->
 3. `scan_loop.h/cpp` — debounce and state machine driven by `NullScanner`; unit-test all state transitions and debounce behavior with a fake clock and a fake scanner that records calls.
+   <!-- step: win-daemon.scan-loop -->
 4. `ipc.h/cpp` — named pipe server; test send/receive round-trip with a loopback client in the same test process.
+   <!-- step: win-daemon.ipc -->
 5. Wire scan loop into `main.cpp`: forward `HandleWinEvent` events to `ScanLoop::OnForegroundChange` / `OnLocationChange`, run `Tick` on a background thread timer.
+   <!-- step: win-daemon.wire-scan-loop -->
 6. Wire IPC heartbeats: emit a `heartbeat` message from the background thread every 5 seconds so the Electron app can detect daemon presence.
+   <!-- step: win-daemon.wire-ipc-heartbeats -->
 7. Update `CMakeLists.txt` with `FetchContent` GoogleTest and the `tests` target.
+   <!-- step: win-daemon.cmake-tests -->
 
 ## What this does not cover
 

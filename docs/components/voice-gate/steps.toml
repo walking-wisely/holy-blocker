@@ -1,0 +1,48 @@
+# Thin step ledger for voice-gate. Source of truth for whether each build step exists.
+#
+#   python -m tools.plan.ledger validate docs/components/voice-gate
+#   python -m tools.plan.ledger render   docs/components/voice-gate
+#
+# `done` means the step's implementation exists on master. It does NOT mean the
+# route is covered: live and observational verification lives in
+# docs/engineering/coverage.md, never here.
+#
+# Do not put narrative here. Gotchas, wrong-constant war stories, and "measured
+# wrong in module N" notes live in plan.md. `evidence` is one line pointing at
+# where the step landed (commit, PR, or the plan's own wording), not an argument.
+
+[[step]]
+id = "voice-gate.verse-picker"
+title = "verse-picker.ts — the Verse type and curated list"
+status = "pending"
+evidence = ""
+
+[[step]]
+id = "voice-gate.transcript-matcher"
+title = "transcript-matcher.ts — Jaccard similarity check"
+status = "pending"
+evidence = ""
+
+[[step]]
+id = "voice-gate.rate-checker"
+title = "rate-checker.ts — words-per-minute ceiling"
+status = "pending"
+evidence = ""
+
+[[step]]
+id = "voice-gate.liveness-classifier"
+title = "liveness-classifier.ts — injected ONNX anti-spoofing runtime"
+status = "pending"
+evidence = ""
+
+[[step]]
+id = "voice-gate.voice-gate"
+title = "voice-gate.ts — top-level orchestrator"
+status = "pending"
+evidence = ""
+
+[[step]]
+id = "voice-gate.electron-adapter"
+title = "voice-adapter-electron.ts in apps/desktop — MediaRecorder + Web Speech API"
+status = "pending"
+evidence = ""

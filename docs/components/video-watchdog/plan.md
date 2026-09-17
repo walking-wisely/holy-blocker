@@ -226,10 +226,15 @@ pub use extractor::RawFrame;
 ## Implementation order
 
 1. `tee.rs` — stream tee with backpressure; test with an in-memory `Vec<u8>` writer, verify that bytes reach the writer and are also delivered to the channel, and that the writer is not stalled when the channel is full.
+   <!-- step: video-watchdog.tee -->
 2. `segment.rs` — kind detection; test with a matrix of Content-Type strings and URL path suffixes covering HLS, DASH, unknown video, and non-video cases.
+   <!-- step: video-watchdog.segment -->
 3. `extractor.rs` — stub returning `None` for all inputs; mark the intended real demuxer strategy with `// TODO` comments; test that the stub compiles and returns `None`.
+   <!-- step: video-watchdog.extractor -->
 4. `watchdog.rs` — async worker with the stub extractor; test by sending synthetic `Bytes` chunks through the channel, confirm verdicts are recorded, and confirm the writer side is never blocked even when the sampler is slow.
+   <!-- step: video-watchdog.watchdog -->
 5. Wire `VideoWatchdog` into `packages/mitm-proxy` at the Phase 5 hook, inserting `StreamTee` into the proxy's response-forwarding write path (see [network-pipeline.md](../../architecture/network-pipeline.md) Phase 5).
+   <!-- step: video-watchdog.mitm-proxy-wire -->
 
 ## What this does not cover
 

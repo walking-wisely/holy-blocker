@@ -1,0 +1,30 @@
+# Thin step ledger for the engineering harness. Source of truth for whether each
+# build step exists.
+#
+#   python -m tools.plan.ledger validate docs/engineering
+#   python -m tools.plan.ledger render   docs/engineering
+#
+# `done` means the step's implementation exists on master. It does NOT mean the
+# route is covered: live and observational verification lives in
+# docs/engineering/coverage.md, never here.
+#
+# Do not put narrative here. Gotchas and wrong-constant war stories live in
+# plan.md. `evidence` is one line pointing at where the step landed (commit, PR, or
+# the plan's own wording), not an argument.
+
+[[step]]
+id = "engineering.ledger-coverage"
+title = "ledger coverage — a steps.toml and plan markers for every component"
+status = "pending"
+evidence = ""
+acceptance = "code"
+verify = "python -m unittest discover -s tools/plan/tests -t . && python -m tools.plan.ledger validate docs/components/*/ docs/engineering"
+
+[[step]]
+id = "engineering.claude-status-derived"
+title = "CLAUDE.md Current State — replace hand-edited rows with a derived pointer"
+status = "pending"
+evidence = ""
+acceptance = "code"
+depends_on = ["engineering.ledger-coverage"]
+verify = "python -m unittest discover -s tools/plan/tests -t ."

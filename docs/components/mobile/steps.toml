@@ -1,0 +1,102 @@
+# Thin step ledger for mobile. Source of truth for whether each build step exists.
+#
+#   python -m tools.plan.ledger validate docs/components/mobile
+#   python -m tools.plan.ledger render   docs/components/mobile
+#
+# `done` means the step's implementation exists on master. It does NOT mean the
+# route is covered: live and observational verification lives in
+# docs/engineering/coverage.md, never here.
+#
+# Do not put narrative here. Gotchas, wrong-constant war stories, and "measured
+# wrong in module N" notes live in plan.md. `evidence` is one line pointing at
+# where the step landed (commit, PR, or the plan's own wording), not an argument.
+#
+# Steps are the plan's `## Implementation order`, items 1-14, in the plan's own
+# order. Recents (item 8) and the Xiaomi/OEM profiles are deferred on hardware
+# and are recorded as pending work in plan.md rather than as steps.
+
+[[step]]
+id = "mobile.policy-core"
+title = "Policy core (TextPolicy, TextAssembler, ScanGate) with JVM unit tests"
+status = "done"
+evidence = "implementation order 1 **Done.**; policy/TextPolicy.kt, TextAssembler.kt, ScanGate.kt on master (commit 48792fa, PR #61)"
+
+[[step]]
+id = "mobile.text-policy-ffi"
+title = "text-policy-ffi UniFFI crate + NativeTextPolicy adapter"
+status = "done"
+evidence = "implementation order 2 **Done.**; packages/text-policy-ffi and policy/NativeTextPolicy.kt on master (commit 48792fa, PR #61)"
+
+[[step]]
+id = "mobile.screenguard-overlay-onboarding"
+title = "ScreenGuardService + OverlayController + onboarding"
+status = "done"
+evidence = "implementation order 3 **Done.**; ScreenGuardService.kt, OverlayController.kt, MainActivity.kt on master (commit 48792fa, PR #61)"
+
+[[step]]
+id = "mobile.ffi-device-e2e"
+title = "Build the .so (NDK) and validate on a device — first end-to-end run"
+status = "done"
+evidence = "implementation order 4 **Done.**; scripts/build-ffi.sh and scripts/smoke-test.sh on master (commit 48792fa, PR #61)"
+
+[[step]]
+id = "mobile.settings-guard"
+title = "SettingsGuard — back out of the guarded settings screens"
+status = "done"
+evidence = "implementation order 5 **Done.** for the AOSP profile; policy/SettingsGuard.kt on master (commit c71662c, PR #64); Xiaomi profile still to add"
+
+[[step]]
+id = "mobile.device-admin"
+title = "Device Admin — uninstall friction and onDisableRequested warning"
+status = "done"
+evidence = "implementation order 6 **Done.**; admin/HolyBlockerAdminReceiver.kt on master (commit 43a2c84, PR #66)"
+
+[[step]]
+id = "mobile.empty-harvest"
+title = "The empty harvest — isAccessibilityTool fix"
+status = "done"
+evidence = "implementation order 7 **Done.**; accessibility_service_config.xml isAccessibilityTool on master (commit 7e6c0ca, PR #76)"
+
+[[step]]
+id = "mobile.split-screen"
+title = "Split-screen window resolution"
+status = "done"
+evidence = "implementation order 8 **Done** for split screen; SettingsGuard window resolution on master (commit 20ebe86, PR #77); recents deferred on OEM hardware"
+
+[[step]]
+id = "mobile.tamper-log"
+title = "Tamper log — append-only guard-state record"
+status = "done"
+evidence = "implementation order 9 **Done.**; policy/TamperLog.kt and TamperLogStore.kt on master (commit 2cd44fb, PR #79)"
+
+[[step]]
+id = "mobile.foreground-status-boot"
+title = "Foreground service + restart-on-boot"
+status = "done"
+evidence = "implementation order 10 **Done.**; policy/GuardStatus.kt, GuardStatusService.kt, BootReceiver.kt on master (commit 914f128, PR #80)"
+
+[[step]]
+id = "mobile.vpn-dns-filter"
+title = "VpnService DNS filter"
+status = "done"
+evidence = "implementation order 11 **Done for DNS**; policy/NetworkGuard.kt, NetworkGuardService.kt, BlocklistStore.kt on master (commit a7909cb, PR #84); SNI/IP is step 14"
+
+[[step]]
+id = "mobile.mediaprojection-capture"
+title = "MediaProjection capture"
+status = "done"
+evidence = "implementation order 12 **Done for capture**; policy/ScreenCapture.kt, FrameGate.kt, FrameSink.kt, ScreenCaptureService.kt on master (commit b44dbff, PR #86); analysis is step 13"
+
+[[step]]
+id = "mobile.image-path"
+title = "The image path — classifier-head + LiteRT backbone + provisioning"
+status = "pending"
+evidence = ""
+depends_on = ["mobile.mediaprojection-capture"]
+
+[[step]]
+id = "mobile.sni-ip-filter"
+title = "SNI/IP filtering in the VPN"
+status = "pending"
+evidence = ""
+depends_on = ["mobile.vpn-dns-filter"]

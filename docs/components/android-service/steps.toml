@@ -1,0 +1,21 @@
+# Thin step ledger for android-service. Source of truth for whether each build step exists.
+#
+#   python -m tools.plan.ledger validate docs/components/android-service
+#   python -m tools.plan.ledger render   docs/components/android-service
+#
+# `done` means the step's implementation exists on master. It does NOT mean the
+# route is covered: live and observational verification lives in
+# docs/engineering/coverage.md, never here.
+#
+# Do not put narrative here. Gotchas, wrong-constant war stories, and "measured
+# wrong in module N" notes live in plan.md. `evidence` is one line pointing at
+# where the step landed (commit, PR, or the plan's own wording), not an argument.
+#
+# This component was planned but never created; the work shipped as apps/mobile.
+# There is exactly one settled step: the supersession itself.
+
+[[step]]
+id = "android-service.superseded"
+title = "superseded by apps/mobile — do not build against this plan"
+status = "done"
+evidence = "replacement plan docs/components/mobile/plan.md; work shipped as apps/mobile on master"

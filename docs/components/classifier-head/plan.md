@@ -135,12 +135,17 @@ in the Rust core.
 
 1. `head` + `weights` + `verdict` with unit tests, no FFI. Pure Rust, no artifact needed —
    this is the whole reason to start here rather than at the runtime.
+   <!-- step: classifier-head.head-weights-verdict -->
 2. `classifier-head-ffi` and the Kotlin bindings.
+   <!-- step: classifier-head.ffi -->
 3. Wire `apps/mobile`'s `FrameSink` to it, once a backbone exists to produce embeddings —
    see [mobile/plan.md](../mobile/plan.md) §9.
+   <!-- step: classifier-head.mobile-frame-sink -->
 4. Wire the Windows path to the same crate, replacing the head half of `image-sandbox`'s ONNX
    graph if and when that export also terminates at the embedding.
+   <!-- step: classifier-head.windows-path -->
 5. `train`, when there is a feedback channel to train from.
+   <!-- step: classifier-head.train -->
 
 ## What this does not cover
 
