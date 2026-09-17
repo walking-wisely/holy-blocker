@@ -246,16 +246,26 @@ visible feedback when the window is closed.
 
 ## Implementation order
 
-1. `ipc-handlers.ts` — extract the existing `daemon:get-status` handler out of `main.ts` and add `daemon:get-events` with an empty ring buffer. Wire `registerIpcHandlers` into `main.ts`. No daemon connection yet; stubs are fine at this step.
-2. `daemon-ipc.ts` — named pipe client with the reconnect loop. Write a Vitest test against a mock `net.Server` before wiring it into the app.
-3. Wire `DaemonIpc` into `ipc-handlers.ts` so `daemon:get-status` returns live connection state and `daemon:get-events` drains the ring buffer populated by `scan_event` messages.
+1. ~~`ipc-handlers.ts` — extract the existing `daemon:get-status` handler out of `main.ts` and add `daemon:get-events` with an empty ring buffer. Wire `registerIpcHandlers` into `main.ts`. No daemon connection yet; stubs are fine at this step.~~ **Done.**
+<!-- step: desktop.ipc-handlers -->
+2. ~~`daemon-ipc.ts` — named pipe client with the reconnect loop. Write a Vitest test against a mock `net.Server` before wiring it into the app.~~ **Done.**
+<!-- step: desktop.daemon-ipc -->
+3. ~~Wire `DaemonIpc` into `ipc-handlers.ts` so `daemon:get-status` returns live connection state and `daemon:get-events` drains the ring buffer populated by `scan_event` messages.~~ **Done.**
+<!-- step: desktop.wire-daemon-ipc -->
 4. `stats-store.ts` — event persistence and install timestamp. Add `stats:get-summary` to `ipc-handlers.ts`.
+<!-- step: desktop.stats-store -->
 5. Extend `preload.ts` with all new bridge methods and update `src/renderer/src/types.ts`.
+<!-- step: desktop.preload-bridge -->
 6. `MonitorView.tsx` — sobriety counter, weekly summary, score histogram, top windows, live event list with false-positive flagging.
+<!-- step: desktop.monitor-view -->
 7. `PolicyView.tsx` — protection mode selector, threshold editor, and accountability partner config.
+<!-- step: desktop.policy-view -->
 8. `voice-adapter-electron.ts` + wire `packages/voice-gate` into `ipc-handlers.ts` for `override:attempt`.
+<!-- step: desktop.voice-adapter -->
 9. `OverrideGateView.tsx` — full-screen verse-reading overlay.
+<!-- step: desktop.override-gate-view -->
 10. System tray icon and right-click menu.
+<!-- step: desktop.tray -->
 
 ## What this does not cover
 

@@ -54,6 +54,8 @@ jobs:
               - 'tools/plan/**'
               - 'docs/components/**/steps.toml'
               - 'docs/components/**/plan.md'
+              - 'docs/engineering/steps.toml'
+              - 'docs/engineering/plan.md'
 
   desktop:
     needs: changes
@@ -133,5 +135,5 @@ jobs:
       - name: Test ledger tools
         run: python -m unittest discover -s tools/plan/tests -t .
 
-      - name: Validate step manifests (packages without steps.toml are listed, not validated)
-        run: python -m tools.plan.ledger validate docs/components/*/
+      - name: Validate step manifests (every component has one; the test fails if not)
+        run: python -m tools.plan.ledger validate docs/components/*/ docs/engineering

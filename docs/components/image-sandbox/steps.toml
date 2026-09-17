@@ -1,0 +1,63 @@
+# Thin step ledger for image-sandbox. Source of truth for whether each build step exists.
+#
+#   python -m tools.plan.ledger validate docs/components/image-sandbox
+#   python -m tools.plan.ledger render   docs/components/image-sandbox
+#
+# `done` means the step's implementation exists on master. It does NOT mean the
+# route is covered: live and observational verification lives in
+# docs/engineering/coverage.md, never here. Steps 1, 2, 7 and 8 are the plan's
+# own deferred work; the model path was built first.
+#
+# Do not put narrative here. Gotchas, wrong-constant war stories, and "measured
+# wrong in module N" notes live in plan.md. `evidence` is one line pointing at
+# where the step landed (commit, PR, or the plan's own wording), not an argument.
+#
+# Steps are the numbered `## Implementation order` list, in the plan's own order.
+
+[[step]]
+id = "image-sandbox.hash"
+title = "hash — perceptual hashing and Hamming distance"
+status = "pending"
+evidence = ""
+
+[[step]]
+id = "image-sandbox.db"
+title = "db — SQLite hash lookup"
+status = "pending"
+evidence = ""
+
+[[step]]
+id = "image-sandbox.sandbox"
+title = "sandbox — decision entry point"
+status = "done"
+evidence = "implementation order 3 **Done**; src/sandbox.rs on master (commit 885e890, PR #85)"
+
+[[step]]
+id = "image-sandbox.classifier"
+title = "classifier — ONNX inference behind a feature flag"
+status = "done"
+evidence = "implementation order 4 **Done** as classifier.rs; src/classifier.rs on master (commit 885e890, PR #85)"
+
+[[step]]
+id = "image-sandbox.mitm-wiring"
+title = "wire ImageSandbox into mitm-proxy at the Phase 4 hook"
+status = "done"
+evidence = "implementation order 5 **Done.**; Phase 4 hook in packages/mitm-proxy/src/scan.rs on master (commit 885e890, PR #85)"
+
+[[step]]
+id = "image-sandbox.measured-geometry"
+title = "measured threshold, size floor, and tile-max geometry"
+status = "done"
+evidence = "implementation order 6 **Done.**; src/preprocess.rs and src/sandbox.rs constants on master, pinned by tests/tile_parity.rs (commit 74723cd, PR #87)"
+
+[[step]]
+id = "image-sandbox.hash-cache"
+title = "hash.rs + db.rs as a short-circuit cache"
+status = "pending"
+evidence = ""
+
+[[step]]
+id = "image-sandbox.fcn-tile-max"
+title = "fully convolutional equivalent of tile-max"
+status = "pending"
+evidence = ""

@@ -1,0 +1,65 @@
+# Thin step ledger for backend. Source of truth for whether each build step exists.
+#
+#   python -m tools.plan.ledger validate docs/components/backend
+#   python -m tools.plan.ledger render   docs/components/backend
+#
+# `done` means the step's implementation exists on master. It does NOT mean the
+# route is covered: live and observational verification lives in
+# docs/engineering/coverage.md, never here.
+#
+# Do not put narrative here. Gotchas, wrong-constant war stories, and "measured
+# wrong in module N" notes live in plan.md. `evidence` is one line pointing at
+# where the step landed (commit, PR, or the plan's own wording), not an argument.
+#
+# Steps are the plan's section 7 implementation-order items, in the plan's own
+# order. The component is planned-not-created: no backend/ code exists on master,
+# so every step is pending.
+
+[[step]]
+id = "backend.invite-model-store"
+title = "internal/invite model.go + store.go — SQLite schema and CRUD helpers"
+status = "pending"
+evidence = ""
+verify = "cd backend && go test ./..."
+
+[[step]]
+id = "backend.notify-email"
+title = "internal/notify email.go — SMTP client wrapper and template rendering"
+status = "pending"
+evidence = ""
+verify = "cd backend && go test ./..."
+
+[[step]]
+id = "backend.invite-service"
+title = "internal/invite service.go — generate, confirm, cancel, remove-partner, poll"
+status = "pending"
+evidence = ""
+verify = "cd backend && go test ./..."
+
+[[step]]
+id = "backend.encouragement-store"
+title = "internal/encouragement store.go — queue helpers (enqueue, list-pending, ack)"
+status = "pending"
+evidence = ""
+verify = "cd backend && go test ./..."
+
+[[step]]
+id = "backend.api-handlers"
+title = "api handlers.go + middleware.go — handlers, bearer auth, logging, rate limiting"
+status = "pending"
+evidence = ""
+verify = "cd backend && go test ./..."
+
+[[step]]
+id = "backend.server-main"
+title = "cmd/server main.go — wiring, config loading, graceful shutdown"
+status = "pending"
+evidence = ""
+verify = "cd backend && go test ./..."
+
+[[step]]
+id = "backend.weekly-summary-dispatch"
+title = "Weekly summary dispatch — timer goroutine fallback (not required for v1)"
+status = "pending"
+evidence = ""
+verify = "cd backend && go test ./..."

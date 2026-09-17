@@ -176,12 +176,19 @@ accountability feature.
 
 1. Project scaffold: `pnpm create vite apps/web --template react-ts`, React Router,
    TanStack Query, base layout
+<!-- step: frontend.scaffold -->
 2. `api/client.ts` + `api/invites.ts` — typed wrappers for all partner endpoints
+<!-- step: frontend.api-client -->
 3. `InviteLanding.tsx` — the page partners actually land on; most important to get right
+<!-- step: frontend.invite-landing -->
 4. `InviteVerify.tsx` and `Unsubscribe.tsx` — short, mostly state-machine components
+<!-- step: frontend.invite-verify-unsubscribe -->
 5. `Encouragement.tsx`
+<!-- step: frontend.encouragement -->
 6. Landing page (`/`) and `Download.tsx` — can be static placeholders initially
+<!-- step: frontend.marketing -->
 7. `Privacy.tsx`
+<!-- step: frontend.privacy -->
 
 ---
 

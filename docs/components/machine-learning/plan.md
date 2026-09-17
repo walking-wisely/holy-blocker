@@ -362,12 +362,24 @@ testpaths = ["tests"]
 
 ## Implementation order
 
+Status is the ledger's: `machine-learning/steps.toml` is the source of truth, and
+the items below carry whatever that manifest says. The fine-tuning steps (2, 4, 5,
+6) are **not on master** — the files they name do not exist in this tree, as the
+note at the top of this plan already says; the `**Done.**` marks they once carried
+were aspirational.
+
 1. ~~Add `pytest` to `pyproject.toml` `[project.optional-dependencies]` as `test = ["pytest"]`; add `[tool.pytest.ini_options]` pointing at `tests/`.~~ **Done.**
-2. ~~`dataset.py` — implement `LocalImageDataset` and `load_dataset`; write `tests/test_dataset.py` with synthetic images using `tmp_path`.~~ **Done.**
+   <!-- step: machine-learning.pytest-config -->
+2. `dataset.py` — implement `LocalImageDataset` and `load_dataset`; write `tests/test_dataset.py` with synthetic images using `tmp_path`. **Not on master** (`dataset.py` absent from the tree).
+   <!-- step: machine-learning.dataset -->
 3. ~~`eval.py` — implement `evaluate` and `report`; write `tests/test_eval.py` with a trivially correct model on a two-label synthetic loader.~~ **Done.** Extended past the original scope with `collect_predictions`, `sweep_thresholds`, `misclassified`, and a `harness.py` CLI (`holy-blocker-eval`) that reports false positives and negatives against a local evaluation set.
-4. ~~Wire `dataset.py` and `eval.py` into `train.py` — replace the placeholder training loop with a real epoch loop over `load_dataset`, a validation call to `evaluate` after each epoch, and progress printing via `report`.~~ **Done.**
-5. ~~`quantize.py` — implement `quantize_onnx`; extend `tests/test_export.py` to verify the quantized model loads and has a smaller file size than the original.~~ **Done.** Verified at 5.81 MB → 1.61 MB.
-6. ~~`export_tflite.py` — implement TFLite export; add `tests/test_export.py` coverage for the TFLite path using a tiny synthetic model.~~ **Done.** Verified end to end: a trained checkpoint converts to a 5.90 MB flatbuffer that loads and runs in the LiteRT interpreter.
+   <!-- step: machine-learning.eval -->
+4. Wire `dataset.py` and `eval.py` into `train.py` — replace the placeholder training loop with a real epoch loop over `load_dataset`, a validation call to `evaluate` after each epoch, and progress printing via `report`. **Not on master** (`train.py` absent from the tree).
+   <!-- step: machine-learning.train-wiring -->
+5. `quantize.py` — implement `quantize_onnx`; extend `tests/test_export.py` to verify the quantized model loads and has a smaller file size than the original. **Not on master** (`quantize.py` absent from the tree).
+   <!-- step: machine-learning.quantize -->
+6. `export_tflite.py` — implement TFLite export; add `tests/test_export.py` coverage for the TFLite path using a tiny synthetic model. **Not on master** (`export_tflite.py` absent from the tree).
+   <!-- step: machine-learning.export-tflite -->
 
 ## Deviations from the original plan
 

@@ -252,15 +252,25 @@ Tests to write:
 ## Implementation order
 
 1. ~~`tls.rs` — cert generation and two-leg TLS setup; add `rcgen`, `tokio-rustls`, `rustls`, and `rustls-native-certs` to `Cargo.toml`; test with a synthetic CA and SNI round-trip.~~ **Done.**
+<!-- step: mitm-proxy.tls -->
 2. ~~`connect.rs` — CONNECT handler replacing the current 501 branch; test SNI extraction from a raw `ClientHello` byte sequence.~~ **Done.**
+<!-- step: mitm-proxy.connect -->
 3. ~~`tunnel.rs` — HTTP loop with phase 3/4/5 hook call sites (all stubs, always Allow for now); test header forwarding and block-on-URL-scan behavior using injected hook closures.~~ **Done.**
+<!-- step: mitm-proxy.tunnel -->
 4. ~~`scan.rs` — policy hook stub with correct types; unit test the stub contracts.~~ **Done.**
+<!-- step: mitm-proxy.scan -->
 5. ~~Wire phase 4 image stub and phase 5 tee stub into `tunnel`; confirm existing tests still pass with no real inference running.~~ **Done.**
+<!-- step: mitm-proxy.hook-wiring -->
 6. ~~Wire `text-policy` into `scan.rs`; replace stubs with real `PolicyEngine` calls; test clean/blocked URL and body paths.~~ **Done.**
+<!-- step: mitm-proxy.text-policy -->
 7. ~~`ProtectionMode` — add enum and `apply_mode` to `scan.rs`; thread an `Arc<AtomicU8>` through `ScanHooks` closures in `main.rs` so mode can be changed at runtime without rebuilding hooks.~~ **Done.**
+<!-- step: mitm-proxy.protection-mode -->
 8. ~~Add Criterion benchmark suite (`benches/tunnel.rs`, `benches/tls_cert.rs`, `benches/headers.rs`); expose a `[lib]` target so benches can import from the crate.~~ **Done.**
+<!-- step: mitm-proxy.benchmarks -->
 9. ~~Optimize `TlsState::server_config` cold miss — reuse a single pre-generated leaf `KeyPair` instead of calling `KeyPair::generate()` on every cache miss. Benchmarks showed cold cert generation at ~13.6 ms (dominated by ECDSA key generation); reusing the leaf `KeyPair` drops it below 2 ms.~~ **Done.**
+<!-- step: mitm-proxy.tls-cold-miss -->
 10. ~~Add end-to-end integration tests (`tests/proxy_integration.rs`): spin up real TCP listeners on ephemeral ports and drive them with a `reqwest` client. Covers plain HTTP forwarding and the full CONNECT → TLS interception → tunnel → origin round trip.~~ **Done.**
+<!-- step: mitm-proxy.integration-tests -->
 
 8. ~~Add end-to-end integration tests (`tests/proxy_integration.rs`): spin up real TCP listeners on ephemeral ports and drive them with a `reqwest` client configured to use the proxy. Covers plain HTTP forwarding and the full CONNECT → TLS interception → tunnel → origin round trip. Add `reqwest` (rustls-tls) to dev-dependencies; expose `proxy` and `connect` modules from `lib.rs` so integration tests can import `proxy::handle`.~~ **Done.**
 

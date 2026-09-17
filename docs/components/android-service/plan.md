@@ -1,5 +1,7 @@
 # Android Service — superseded
 
+<!-- step: android-service.superseded -->
+
 **This plan is not current. The Android work lives in [`apps/mobile/`](../mobile/plan.md).**
 
 `native-modules/android-service/` was never created and will not be. When the Android MVP was
