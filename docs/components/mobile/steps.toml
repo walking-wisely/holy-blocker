@@ -79,13 +79,13 @@ evidence = "implementation order 10 **Done.**; policy/GuardStatus.kt, GuardStatu
 id = "mobile.vpn-dns-filter"
 title = "VpnService DNS filter"
 status = "done"
-evidence = "implementation order 11 **Done for DNS**; policy/NetworkGuard.kt, NetworkGuardService.kt, BlocklistStore.kt on master (commit a7909cb, PR #84); SNI/IP is step 14"
+evidence = "implementation order 11 **Done for DNS**; NetworkGuard.kt (policy/) + NetworkGuardService.kt + BlocklistStore.kt under apps/mobile/app/src/main/kotlin/com/holyblocker/mobile/ on master (commit a7909cb, PR #84); SNI/IP is step 14"
 
 [[step]]
 id = "mobile.mediaprojection-capture"
 title = "MediaProjection capture"
 status = "done"
-evidence = "implementation order 12 **Done for capture**; policy/ScreenCapture.kt, FrameGate.kt, FrameSink.kt, ScreenCaptureService.kt on master (commit b44dbff, PR #86); analysis is step 13"
+evidence = "implementation order 12 **Done for capture**; ScreenCapture.kt + FrameGate.kt (policy/) + FrameSink.kt + ScreenCaptureService.kt under apps/mobile/app/src/main/kotlin/com/holyblocker/mobile/ on master (commit b44dbff, PR #86); analysis is step 13"
 
 [[step]]
 id = "mobile.image-path"
