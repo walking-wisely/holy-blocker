@@ -270,9 +270,9 @@ Tests to write:
 9. ~~Optimize `TlsState::server_config` cold miss — reuse a single pre-generated leaf `KeyPair` instead of calling `KeyPair::generate()` on every cache miss. Benchmarks showed cold cert generation at ~13.6 ms (dominated by ECDSA key generation); reusing the leaf `KeyPair` drops it below 2 ms.~~ **Done.**
 <!-- step: mitm-proxy.tls-cold-miss -->
 10. ~~Add end-to-end integration tests (`tests/proxy_integration.rs`): spin up real TCP listeners on ephemeral ports and drive them with a `reqwest` client. Covers plain HTTP forwarding and the full CONNECT → TLS interception → tunnel → origin round trip.~~ **Done.**
+<!-- step: mitm-proxy.integration-tests -->
 
 8. ~~Add end-to-end integration tests (`tests/proxy_integration.rs`): spin up real TCP listeners on ephemeral ports and drive them with a `reqwest` client configured to use the proxy. Covers plain HTTP forwarding and the full CONNECT → TLS interception → tunnel → origin round trip. Add `reqwest` (rustls-tls) to dev-dependencies; expose `proxy` and `connect` modules from `lib.rs` so integration tests can import `proxy::handle`.~~ **Done.**
-<!-- step: mitm-proxy.integration-tests -->
 
 ## What this does not cover
 
