@@ -31,11 +31,13 @@ implementation-order lists rather than a heading family.
 
 Give every component with a `plan.md` a `steps.toml` and one step marker comment
 per step in the plan, so `ledger next` answers for the whole repository and
-not four packages. Six components exist and are being built (`desktop`,
-`image-sandbox`, `machine-learning`, `mitm-proxy`, `mobile`, `win-daemon`); six are
-planned but not created (`backend`, `classifier-head`, `frontend`, `video-watchdog`,
-`voice-gate`, `win-network`); `android-service` is a superseded stub whose single
-step records that it was replaced by `apps/mobile`.
+not four packages. Seven components exist in some form and carry done steps
+(`desktop`, `image-sandbox`, `machine-learning`, `mitm-proxy`, `mobile`,
+`win-daemon`, and `win-network`, whose scaffold and first modules are on `master`
+even though two of its steps are still stubs); five are planned but not created
+(`backend`, `classifier-head`, `frontend`, `video-watchdog`, `voice-gate`);
+`android-service` is a superseded stub whose single step records that it was
+replaced by `apps/mobile`.
 
 A manifest is thin. Status derivation and evidence anchoring are per the ledger's
 own contract: `done` means the implementation exists on `master`, `evidence` is one
