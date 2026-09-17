@@ -10,6 +10,7 @@ Why this project exists. The covenant rationale, Christian mission, and what tha
 ### [`product/`](product/)
 What the product is and how it behaves from a user perspective. Platform-neutral.
 
+- [`product/outcomes.md`](product/outcomes.md) — user-facing capabilities, their honest status, and the packages that carry them
 - [`product/flows/`](product/flows/) — runtime behavior traces: what happens step by step when a block fires, a warn interstitial appears, an override is attempted, etc.
 
 ### [`architecture/`](architecture/)

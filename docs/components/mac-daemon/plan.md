@@ -186,7 +186,7 @@ it, and everything that makes the daemon a well-behaved system citizen.
 
 ## Modules to add
 
-### 1. `PrivilegedCommand` — the process-execution edge
+### 1. `PrivilegedCommand` — the process-execution edge <!-- step: mac-daemon.privileged-command -->
 
 ```
 Sources/MacDaemon/PrivilegedCommand.swift
@@ -219,7 +219,7 @@ Every module below is constructed with a `CommandRunner` and never touches `Proc
 is what makes "did we build the right argv?" and "did we parse the output correctly?" unit-testable
 with no side effects, which is the bulk of the logic in this layer.
 
-### 2. `CATrust` — root CA installation in the System keychain
+### 2. `CATrust` — root CA installation in the System keychain <!-- step: mac-daemon.catrust -->
 
 ```
 Sources/MacDaemon/CATrust.swift
@@ -282,7 +282,7 @@ known gap and handle it in Layer 1 step 6.
   EKU, SAN requirements). The proxy's `rcgen` configuration must satisfy these or Safari rejects
   the leaf even with the root trusted.
 
-### 3. `NetworkServices` — enumerating and parsing network services
+### 3. `NetworkServices` — enumerating and parsing network services <!-- step: mac-daemon.network-services -->
 
 ```
 Sources/MacDaemon/NetworkServices.swift
@@ -326,7 +326,7 @@ Both parsers are **pure string functions** with no `CommandRunner` dependency �
 highest-value tests in this layer. Test against captured real output including: the header line,
 disabled `*`-prefixed entries, service names containing spaces, an empty list, and malformed input.
 
-### 4. `ProxyConfiguration` — pointing macOS at the proxy, and putting it back
+### 4. `ProxyConfiguration` — pointing macOS at the proxy, and putting it back <!-- step: mac-daemon.proxy-configuration -->
 
 ```
 Sources/MacDaemon/ProxyConfiguration.swift
@@ -400,7 +400,7 @@ here too or the user cannot join a hotel network while protected.
 - [Apple — `CFNetwork` proxy support](https://developer.apple.com/documentation/cfnetwork/cfproxysupport)
   — defines *which* clients honour these system settings, which is the coverage question below.
 
-### 5. `ProxySupervisor` — running and monitoring the Rust proxy
+### 5. `ProxySupervisor` — running and monitoring the Rust proxy <!-- step: mac-daemon.proxy-supervisor -->
 
 ```
 Sources/MacDaemon/ProxySupervisor.swift
@@ -435,7 +435,7 @@ side needs no change once the Rust binary grows a CLI, but until it does, `HOLY_
 only changes where the supervisor *probes*, not where the proxy *binds*. Giving `mitm-proxy` a
 `--port` and `--ca-dir` is a prerequisite for running on any other port.
 
-### 6. Firefox NSS trust — `FirefoxTrust.swift`
+### 6. Firefox NSS trust — `FirefoxTrust.swift` <!-- step: mac-daemon.firefox-trust -->
 
 Firefox keeps its own NSS trust store and ignores the System keychain, so `CATrust` alone leaves
 every Firefox user staring at certificate errors. The `Certificates` → `ImportEnterpriseRoots`
@@ -652,7 +652,7 @@ dominated by this path.
 
 1. ~~Scaffold the SwiftPM package: `Package.swift` with one executable target and one test target.
    Confirm `swift build` and `swift test` both run under Command Line Tools with no Xcode.~~
-   **Done.** Test invocation is `scripts/test.sh` — see the build-environment section above.
+   **Done.** Test invocation is `scripts/test.sh` — see the build-environment section above. <!-- step: mac-daemon.package-scaffold -->
 2. ~~`PrivilegedCommand.swift` — the `CommandRunner` protocol, the real runner, and the fake.
    Nothing else can be tested until this exists.~~ **Done.**
 3. ~~`NetworkServices.swift` — pure parsers. Tests first; these need no fake runner at all.~~
@@ -714,7 +714,7 @@ Four things, recorded because they alter the plan rather than merely detail it:
    reserves that right permanently (no MDM can remove it). So the daemon must treat "I no longer
    have capture" as a reportable state transition, not as a reason to log and exit.
 
-## Module 0 — the signed bundle, and the TCC identity trap
+## Module 0 — the signed bundle, and the TCC identity trap <!-- step: mac-daemon.signed-bundle -->
 
 **This is a prerequisite of every other Layer 2 module and must be built first.**
 
@@ -817,7 +817,7 @@ revocation.
 
 ## Modules to add
 
-### 7. `PermissionGate` — TCC state, and the account model that locks it
+### 7. `PermissionGate` — TCC state, and the account model that locks it <!-- step: mac-daemon.permission-gate -->
 
 ```
 Sources/MacDaemon/PermissionGate.swift
@@ -987,7 +987,7 @@ onboarding *does* with that is still to be resolved in `content-interception.md`
 
 ---
 
-### 8. `ScreenCapture` — `ScreenCaptureKit`
+### 8. `ScreenCapture` — `ScreenCaptureKit` <!-- step: mac-daemon.screen-capture -->
 
 ```
 Sources/MacDaemon/ScreenCapture.swift
@@ -1074,7 +1074,7 @@ Recording to it, not on anything in this module.
 
 ---
 
-### 9. `Scanner` and `ScanLoop` — the interface and the scheduler
+### 9. `Scanner` and `ScanLoop` — the interface and the scheduler <!-- step: mac-daemon.scanner-scan-loop -->
 
 ```
 Sources/MacDaemon/Scanner.swift
@@ -1179,7 +1179,7 @@ type carries the information once it exists, not to implement the detection itse
 
 ---
 
-### 10. `Overlay` — borderless `NSWindow`
+### 10. `Overlay` — borderless `NSWindow` <!-- step: mac-daemon.overlay -->
 
 ```
 Sources/MacDaemon/Overlay.swift
@@ -1243,7 +1243,7 @@ for what was learned and what is still unverified.
 
 ---
 
-### 11. `EventHooks` — window lifecycle and scroll
+### 11. `EventHooks` — window lifecycle and scroll <!-- step: mac-daemon.event-hooks -->
 
 ```
 Sources/MacDaemon/EventHooks.swift
@@ -1283,7 +1283,7 @@ not assert what it has not run.
 
 ---
 
-### 12. `AccessibilityText` — AX text extraction. **Done.**
+### 12. `AccessibilityText` — AX text extraction. **Done.** <!-- step: mac-daemon.accessibility-text -->
 
 ```
 Sources/MacDaemon/AccessibilityText.swift
@@ -1373,7 +1373,7 @@ terminal. Chrome proves the web-content path works; this is a 20-second manual r
 
 ---
 
-### 13. `FullscreenControl` — AX `AXFullScreen`
+### 13. `FullscreenControl` — AX `AXFullScreen` <!-- step: mac-daemon.fullscreen-control -->
 
 ```
 Sources/MacDaemon/FullscreenControl.swift
@@ -1390,7 +1390,7 @@ window can be composited above them and covering is impossible by construction.
 
 ---
 
-### 14. `DaemonIPC` — carrying verdicts to the desktop app
+### 14. `DaemonIPC` — carrying verdicts to the desktop app <!-- step: mac-daemon.daemon-ipc -->
 
 ```
 Sources/MacDaemon/DaemonIPC.swift
@@ -1421,7 +1421,7 @@ back the other way — none of which is possible without this module.
 
 ---
 
-### 15. `SettingsGuard` — notice the settings pane, and record it
+### 15. `SettingsGuard` — notice the settings pane, and record it <!-- step: mac-daemon.settings-guard -->
 
 ```
 Sources/MacDaemon/SettingsGuard.swift
@@ -1458,7 +1458,7 @@ module is defence in depth on top of that, never a substitute for it.
 
 ---
 
-### 16. `TextPolicyFFI` — the Rust policy engine over UniFFI. **Done.**
+### 16. `TextPolicyFFI` — the Rust policy engine over UniFFI. **Done.** <!-- step: mac-daemon.text-policy-ffi -->
 
 ```
 scripts/build-ffi.sh
@@ -1764,7 +1764,7 @@ merged; 6 is human-only, no code):
      means widening its API *and* accepting a new false-negative class — a phrase legitimately
      wrapped across two AX elements would stop matching. That is a trade between two error
      directions and deserves a measurement rather than a guess, which nothing in this repo can
-     supply yet. Recorded in [backlog.md](backlog.md).
+     supply yet. Recorded in [backlog.md](backlog.md). <!-- step: mac-daemon.accessibility-scanner -->
 5. ~~**`feat/mac-daemon-agent-render-loop`** (needs 3+4 merged) — rewires `runAgent()` in
    `Sources/holy-blocker-macd/main.swift`: replaces the `Thread.sleep(30s)` poll loop with
    `AppLifecycle.configureAccessoryApp()` + a real `NSApplication` run loop. A main-thread
@@ -1790,7 +1790,7 @@ merged; 6 is human-only, no code):
    second, non-`async` function that does the Timer wiring did not fix it either — the same error
    persisted with `gate`/`capture` as plain parameters. What actually resolved it was giving the
    timers one `@MainActor` class, `AgentRenderLoop`, to capture instead of two plain ones — the
-   same reason `OverlayController` itself is `@MainActor` and not a plain class. 313 tests.
+   same reason `OverlayController` itself is `@MainActor` and not a plain class. 313 tests. <!-- step: mac-daemon.agent-render-loop -->
 6. **Live verification** (needs 5 merged, human-in-the-loop, no code): rebuild bindings and bundle,
    reload the LaunchAgent, grant Accessibility + Screen Recording for real via System Settings
    against `HolyBlockerDaemon.app` specifically (never a shell binary — the responsible-process
@@ -1799,7 +1799,7 @@ merged; 6 is human-only, no code):
    `text-policy-ffi`'s own test fixtures) frontmost and confirm an interstitial appears and
    swallows a click within ~1–2s, confirm it tears down over clean text, check native-fullscreen
    Space interaction, and multi-display connect/disconnect if a second display is available. Strike
-   the completed order items above and update this file's status once done.
+   the completed order items above and update this file's status once done. <!-- step: mac-daemon.live-e2e -->
 
 ### Outstanding verification — one item blocks a tamper-resistance claim
 

@@ -1,0 +1,72 @@
+# Thin step ledger for domain-blocklist. Source of truth for whether each build step exists.
+#
+#   python -m tools.plan.ledger validate docs/components/domain-blocklist
+#   python -m tools.plan.ledger render   docs/components/domain-blocklist
+#
+# `done` means the step's implementation exists on master. It does NOT mean the
+# route is covered: live and observational verification lives in
+# docs/engineering/coverage.md, never here.
+#
+# Do not put narrative here. Gotchas, wrong-constant war stories, and "measured
+# wrong in module N" notes live in plan.md. `evidence` is one line pointing at
+# where the step landed (commit, PR, or the plan's own wording), not an argument.
+
+[[step]]
+id = "domain-blocklist.domain-normalize"
+title = "domain-normalize — shared pure crate, built first (module 0)"
+status = "done"
+evidence = "implementation order 1 **Done.**; packages/domain-normalize on master (commit cde6409)"
+
+[[step]]
+id = "domain-blocklist.merge"
+title = "merge — normalize, scope, union, provenance, categories (module 2)"
+status = "done"
+evidence = "implementation order 2 **Done.**; src/merge.rs on master (commit 9533c25)"
+
+[[step]]
+id = "domain-blocklist.gates"
+title = "gates — the publish gates (module 5)"
+status = "done"
+evidence = "implementation order 3 **Done.**; src/gates.rs on master (commit b48c0f1)"
+
+[[step]]
+id = "domain-blocklist.sources"
+title = "sources — per-source fetch and parse (module 1)"
+status = "done"
+evidence = "implementation order 4 **Done, minus the real HTTP client** (built in cli); src/sources/ on master (commit 1010a0c)"
+
+[[step]]
+id = "domain-blocklist.liveness"
+title = "liveness — DNS-only revalidation with a TTL cache (module 3)"
+status = "done"
+evidence = "implementation order 5 **Done, minus the real DNS client** (built in cli); src/liveness/ on master (commit dd8627e)"
+
+[[step]]
+id = "domain-blocklist.fst-build"
+title = "fst_build — the on-device artifact (module 4)"
+status = "done"
+evidence = "implementation order 6 **Done.**; src/fst_build.rs on master (commit eada2be, PR #22)"
+
+[[step]]
+id = "domain-blocklist.cli"
+title = "cli — the pipeline entry point (module 7)"
+status = "done"
+evidence = "implementation order 7 **Done** with follow-ups; src/main.rs on master (commit 8801230, PR #24)"
+
+[[step]]
+id = "domain-blocklist.net-shield-integration"
+title = "net-shield integration — precedence table and shared normalize (module 6)"
+status = "done"
+evidence = "implementation order 8 **Done.**; packages/net-shield/src/blocklist.rs on master (commit bc713c8, PR #23)"
+
+[[step]]
+id = "domain-blocklist.mmap-benchmark"
+title = "mmap major-fault benchmark"
+status = "pending"
+evidence = ""
+
+[[step]]
+id = "domain-blocklist.overlay"
+title = "overlay — fast-cadence additions/removals tier (module 8)"
+status = "pending"
+evidence = ""
