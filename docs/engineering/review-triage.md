@@ -4,7 +4,8 @@ After a review finds something, what happens? This page answers that. `step-loop
 gate 5 used to say only "if the review finds a load-bearing gap, go back to gate 1",
 which leaves every non-blocking finding and every judgment call unspecified. This is
 the specification those words pointed at: severity tiers, a fix-attempt cap, a routing
-table, and the escalation packet the loop quotes instead of composing.
+table, and the escalation packet format (§4) that step 8 wires into `step-loop` so it
+quotes instead of composes freehand.
 
 Severity is ranked by consequence, on the same axis `adversarial-review` already uses
 ("a guard that fails open silently outranks a crash" — `.claude/skills/adversarial-review/SKILL.md`):
@@ -18,8 +19,8 @@ from this repo per tier.
 
 | Tier | Meaning | Example from this repo |
 |---|---|---|
-| **Blocking** | The module's stated purpose is not actually true, a trust boundary breaks, a guard fails open. | A DNS shield that answers a blocked domain with the real address under some code path: `coverage.md`'s live defect "A forged DNS answer from an off-path attacker" — `NetworkGuardService.ask()` writes an unvalidated upstream answer into the TUN (`apps/mobile/app/src/main/kotlin/com/holyblocker/mobile/NetworkGuardService.kt:299`), so a blocked name can be answered with the real address. A guard that fails open. |
-| **Non-blocking** | A real bug, off the current diff's critical path. | An off-by-one in a log formatter: the window-rect line in `win-daemon`'s `Log()` (`native-modules/win-daemon/src/main.cpp:42`). A bounds misprint changes what the console shows and nothing about whether the daemon acts on the event. |
+| **Blocking** | The module's stated purpose is not actually true, a trust boundary breaks, a guard fails open. | A DNS shield that trusts an unvalidated upstream answer on a forwarded query: `coverage.md`'s live defect "A forged DNS answer from an off-path attacker" — `NetworkGuardService.ask()` accepts a response from an unconnected socket with no transaction-ID or question check and writes it into the TUN (`apps/mobile/app/src/main/kotlin/com/holyblocker/mobile/NetworkGuardService.kt:299`), so an off-path attacker's forged answer is believed and the client is sent where the attacker says. A guard that fails open silently. |
+| **Non-blocking** | A real bug, off the current diff's critical path. | An off-by-one in a log formatter: the window-rect line in `win-daemon`'s `Log()` (`native-modules/win-daemon/src/main.cpp:42`) computes the size from `right - left`/`bottom - top` — if that were off by one it would change what the console prints and nothing about whether the daemon acts on the event. |
 | **Judgment call** | The right answer depends on risk tolerance or product taste, not on what is true. | Whether a permission-check that finds a weakness should fail open or fail closed: `PermissionGate.assess()` returns `.weakened` and the daemon runs anyway (`native-modules/mac-daemon/Sources/MacDaemon/PermissionGate.swift:411`); `docs/decisions/content-interception.md` records it as an open product decision. |
 
 ## 2. Fix-attempt cap
@@ -32,6 +33,10 @@ not a guideline:
 ```
 MAX_FIX_ATTEMPTS = 1
 ```
+
+This document is the contract; mechanical enforcement — `step-loop` actually
+refusing a third attempt — lands when step 8 wires the routing table (§3) into the
+skill. Until then the number is binding on the loop's operator, not on the skill.
 
 One attempt exists to answer the finding; the second run verifies the fix. Anything that
 still does not clear is either a mis-framed finding or a problem the first attempt did
