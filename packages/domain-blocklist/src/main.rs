@@ -388,8 +388,7 @@ async fn run(cli: cli::Cli) -> Result<()> {
     tracing::info!(
         merged = merge_output.entries.len(),
         dropped_normalization_failed = merge_output.report.dropped_normalization_failed,
-dropped_public_suffix_or_denylisted =
-            merge_output.report.dropped_public_suffix_or_denylisted,
+        dropped_shared_hosting_denylisted = merge_output.report.dropped_shared_hosting_denylisted,
         dropped_ip_literal = merge_output.report.dropped_ip_literal,
         "merged sources"
     );
@@ -422,8 +421,14 @@ dropped_public_suffix_or_denylisted =
     }
 
     // --- Liveness sweep -----------------------------------------------------------------------
+    // `None` when liveness was skipped entirely — there is no sweep data to report in that case,
+    // and `write_negative_outcome_report` writes nothing rather than an empty (and misleadingly
+    // "all clean") file.
+    let mut negative_report: Option<domain_blocklist::NegativeOutcomeReport> = None;
     if !cli.effective_skip_liveness() {
-        entries = run_liveness(&cli, entries).await?;
+        let (kept, report) = run_liveness(&cli, entries).await?;
+        entries = kept;
+        negative_report = Some(report);
     } else {
         tracing::warn!(
             "liveness skipped (--skip-liveness or --fixture-dir): every merged entry is kept without a DNS check"
@@ -562,6 +567,7 @@ dropped_public_suffix_or_denylisted =
         // useful triage input even when the build itself did not pass, and `--dry-run` (not gate
         // failure) is what actually gates whether anything is written to `--output`.
         write_review_queue(&cli.output, &personal_name_candidates, &review)?;
+        write_negative_outcome_report(&cli.output, &negative_report)?;
         bail!("one or more publish gates failed — see the gate log above; nothing was published");
     }
 
@@ -575,6 +581,7 @@ dropped_public_suffix_or_denylisted =
     }
 
     write_review_queue(&cli.output, &personal_name_candidates, &review)?;
+    write_negative_outcome_report(&cli.output, &negative_report)?;
     slots::publish(&cli.output, &artifact).context("failed to publish the artifact")?;
     tracing::info!(version, base = %cli.output.display(), "published");
     Ok(())
@@ -608,7 +615,7 @@ impl sweep::CheckpointSink for CacheStoreCheckpoint {
 async fn run_liveness(
     cli: &cli::Cli,
     entries: Vec<MergedEntry>,
-) -> Result<Vec<MergedEntry>> {
+) -> Result<(Vec<MergedEntry>, domain_blocklist::NegativeOutcomeReport)> {
     let cache = match &cli.cache {
         Some(path) => cache_store::load(path)?,
         None => {
@@ -659,7 +666,7 @@ async fn run_liveness(
     };
 
     let now = now_timestamp();
-let mut checkpoint = CacheStoreCheckpoint {
+    let mut checkpoint = CacheStoreCheckpoint {
         path: cli.cache.clone(),
     };
     let outcome = sweep::run_sweep(
@@ -685,10 +692,14 @@ let mut checkpoint = CacheStoreCheckpoint {
         cache_store::save(path, &outcome.cache)?;
     }
 
-    Ok(entries
-        .into_iter()
-        .filter(|e| !outcome.pruned_domains.contains(&e.domain))
-        .collect())
+    let report = domain_blocklist::negative_outcome_report(&outcome.cache);
+    Ok((
+        entries
+            .into_iter()
+            .filter(|e| !outcome.pruned_domains.contains(&e.domain))
+            .collect(),
+        report,
+    ))
 }
 
 /// Tallies `outcome.cache`'s verdicts into a log line naming each `Unknown` reason separately —
@@ -786,5 +797,26 @@ fn write_review_queue(
 /// `Dead`, `unknown:<reason>\t<domain>` for each distinct `Unknown` reason — to
 /// `liveness-negative-outcomes.txt`, one line per domain, sorted for reproducible diffs across
 /// runs. Writes nothing when `report` is `None` (liveness was skipped: `--skip-liveness` or
+/// `--fixture-dir`), since an absent file correctly reads as "no sweep data", where an empty file
+/// would misleadingly read as "swept clean, zero negatives".
+fn write_negative_outcome_report(
+    output: &Path,
+    report: &Option<domain_blocklist::NegativeOutcomeReport>,
+) -> Result<()> {
+    let Some(report) = report else {
+        return Ok(());
+    };
+    std::fs::create_dir_all(output).with_context(|| format!("failed to create {}", output.display()))?;
+
+    let mut lines = String::new();
+    for domain in &report.dead {
+        lines.push_str(&format!("dead\t{domain}\n"));
+    }
+    for (reason, domains) in &report.unknown_by_reason {
+        for domain in domains {
+            lines.push_str(&format!("unknown:{reason}\t{domain}\n"));
+        }
+    }
+    std::fs::write(output.join("liveness-negative-outcomes.txt"), lines)?;
     Ok(())
 }
