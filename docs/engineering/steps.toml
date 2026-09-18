@@ -4,8 +4,9 @@
 #   python -m tools.plan.ledger validate docs/engineering
 #   python -m tools.plan.ledger render   docs/engineering
 #
-# `done` means the step's implementation exists on master. It does NOT mean the
-# route is covered: live and observational verification lives in
+# Statuses: `pending` — not settled. `at-pr` — settled through every gate, branch
+# open at a PR, not yet on master. `done` — the step's implementation exists on
+# master; it does NOT mean the route is covered, verification lives in
 # docs/engineering/coverage.md, never here.
 #
 # Do not put narrative here. Gotchas and wrong-constant war stories live in
@@ -45,4 +46,43 @@ status = "pending"
 evidence = ""
 acceptance = "code"
 depends_on = ["engineering.claude-status-derived"]
+verify = "python -m unittest discover -s tools/plan/tests -t ."
+
+[[step]]
+id = "engineering.bug-kind-ledger"
+title = "bug kind and regression links in the ledger schema"
+status = "pending"
+evidence = ""
+acceptance = "code"
+depends_on = ["engineering.ledger-coverage"]
+verify = "python -m unittest discover -s tools/plan/tests -t ."
+
+[[step]]
+id = "engineering.review-triage-policy"
+title = "review triage policy — severity tiers, fix-attempt cap, escalation packet"
+status = "pending"
+evidence = ""
+acceptance = "product"
+verify = "python -m unittest discover -s tools/plan/tests -t ."
+
+[[step]]
+id = "engineering.privacy-review-skill"
+title = "privacy-review skill — data-class inventory gate"
+status = "pending"
+evidence = ""
+acceptance = "product"
+verify = "python -m unittest discover -s tools/plan/tests -t ."
+
+[[step]]
+id = "engineering.mandatory-review-gates"
+title = "wire security + privacy review into step-loop unconditionally"
+status = "pending"
+evidence = ""
+acceptance = "code"
+depends_on = [
+    "engineering.loop-enforcement",
+    "engineering.bug-kind-ledger",
+    "engineering.review-triage-policy",
+    "engineering.privacy-review-skill",
+]
 verify = "python -m unittest discover -s tools/plan/tests -t ."
