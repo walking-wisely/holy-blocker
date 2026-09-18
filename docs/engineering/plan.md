@@ -238,6 +238,17 @@ Deliverables, in order:
 
 Acceptance: `code`. Verify: `python -m unittest discover -s tools/plan/tests -t .`.
 
+#### Assumption audit
+
+| Claim | Falsifier | Observed | Verdict |
+|---|---|---|---|
+| `render`'s current table shape (`\| Step \| Status \| Evidence \|`) is asserted only in `test_ledger.py`'s render test and defined only in `ledger.py:170` | `grep -rn "Step \| Status" tools/plan/` | matches only `test_ledger.py:64` and `ledger.py:170` | **HOLDS** — adding the `Kind` column updates exactly those two sites, no other consumer |
+| Baseline test suite is green on this substrate commit, so later failures are attributable to this change | `python -m unittest discover -s tools/plan/tests -t .` | 85 tests, OK | **HOLDS** (run with `python3`; this machine has no `python` binary — verify-string discrepancy, non-load-bearing) |
+| `ledger.Step(...)` is constructed with at most 4 positional args (id/title/status/evidence) plus keywords, so two trailing defaulted fields are backward compatible | `grep -n "Step(" tools/plan/tests` and `tools/plan/todos.py` | all constructions ≤ 4 positional args; `todos.py` uses keywords throughout | **HOLDS** |
+| `todos.Todo(...)` is constructed only in `test_todos.py`'s `_todo` helper with keyword args; appending a defaulted `kind` field breaks nothing | `grep -rn "Todo(" tools/plan/tests/*.py` | single construction site, keyword args only | **HOLDS** |
+| No existing `kind` or `regressed_step` key in any steps.toml or tool file, so the new optional keys cannot collide with or re-validate existing data | `grep -rn "regressed_step\|kind" docs/engineering/steps.toml tools/plan/*.py` | only the `engineering.bug-kind-ledger` step id/name match; no data keys | **HOLDS** |
+| `gh` can open a PR against `walking-wisely/holy-blocker` | `gh auth status` | active account `walking-wisely`, `repo` scope | **HOLDS** — the plan's earlier FALSE (old READ-only account) is obsolete; the account was re-authed |
+
 ### Step 6 — review triage policy
 
 <!-- step: engineering.review-triage-policy -->

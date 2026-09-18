@@ -30,6 +30,12 @@ VALID_STATUS = ("pending", "at-pr", "done")
 # loop may merge the former on green and must stop at a PR for the latter two.
 VALID_ACCEPTANCE = ("code", "observation", "product")
 DEFAULT_ACCEPTANCE = "observation"
+# `feature` — a planned capability. `bug` — a defect found; a `bug` may name the step
+# it regressed (`regressed_step`) or stand alone when found by manual/exploratory testing.
+# Unknown/misspelled `kind` keys silently default to `feature` like every other optional
+# manifest field — a lost bug declaration is indistinguishable from none (recorded narrowing).
+VALID_KIND = ("feature", "bug")
+DEFAULT_KIND = "feature"
 MARKER_RE = re.compile(r"<!--\s*step:\s*([A-Za-z0-9._-]+)\s*-->")
 
 
@@ -42,6 +48,8 @@ class Step:
     acceptance: str = DEFAULT_ACCEPTANCE
     depends_on: tuple[str, ...] = field(default_factory=tuple)
     verify: str = ""
+    kind: str = DEFAULT_KIND
+    regressed_step: str = ""
 
 
 def load_manifest(package_dir: Path) -> list[Step]:
@@ -56,6 +64,8 @@ def load_manifest(package_dir: Path) -> list[Step]:
             acceptance=raw.get("acceptance", DEFAULT_ACCEPTANCE),
             depends_on=tuple(raw.get("depends_on", ())),
             verify=raw.get("verify", ""),
+            kind=raw.get("kind", DEFAULT_KIND),
+            regressed_step=raw.get("regressed_step", ""),
         )
         for raw in data.get("step", [])
     ]
@@ -79,6 +89,10 @@ def validate(steps: list[Step], markers: list[str]) -> list[str]:
             problems.append(f"{step.id}: done without evidence")
         if step.acceptance not in VALID_ACCEPTANCE:
             problems.append(f"{step.id}: invalid acceptance {step.acceptance!r}")
+        if step.kind not in VALID_KIND:
+            problems.append(f"{step.id}: invalid kind {step.kind!r}")
+        if step.regressed_step and step.regressed_step not in ids:
+            problems.append(f"{step.id}: unknown regressed_step {step.regressed_step!r}")
     problems.extend(_dependency_problems(steps))
 
     counts: dict[str, int] = {}
@@ -167,9 +181,9 @@ def next_plan(steps: list[Step]) -> tuple[Step | None, str]:
 
 
 def render(steps: list[Step]) -> str:
-    lines = ["| Step | Status | Evidence |", "|---|---|---|"]
+    lines = ["| Step | Kind | Status | Evidence |", "|---|---|---|---|"]
     for step in steps:
-        lines.append(f"| `{step.id}` | {step.status} | {step.evidence} |")
+        lines.append(f"| `{step.id}` | {step.kind} | {step.status} | {step.evidence} |")
     return "\n".join(lines)
 
 
