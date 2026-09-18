@@ -249,6 +249,8 @@ Acceptance: `code`. Verify: `python -m unittest discover -s tools/plan/tests -t 
 | No existing `kind` or `regressed_step` key in any steps.toml or tool file, so the new optional keys cannot collide with or re-validate existing data | `grep -rn "regressed_step\|kind" docs/engineering/steps.toml tools/plan/*.py` | only the `engineering.bug-kind-ledger` step id/name match; no data keys | **HOLDS** |
 | `gh` can open a PR against `walking-wisely/holy-blocker` | `gh auth status` | active account `walking-wisely`, `repo` scope | **HOLDS** — the plan's earlier FALSE (old READ-only account) is obsolete; the account was re-authed |
 
+### Step 6 — review triage policy
+
 <!-- step: engineering.review-triage-policy -->
 
 Create `docs/engineering/review-triage.md`. This document answers the question
