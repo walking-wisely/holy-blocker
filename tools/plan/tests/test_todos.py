@@ -64,6 +64,17 @@ class LoadStepsTest(unittest.TestCase):
         self.assertEqual(steps[0].id, "p.one")
         self.assertEqual(steps[0].status, "done")
         self.assertEqual(steps[1].status, "pending")
+        self.assertEqual(steps[0].kind, "feature")
+
+    def test_reads_kind_from_manifest(self):
+        tmp_path = Path("/tmp/todos-kind-test")
+        p = tmp_path / "steps.toml"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(_steps_toml([
+            {"id": "p.bug", "title": "a bug", "status": "pending", "kind": "bug"},
+        ]))
+        steps = todos.load_steps(p, "p")
+        self.assertEqual(steps[0].kind, "bug")
 
     def test_returns_empty_on_missing_file(self):
         self.assertEqual(todos.load_steps(Path("/nonexistent/steps.toml"), "x"), [])
@@ -97,12 +108,12 @@ class FormatBlockerFlagTest(unittest.TestCase):
 
 
 class ShowTest(unittest.TestCase):
-    def _todo(self, step_id="p.x", status="pending", verdict="merged", branch="feat/x", path="/w"):
+    def _todo(self, step_id="p.x", status="pending", verdict="merged", branch="feat/x", path="/w", kind="feature"):
         return todos.Todo(
             step_id=step_id, title="a step", status=status,
             acceptance="code", verify="", evidence="",
             package="p", worktree_path=path, branch=branch,
-            worktree_verdict=verdict, worktree_reason="test",
+            worktree_verdict=verdict, worktree_reason="test", kind=kind,
         )
 
     def _capture(self, todos_list, **kwargs):
@@ -140,3 +151,10 @@ class ShowTest(unittest.TestCase):
         ts = [self._todo("p.a", "pending", verdict="merged", path="/w/clean")]
         out = self._capture(ts, show_all=False, blockers_only=True)
         self.assertIn("no worktrees with blockers", out)
+
+    def test_bug_steps_carry_a_distinct_marker(self):
+        ts = [self._todo("p.bug", kind="bug"), self._todo("p.feat")]
+        out = self._capture(ts, show_all=False, blockers_only=False)
+        lines = [l for l in out.splitlines() if "p.bug" in l or "p.feat" in l]
+        self.assertTrue(any(todos.BUG_MARKER in l and "p.bug" in l for l in lines))
+        self.assertFalse(any(todos.BUG_MARKER in l and "p.feat" in l for l in lines))

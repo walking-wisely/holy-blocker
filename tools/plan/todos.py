@@ -29,6 +29,7 @@ from tools.plan import ledger, state
 
 ENGINEERING_DIR = "docs/engineering"
 COMPONENTS_GLOB = "docs/components/*"
+BUG_MARKER = "[bug]"
 
 
 @dataclass(frozen=True)
@@ -44,6 +45,7 @@ class Todo:
     branch: str | None
     worktree_verdict: str
     worktree_reason: str
+    kind: str = "feature"
 
 
 def discover_manifests(root: Path) -> list[tuple[Path, str]]:
@@ -75,6 +77,8 @@ def load_steps(manifest_path: Path, package: str) -> list[ledger.Step]:
             acceptance=raw.get("acceptance", ledger.DEFAULT_ACCEPTANCE),
             depends_on=tuple(raw.get("depends_on", ())),
             verify=raw.get("verify", ""),
+            kind=raw.get("kind", ledger.DEFAULT_KIND),
+            regressed_step=raw.get("regressed_step", ""),
         )
         for raw in data.get("step", [])
     ]
@@ -134,6 +138,7 @@ def collect(cwd: str, base: str = "master") -> list[Todo]:
                     branch=wt.branch,
                     worktree_verdict=verdict.verdict,
                     worktree_reason=verdict.reason,
+                    kind=step.kind,
                 ))
     return todos
 
@@ -177,7 +182,8 @@ def show(todos: list[Todo], show_all: bool, blockers_only: bool) -> None:
             display = ts if show_all else pending
             for t in display:
                 pad = "     "
-                print(f"{pad}{'⬜' if t.status == 'pending' else '✓'} {t.step_id}")
+                marker = f" {BUG_MARKER}" if t.kind == "bug" else ""
+                print(f"{pad}{'⬜' if t.status == 'pending' else '✓'} {t.step_id}{marker}")
                 if t.title:
                     print(f"{pad}  {t.title}")
             has_output = True
