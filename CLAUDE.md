@@ -59,6 +59,11 @@ is the default way to run anything that binds a local TCP port:
   `PORTLESS_URL`, so nothing in a script or config should hardcode a port number.
 - It detects git worktrees automatically and namespaces the URL by branch, so `pnpm dev:desktop`
   in two different worktrees never collides.
+- One-time per machine, not per worktree: the Portless proxy daemon must be started once before
+  first use, and `portless run` cannot start it itself non-interactively (it wants `sudo` for a
+  privileged port and there's no TTY to prompt). Run `portless proxy start --port 1355 --https`
+  once — this also installs Portless's CA into the system trust store, which is what lets
+  Electron/Chromium and `curl` trust `*.localhost` HTTPS without extra config.
 - `apps/desktop`'s `pnpm dev` script and `vite.config.ts` already use this pattern
   (`process.env.PORT`, `$PORTLESS_URL`) — follow the same shape for any new package that binds a
   TCP port for local development or manual testing (e.g. `packages/mitm-proxy`'s `--listen`
@@ -69,11 +74,17 @@ is the default way to run anything that binds a local TCP port:
   sub-command inside `concurrently` or another shell wrapper. In that case (as with
   `apps/desktop`), have the underlying tool read `process.env.PORT` itself instead of relying on
   auto-injection.
-- **Unverified as of this writing:** whether Electron's `BrowserWindow.loadURL` trusts Portless's
-  self-signed HTTPS certificate for a `*.localhost` origin out of the box, or needs
-  `NODE_EXTRA_CA_CERTS` threaded through explicitly. Confirm this live (`pnpm dev:desktop` in two
-  worktrees at once) before treating the desktop dev flow as fully proven; if it fails, the
-  fallback is Portless's `--no-tls` flag.
+- **Quoting trap, hit live while wiring `apps/desktop`:** a `$PORTLESS_URL` reference inside a
+  *double*-quoted sub-command string (e.g. one of `concurrently`'s quoted args) gets expanded
+  immediately by the outer shell that runs the whole `pnpm` script — before `portless run` has
+  even started and set the variable — so it silently resolves to an empty string. Single-quote
+  any segment that needs `$PORTLESS_URL`/`$PORT` so expansion is deferred to the child shell
+  `concurrently` (or whatever wraps it) spawns later, once Portless has actually set the env var.
+- **Verified live 2026-09-19:** `pnpm dev:desktop` under this scheme renders the real Electron
+  window (title "Holy Blocker", the Monitor/Local Data UI) loaded from
+  `https://<worktree>.desktop.localhost:1355` with no certificate warning — Electron trusts
+  Portless's CA via the system trust store the same way `curl` does; no `NODE_EXTRA_CA_CERTS`
+  wiring was needed on the Electron side. The `--no-tls` fallback is not needed.
 - Portless is macOS/Linux only. `native-modules/win-daemon`/`win-network` will need a different
   mechanism (e.g. binding port 0 and passing the OS-assigned port through env/config) once they
   grow a local TCP listener.
