@@ -28,6 +28,8 @@ let usage = """
       ax-text [delay] [no-manual]       read the frontmost window's AX text (default delay: 3s;
                                         no-manual skips Chromium's AXManualAccessibility opt-in)
       overlay [seconds] [passive]       cover every screen with a real overlay window
+      image-scan <model.onnx> <sexy-threshold> <explicit-threshold> [size]
+                                        classify a synthetic frame with the real ONNX model
       bundle <output-dir> [identity] [ffi-lib-dir]
                                         assemble and sign HolyBlockerDaemon.app (default: ad-hoc)
       bundle-status                     report our own bundle and whether its grants will last
@@ -42,12 +44,30 @@ let usage = """
                                         (default: /Library/Application Support/HolyBlocker)
       HOLY_BLOCKER_PROXY_HOST           proxy listen host for `run` (default: 127.0.0.1)
       HOLY_BLOCKER_PROXY_PORT           proxy listen port for `run` (default: 8080)
+      HOLY_BLOCKER_IMAGE_THRESHOLD      explicit score at or above which an image is blocked;
+                                        required to enable image scanning, no built-in default —
+                                        unset or unparseable degrades to allow-everything, the
+                                        same as a missing model
+      HOLY_BLOCKER_IMAGE_SEXY_THRESHOLD sexy score at or above which an image warns; required
+                                        alongside HOLY_BLOCKER_IMAGE_THRESHOLD to enable image
+                                        scanning at all — see that variable
     """
 
 let stateDirectory = URL(
     fileURLWithPath: ProcessInfo.processInfo.environment["HOLY_BLOCKER_STATE_DIR"]
         ?? "/Library/Application Support/HolyBlocker")
 let snapshotPath = stateDirectory.appendingPathComponent("proxy-snapshot.json")
+
+/// A threshold belongs to a model *and* a geometry, so there is no value this binary can supply
+/// on its own — the operator must calibrate one for the bundled model and configure it here.
+/// `nil` (unset or unparseable) degrades image scanning off, the same path a missing model takes.
+let imageThreshold: Float? =
+    ProcessInfo.processInfo.environment["HOLY_BLOCKER_IMAGE_THRESHOLD"].flatMap(Float.init)
+
+/// The `sexy`-tier counterpart to `imageThreshold`. Both must be present for image scanning to
+/// turn on — see `AgentRenderLoop.init`.
+let imageSexyThreshold: Float? =
+    ProcessInfo.processInfo.environment["HOLY_BLOCKER_IMAGE_SEXY_THRESHOLD"].flatMap(Float.init)
 
 let runner = SystemCommandRunner()
 
@@ -158,6 +178,16 @@ func runAgent() async throws {
     _ = initial
     if let snapshot = gate.lastSnapshot {
         print("watching: \(PermissionGate.assess(snapshot).level.rawValue)")
+
+        // Ask for Accessibility from *this* process rather than leaving it to be added by hand.
+        // Adding an app through the Settings pane's + button resolves an entry the daemon's own
+        // `AXIsProcessTrusted` may not match; the prompting API registers the running process's
+        // real identity, which is how Screen Recording came to be granted correctly. Once per
+        // launch, and only when it is not already held — the prompt is a no-op when it is.
+        if snapshot.accessibility != .granted {
+            print("requesting accessibility — approve the prompt, then this agent restarts itself")
+            SystemPermissionProbe().requestAccess(to: .accessibility)
+        }
     }
 
     let capture = SCShareableContentCapture()
@@ -180,14 +210,59 @@ final class AgentRenderLoop {
     private let gate: PermissionGate
     private let capture: SCShareableContentCapture
     private let scanLoop: ScanLoop
+    private let scanner: AccessibilityScanner
+    private let imageScanner: ImageScanner
+    /// What the image path is actually doing, for the state line. Resolved once at construction:
+    /// "no model on disk" and "a model that scores nothing" look identical from the verdict alone.
+    private let imagePathStatus: String
     private let overlay: OverlayController
+    private let suppressor = WindowSuppressor()
+
+    /// Diagnostic state — see `reportStateIfChanged`.
+    private let diagnosticProbe = SystemAXProbe()
+    private var lastReportedState: String?
+    private var lastReportedAt: Date?
+    private var lastTextProbeAt: Date?
+    private var lastTextLength = 0
 
     init(gate: PermissionGate, capture: SCShareableContentCapture) {
         self.gate = gate
         self.capture = capture
+        let scanner = AccessibilityScanner(probe: SystemAXProbe(), policy: RealPolicyEngine())
+        self.scanner = scanner
+
+        // The model is sealed inside the bundle. A missing or unloadable model, or a missing
+        // threshold, degrades the image path to allow-everything rather than taking the daemon
+        // down — the text path is independent of it and must keep running. Which of the four
+        // happened is reported, because a silently disabled classifier is indistinguishable from a
+        // clean screen.
+        let modelURL = Bundle.main.url(
+            forResource: AppBundle.classifierModelName, withExtension: nil)
+        let classifier: ImageClassifying
+        if let modelURL, let sexyThreshold = imageSexyThreshold, let explicitThreshold = imageThreshold,
+            let loaded = try? RealImageClassifier(
+                modelPath: modelURL.path, sexyThreshold: sexyThreshold,
+                explicitThreshold: explicitThreshold)
+        {
+            classifier = loaded
+            self.imagePathStatus =
+                "on (sexy threshold \(loaded.sexyThreshold), explicit threshold \(loaded.threshold))"
+        } else {
+            classifier = RealImageClassifier.disabled()
+            self.imagePathStatus =
+                modelURL == nil
+                ? "off (no \(AppBundle.classifierModelName) in bundle)"
+                : imageThreshold == nil
+                    ? "off (HOLY_BLOCKER_IMAGE_THRESHOLD not set)"
+                    : imageSexyThreshold == nil
+                        ? "off (HOLY_BLOCKER_IMAGE_SEXY_THRESHOLD not set)"
+                        : "off (model failed to load)"
+        }
+        let imageScanner = ImageScanner(classifier: classifier)
+        self.imageScanner = imageScanner
+
         self.scanLoop = ScanLoop(
-            capture: capture,
-            scanner: AccessibilityScanner(probe: SystemAXProbe(), policy: RealPolicyEngine()))
+            capture: capture, imageScanner: imageScanner, textScanner: scanner)
         self.overlay = OverlayController()
     }
 
@@ -201,7 +276,82 @@ final class AgentRenderLoop {
     /// Ticks the scan loop, then drives the overlay off whatever it decided.
     func scanTick() {
         scanLoop.tick(now: Date())
-        overlay.apply(intent: overlayIntent(forVerdict: scanLoop.lastVerdict))
+        let intent = overlayIntent(forVerdict: scanLoop.lastVerdict)
+        overlay.apply(intent: intent)
+
+        // The overlay is drawn first and the application hidden second, deliberately: the cover is
+        // instant and the hide is a round trip to another process. Covering alone is not enough —
+        // unfocusing every window drops the cover while the content stays put, and Mission Control
+        // composites live previews above it. See `WindowSuppression`.
+        if let verdict = scanLoop.lastVerdict {
+            let command = suppressor.apply(
+                action: verdict.action, target: scanner.lastVerdictApplication)
+            if case .hide(let bundleIdentifier) = command { print("hiding: \(bundleIdentifier)") }
+        }
+
+        reportStateIfChanged(intent: intent)
+    }
+
+    /// Session 6 diagnostic. The render loop is otherwise completely silent — the overlay is its
+    /// only observable — so a live pass that sees nothing on screen cannot tell which of four
+    /// stages failed. This prints one line whenever the pipeline's state *changes*, which is
+    /// quiet when nothing is happening and self-explanatory when something is.
+    ///
+    /// Deliberately reports the frame's dimensions rather than a bare "have one": the
+    /// `!frame.isEmpty` gate in `ScanLoop.tick` is the known coupling this pass is most likely to
+    /// trip on, and "empty" is the difference between a starved `SCStream` and a scanner that ran
+    /// and allowed. Text is reported as a **character count only** — never its content, which is
+    /// the screen of the person being protected, not debugging material.
+    private func reportStateIfChanged(intent: OverlayIntent) {
+        let frame = capture.currentFrame()
+        let verdict = scanLoop.lastVerdict
+        let tally = capture.diagnostics
+        // The delivery tally is excluded from the change key on purpose — it moves every tick, and
+        // keying on it would turn this into a 4-line-per-second log. The heartbeat below is what
+        // makes it observable.
+        let key = [
+            "frame: " + (frame.isEmpty ? "empty" : "\(frame.width)x\(frame.height)"),
+            "ax grant: \(gate.lastSnapshot.map { "\($0.accessibility)" } ?? "unpolled")",
+            "text: \(diagnosticTextLength()) chars",
+            // Status only, never the running count: the count moves on every classification, and
+            // keying on it would print two lines a second. The tally goes in the suffix below,
+            // beside the capture one, for the same reason.
+            "image: \(imagePathStatus)",
+            "verdict: "
+                + (verdict.map { "\($0.action) (score \(String(format: "%.2f", $0.score)))" }
+                    ?? "none"),
+            "intent: \(intent)",
+            "overlay: " + (overlay.isShowing ? "up" : "down"),
+        ].joined(separator: "  ")
+
+        let instant = Date()
+        let heartbeatDue = lastReportedAt.map { instant.timeIntervalSince($0) >= 10 } ?? true
+        guard key != lastReportedState || heartbeatDue else { return }
+        lastReportedState = key
+        lastReportedAt = instant
+        print(
+            key
+                + "  deliveries: \(tally.deliveries) (\(tally.complete) complete, \(tally.retained) retained)"
+                + "  dropped: \(tally.noImageBuffer) no-buffer / \(tally.noBaseAddress) no-base / \(tally.emptyAfterDepad) depad"
+                + "  geometry: \(tally.lastGeometry)"
+                + "  classified: \(imageScanner.completedClassifications)"
+        )
+    }
+
+    /// An independent AX read for the diagnostic above, rate-limited to once a second so it costs
+    /// about what the scanner's own walk does. This is the one signal that cannot be inferred from
+    /// the others: a zero here with a granted Accessibility toggle means the grant is not live for
+    /// *this* process, which is a different problem from a policy that scored the text `allow`.
+    private func diagnosticTextLength() -> Int {
+        let instant = Date()
+        if let last = lastTextProbeAt, instant.timeIntervalSince(last) < 1.0 {
+            return lastTextLength
+        }
+        lastTextProbeAt = instant
+        lastTextLength = AccessibilityText.extractFocusedText(
+            probe: diagnosticProbe, limits: .standard
+        ).count
+        return lastTextLength
     }
 
     /// Unchanged cadence and behavior from before this session's render loop existed.
@@ -254,6 +404,51 @@ func runRenderLoop(gate: PermissionGate, capture: SCShareableContentCapture) thr
 /// Run from a shell this is still subject to the responsible-process rule `permissions` warns
 /// about: the Screen Recording grant reported (or refused) belongs to the terminal, not to a
 /// future signed bundle.
+/// Classifies a synthetic frame with the real model — module 18's live check.
+///
+/// Deliberately *not* driven by `ScreenCaptureKit`: a binary launched from a shell has no Screen
+/// Recording grant, so a capture-driven verb would fail before reaching the classifier and prove
+/// nothing about it. A frame built in memory exercises the whole path that is actually new here —
+/// the dylib loads, the model loads from disk, Swift hands over a BGRA buffer, ONNX runs, a score
+/// comes back — with no permission involved at all.
+///
+/// What it does not check is what the model *says*: a flat colour is not content, and what the
+/// classifier makes of one is not a claim this repository should be making. The assertion is that a
+/// number comes back in range.
+func runImageScan(modelPath: String, sexyThreshold: Float, explicitThreshold: Float, size: Int) {
+    let classifier: RealImageClassifier
+    do {
+        classifier = try RealImageClassifier(
+            modelPath: modelPath, sexyThreshold: sexyThreshold, explicitThreshold: explicitThreshold)
+    } catch {
+        fail("could not load \(modelPath): \(error)")
+    }
+    print("model: \(modelPath)")
+    print("sexy threshold: \(classifier.sexyThreshold)")
+    print("explicit threshold: \(classifier.threshold)")
+
+    // Mid-grey, opaque, tightly packed BGRA — the layout `PixelBufferCopy.depad` produces.
+    let pixels = [UInt8](repeating: 0x80, count: size * size * 4)
+    let started = Date()
+    let outcome = classifier.classify(pixels: pixels, width: size, height: size)
+    let elapsed = Date().timeIntervalSince(started)
+
+    print("frame: \(size)x\(size) (\(pixels.count) bytes)")
+    print("outcome: \(outcome)")
+    print("elapsed: \(String(format: "%.1f", elapsed * 1000)) ms")
+
+    switch outcome {
+    case .allow(score: nil):
+        // The one genuinely bad answer: the model was loaded but nothing classified. On this path
+        // that means the frame was refused before inference — a geometry or buffer-size mistake.
+        print("warning: no score — the frame never reached the model")
+    case .allow(let score), .warn(let score as Float?), .block(let score as Float?):
+        if let score, !(0...1).contains(score) {
+            print("warning: score outside 0...1 — the output contract has changed")
+        }
+    }
+}
+
 func runCapture() async throws {
     let capture = SCShareableContentCapture()
     try await capture.start()
@@ -441,6 +636,15 @@ do {
     case "capture":
         try await runCapture()
 
+    case "image-scan":
+        guard rest.count >= 3, let sexyThreshold = Float(rest[1]), let explicitThreshold = Float(rest[2])
+        else {
+            fail("expected <model.onnx> <sexy-threshold> <explicit-threshold> [size]")
+        }
+        runImageScan(
+            modelPath: rest[0], sexyThreshold: sexyThreshold, explicitThreshold: explicitThreshold,
+            size: rest.count > 3 ? Int(rest[3]) ?? 512 : 512)
+
     case "ax-text":
         runAXText(
             delay: rest.first.flatMap(TimeInterval.init) ?? 3,
@@ -468,8 +672,26 @@ do {
             libraries.append(candidate)
         }
 
+        // The classifier model. `rest[3]` overrides where it is taken from; the default is the
+        // repository's gitignored artifact directory, so a developer who has exported one gets it
+        // in the bundle without a flag. Absent, the daemon runs its text path and reports the
+        // image path as disabled — see `RealImageClassifier.disabled()`.
+        let modelSource =
+            rest.count > 3
+            ? URL(fileURLWithPath: rest[3])
+            : URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+                .appendingPathComponent("../../data/models/\(AppBundle.classifierModelName)")
+                .standardizedFileURL
+        var resources: [URL] = []
+        if FileManager.default.fileExists(atPath: modelSource.path) {
+            resources.append(modelSource)
+        } else {
+            print("warning: no classifier model at \(modelSource.path) — image scanning disabled")
+        }
+
         try AppBundle.assemble(
-            at: root, identity: identity, executable: executable, libraries: libraries)
+            at: root, identity: identity, executable: executable, libraries: libraries,
+            resources: resources)
         // Ad-hoc by default so the bundle is runnable with no certificate — but ad-hoc is exactly
         // the identity that does not survive a rebuild, so say so rather than leave it implied.
         let signingIdentity = rest.count > 1 ? rest[1] : "-"
@@ -506,11 +728,23 @@ do {
                 arguments: ["run", "/usr/local/bin/mitm-proxy", "/Library/Application Support/HolyBlocker"],
                 logPath: URL(fileURLWithPath: "/var/log/holy-blocker-daemon.log"))
         case "agent":
+            // The agent reads HOLY_BLOCKER_IMAGE_THRESHOLD/HOLY_BLOCKER_IMAGE_SEXY_THRESHOLD from
+            // its own process environment, and a LaunchAgent's environment comes from its plist,
+            // not from the shell that generated it — so if the operator has them set when running
+            // this verb, bake them into the plist rather than silently dropping them and shipping
+            // an image-scanning-off job.
+            var agentEnvironment: [String: String] = [:]
+            for name in ["HOLY_BLOCKER_IMAGE_THRESHOLD", "HOLY_BLOCKER_IMAGE_SEXY_THRESHOLD"] {
+                if let value = ProcessInfo.processInfo.environment[name] {
+                    agentEnvironment[name] = value
+                }
+            }
             job = LaunchdJob.agent(
                 label: "com.holyblocker.agent", executable: executable, arguments: ["agent"],
                 home: FileManager.default.homeDirectoryForCurrentUser, uid: getuid(),
                 logPath: FileManager.default.homeDirectoryForCurrentUser
-                    .appendingPathComponent("Library/Logs/holy-blocker-agent.log"))
+                    .appendingPathComponent("Library/Logs/holy-blocker-agent.log"),
+                environment: agentEnvironment)
         default:
             fail("expected <daemon|agent>")
         }

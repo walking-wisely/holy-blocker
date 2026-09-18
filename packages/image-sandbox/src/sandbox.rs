@@ -14,36 +14,31 @@
 
 use crate::classifier::{ClassifyResult, ImageClassifier};
 use crate::preprocess::{PreprocessConfig, preprocess_tiles};
+use crate::raw::{PixelLayout, image_from_raw};
 
 /// What the proxy should do with an image response body.
+///
+/// Three tiers, not two: `Warn` is the `sexy` band the classifier contract
+/// added (`classifier.rs`) — content the model reads as suggestive but not
+/// explicit. A probability *can* carry a warn band once the model itself has
+/// three classes to draw the line between; a two-class model genuinely
+/// couldn't.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ImageVerdict {
     Allow,
+    Warn { score: f32 },
     Block { score: f32 },
 }
 
-/// Score at or above which an image is blocked.
-///
-/// **Measured**, for the shipped full-unfreeze checkpoint *under the tile-max
-/// geometry*: the threshold achieving the 5% miss budget, at a cost of 10.09%
-/// over-blocking. From
-/// `docs/components/machine-learning/experiments/input-handling.md`, recorded in
-/// `docs/decisions/classifier-operating-point.md`.
-///
-/// A threshold belongs to a model **and** a geometry, and both halves have
-/// already caused an error here. The same checkpoint under a centre crop
-/// operates at 0.2717; the superseded unfreeze-3 checkpoint operated at 0.20,
-/// which is what this constant wrongly held before the corpus was available.
-/// Taking a max over overlapping tiles shifts the whole score distribution
-/// upward, so reusing a centre-crop threshold would over-block by roughly half
-/// again (14.73% against 10.09%) with nothing failing to indicate it.
-pub const DEFAULT_EXPLICIT_THRESHOLD: f32 = 0.4650;
-
-/// Collapse per-tile scores into one verdict score.
+/// Collapse per-tile scores into one verdict score for a single class.
 ///
 /// The maximum, not the mean: "any region explicit → block" is what a blocker
 /// wants, and averaging dilutes a small explicit region into a large safe
-/// background — the exact failure the tiled geometry was adopted to fix.
+/// background — the exact failure the tiled geometry was adopted to fix. This
+/// reduction is applied independently per class (see `ImageSandbox::
+/// check_image`): a tile that reads mostly `sexy` and a different tile that
+/// reads mostly `explicit` are separate pieces of evidence and must not be
+/// averaged into each other.
 ///
 /// Empty input scores 0.0. `preprocess_tiles` always returns at least one
 /// window, so that is unreachable today; it is defined rather than panicking
@@ -52,19 +47,52 @@ pub fn reduce_tile_scores(scores: &[f32]) -> f32 {
     scores.iter().copied().fold(0.0f32, f32::max)
 }
 
+/// A verdict together with the score behind it.
+///
+/// The raw-frame path returns this rather than a bare [`ImageVerdict`] because
+/// its caller is a long-running daemon that logs one line per state change, and
+/// "allowed at 0.44 against the configured threshold" and "allowed at 0.01" are
+/// different facts about how well the operating point fits what is on screen.
+/// The network path has no such caller and keeps the plain verdict.
+///
+/// With two thresholds now in play, `score` is whichever class's score
+/// produced the verdict: `explicit_score` for `Block`, `sexy_score` for
+/// `Warn`, and the larger of the two for `Allow` — a model that ran and saw
+/// nothing still reports how close it came, on either axis.
+// Not `Copy`: `ImageVerdict` is not, and making it so would be a change to the
+// network path's public type for this path's convenience.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScoredVerdict {
+    pub verdict: ImageVerdict,
+    /// `None` when no model ran at all — disabled sandbox, unreadable buffer,
+    /// below the size floor, inference fault. Distinct from `Some(0.0)`, which
+    /// is a real model output; reporting zero for "did not classify" would make
+    /// a broken image path look like a confidently clean screen.
+    pub score: Option<f32>,
+}
+
+impl ScoredVerdict {
+    /// The fail-open result: allow, with no score, because nothing was scored.
+    fn unscored_allow() -> Self {
+        Self { verdict: ImageVerdict::Allow, score: None }
+    }
+}
+
+/// There is no built-in default: a threshold belongs to a model **and** a
+/// geometry, and reusing one across either change has already caused an error
+/// in this project twice. The caller must supply both explicitly for its own
+/// deployed checkpoint — see the deployment's own configuration, not a value
+/// recorded here.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SandboxConfig {
     pub explicit_threshold: f32,
+    /// Score at or above which the `sexy` class produces `Warn` rather than
+    /// `Allow`. Same no-default rule as `explicit_threshold`, and the two are
+    /// only meaningfully ordered relative to each other for a given model —
+    /// nothing here enforces `sexy_threshold < explicit_threshold`, since a
+    /// model's own calibration is what should decide that, not this crate.
+    pub sexy_threshold: f32,
     pub preprocess: PreprocessConfig,
-}
-
-impl Default for SandboxConfig {
-    fn default() -> Self {
-        Self {
-            explicit_threshold: DEFAULT_EXPLICIT_THRESHOLD,
-            preprocess: PreprocessConfig::default(),
-        }
-    }
 }
 
 pub struct ImageSandbox {
@@ -77,8 +105,18 @@ impl ImageSandbox {
     ///
     /// Not a placeholder to be removed: it is what runs when no model path is
     /// configured, and it keeps the proxy's behaviour identical to today's.
+    /// Both thresholds are inert here — `check`/`check_raw` return `Allow`
+    /// before either is ever read — so `0.0` is a placeholder, not a claim
+    /// about a value.
     pub fn disabled() -> Self {
-        Self { classifier: None, config: SandboxConfig::default() }
+        Self {
+            classifier: None,
+            config: SandboxConfig {
+                explicit_threshold: 0.0,
+                sexy_threshold: 0.0,
+                preprocess: PreprocessConfig::default(),
+            },
+        }
     }
 
     pub fn new(classifier: ImageClassifier, config: SandboxConfig) -> Self {
@@ -91,9 +129,9 @@ impl ImageSandbox {
 
     /// Decode `bytes`, classify, and decide.
     pub fn check(&self, bytes: &[u8]) -> ImageVerdict {
-        let Some(classifier) = &self.classifier else {
+        if self.classifier.is_none() {
             return ImageVerdict::Allow;
-        };
+        }
 
         let image = match image::load_from_memory(bytes) {
             Ok(image) => image,
@@ -105,18 +143,72 @@ impl ImageSandbox {
             }
         };
 
-        let tiles = match preprocess_tiles(&image, &self.config.preprocess) {
-            Ok(tiles) => tiles,
-            Err(reason) => {
-                tracing::debug!("image not classified, allowing: {reason}");
-                return ImageVerdict::Allow;
+        self.check_image(&image).verdict
+    }
+
+    /// Classify a raw framebuffer the caller already holds — the screen path.
+    ///
+    /// Same geometry, same thresholds and the same fail-open contract as
+    /// [`Self::check`]; only the decode step differs, because a captured frame
+    /// was never encoded. `pixels` must be tightly packed with no row padding —
+    /// see [`image_from_raw`].
+    ///
+    /// **The configured thresholds' provenance does not extend here.** Whatever
+    /// values the caller supplies are calibrated against a corpus of *images*
+    /// under tile-max. A screen frame is a different distribution — a small
+    /// content region inside application chrome, at a display aspect ratio —
+    /// and re-deriving an operating point for it is an open question. Tile-max
+    /// is still the right geometry for that shape, which is why this path
+    /// reuses it rather than the centre crop.
+    /// Returns the score alongside the verdict — see [`ScoredVerdict`].
+    pub fn check_raw(
+        &self,
+        pixels: &[u8],
+        width: u32,
+        height: u32,
+        layout: PixelLayout,
+    ) -> ScoredVerdict {
+        if self.classifier.is_none() {
+            return ScoredVerdict::unscored_allow();
+        }
+
+        let image = match image_from_raw(pixels, width, height, layout) {
+            Ok(image) => image,
+            Err(error) => {
+                // A zero-dimension frame is the ordinary pre-first-frame state,
+                // not a malfunction, so this stays at debug like a decode
+                // failure rather than warning on every tick before capture
+                // starts.
+                tracing::debug!("raw frame not classified, allowing: {error}");
+                return ScoredVerdict::unscored_allow();
             }
         };
 
-        let mut scores = Vec::with_capacity(tiles.len());
+        self.check_image(&image)
+    }
+
+    /// The shared half: tile, score every tile, reduce per class, threshold.
+    fn check_image(&self, image: &image::DynamicImage) -> ScoredVerdict {
+        let Some(classifier) = &self.classifier else {
+            return ScoredVerdict::unscored_allow();
+        };
+
+        let tiles = match preprocess_tiles(image, &self.config.preprocess) {
+            Ok(tiles) => tiles,
+            Err(reason) => {
+                tracing::debug!("image not classified, allowing: {reason}");
+                return ScoredVerdict::unscored_allow();
+            }
+        };
+
+        let mut sexy_scores = Vec::with_capacity(tiles.len());
+        let mut explicit_scores = Vec::with_capacity(tiles.len());
         for tile in &tiles {
             match classifier.classify(tile) {
-                Ok(ClassifyResult { explicit_score }) => scores.push(explicit_score),
+                Ok(ClassifyResult { sexy_score, explicit_score, .. }) => {
+                    sexy_scores.push(sexy_score);
+                    explicit_scores.push(explicit_score);
+                }
                 Err(error) => {
                     // An inference failure is a fault in us, not evidence about
                     // the image. Warn, because unlike a decode failure it should
@@ -127,16 +219,34 @@ impl ImageSandbox {
                     // a different image, and it would silently under-block
                     // exactly when something is already wrong.
                     tracing::warn!("image classification failed, allowing: {error}");
-                    return ImageVerdict::Allow;
+                    return ScoredVerdict::unscored_allow();
                 }
             }
         }
 
-        let explicit_score = reduce_tile_scores(&scores);
+        let explicit_score = reduce_tile_scores(&explicit_scores);
+        let sexy_score = reduce_tile_scores(&sexy_scores);
+
+        // `explicit` is checked first: the highest-`sexy` tile need not be the
+        // highest-`explicit` tile once each class is reduced independently, so
+        // an image can clear both bars at once, and block must win whenever it
+        // applies — warning on content that already clears the block bar would
+        // under-react to it.
         if explicit_score >= self.config.explicit_threshold {
-            ImageVerdict::Block { score: explicit_score }
+            ScoredVerdict {
+                verdict: ImageVerdict::Block { score: explicit_score },
+                score: Some(explicit_score),
+            }
+        } else if sexy_score >= self.config.sexy_threshold {
+            ScoredVerdict {
+                verdict: ImageVerdict::Warn { score: sexy_score },
+                score: Some(sexy_score),
+            }
         } else {
-            ImageVerdict::Allow
+            ScoredVerdict {
+                verdict: ImageVerdict::Allow,
+                score: Some(explicit_score.max(sexy_score)),
+            }
         }
     }
 }
@@ -144,6 +254,10 @@ impl ImageSandbox {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn config(sexy_threshold: f32, explicit_threshold: f32) -> SandboxConfig {
+        SandboxConfig { explicit_threshold, sexy_threshold, preprocess: PreprocessConfig::default() }
+    }
 
     #[test]
     fn a_sandbox_without_a_model_allows_everything() {
@@ -160,22 +274,63 @@ mod tests {
         assert_eq!(sandbox.check(b"<html>not an image</html>"), ImageVerdict::Allow);
     }
 
+    // --- the raw framebuffer path -----------------------------------------
+
     #[test]
-    fn the_default_threshold_is_the_measured_tile_max_operating_point() {
-        // Guards two separate mistakes. 0.5 is argmax's default rather than a
-        // measured point, and the operating-point decision rejects it outright.
-        // 0.20 and 0.2717 are also wrong here but far more plausible-looking:
-        // the first belongs to the superseded unfreeze-3 model, the second to
-        // this model under the *centre-crop* geometry. A threshold is only
-        // valid for one model-and-geometry pairing.
-        assert_eq!(SandboxConfig::default().explicit_threshold, 0.4650);
+    fn a_sandbox_without_a_model_allows_raw_frames_too() {
+        // The screen path must inherit the same disabled-is-allow behaviour as
+        // the network path, or a daemon built without a model would block
+        // everything on screen instead of nothing.
+        let sandbox = ImageSandbox::disabled();
+        let one_pixel = [0u8; 4];
+
+        let scored = sandbox.check_raw(&one_pixel, 1, 1, PixelLayout::Bgra);
+
+        assert_eq!(scored.verdict, ImageVerdict::Allow);
+        // No score, not 0.0: nothing was classified, and a zero would read as a
+        // confident "definitely clean" in the daemon's log line.
+        assert_eq!(scored.score, None);
     }
 
     #[test]
-    fn the_threshold_is_configurable_so_it_can_be_re_derived() {
-        let config = SandboxConfig { explicit_threshold: 0.44, ..SandboxConfig::default() };
+    fn an_empty_raw_frame_is_allowed_rather_than_reaching_the_model() {
+        // `CapturedFrame.empty()` on the macOS side. This is the state on every
+        // tick before the first frame arrives, so it must be quiet and safe.
+        let sandbox = ImageSandbox::disabled();
 
-        assert_eq!(config.explicit_threshold, 0.44);
+        assert_eq!(
+            sandbox.check_raw(&[], 0, 0, PixelLayout::Bgra),
+            ScoredVerdict { verdict: ImageVerdict::Allow, score: None }
+        );
+    }
+
+    #[test]
+    fn a_raw_frame_whose_buffer_is_too_short_is_allowed() {
+        // Geometry disagreeing with the buffer is a fault in us, not evidence
+        // about what is on screen — fail open like every other path here.
+        let sandbox = ImageSandbox::disabled();
+
+        assert_eq!(
+            sandbox.check_raw(&[0u8; 8], 640, 480, PixelLayout::Bgra),
+            ScoredVerdict { verdict: ImageVerdict::Allow, score: None }
+        );
+    }
+
+    #[test]
+    fn a_disabled_sandbox_never_reads_its_placeholder_thresholds() {
+        // `disabled()` carries inert 0.0s — every check path returns before the
+        // classifier or either threshold is consulted, so this is a regression
+        // guard on that ordering, not a claim about the values.
+        let sandbox = ImageSandbox::disabled();
+        assert_eq!(sandbox.check(&[]), ImageVerdict::Allow);
+    }
+
+    #[test]
+    fn both_thresholds_are_configurable_by_the_caller() {
+        let cfg = config(0.3, 0.44);
+
+        assert_eq!(cfg.explicit_threshold, 0.44);
+        assert_eq!(cfg.sexy_threshold, 0.3);
     }
 
     // --- reducing tile scores ---------------------------------------------
@@ -191,12 +346,14 @@ mod tests {
     fn a_mean_reduction_would_dilute_a_single_explicit_tile() {
         // The failure tiling exists to fix, stated as a test: one explicit tile
         // in a wide safe banner. The mean is 0.24 and would clear no sensible
-        // threshold; the max is 0.95 and blocks.
+        // threshold; the max is 0.95 and blocks. 0.5 stands in for "a sensible
+        // threshold" here — the point is the mean/max gap, not a specific cut.
         let scores = [0.02, 0.01, 0.95, 0.03, 0.01];
         let mean = scores.iter().sum::<f32>() / scores.len() as f32;
+        let plausible_threshold = 0.5;
 
-        assert!(mean < SandboxConfig::default().explicit_threshold);
-        assert!(reduce_tile_scores(&scores) >= SandboxConfig::default().explicit_threshold);
+        assert!(mean < plausible_threshold);
+        assert!(reduce_tile_scores(&scores) >= plausible_threshold);
     }
 
     #[test]

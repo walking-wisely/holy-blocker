@@ -155,6 +155,11 @@ public final class AccessibilityScanner: Scanner {
     private let now: () -> Date
 
     private var lastWalkAt: Date?
+    /// The application the verdict currently being reported came from, so a block can be acted on
+    /// rather than only drawn over. Written on a walk and *retained* through gated ticks, so it
+    /// always describes whichever verdict `scan(_:)` is returning — re-reading the frontmost
+    /// application on a gated tick would attribute a cached block to whatever is frontmost now.
+    public private(set) var lastVerdictApplication: String?
     /// Repeated on a gated tick. See `scan(_:)`.
     private var lastVerdict = AccessibilityScanner.allowVerdict
 
@@ -192,6 +197,7 @@ public final class AccessibilityScanner: Scanner {
 
         let verdict = evaluateFocusedText()
         lastVerdict = verdict
+        lastVerdictApplication = probe.lastWalkedApplication
         return verdict
     }
 

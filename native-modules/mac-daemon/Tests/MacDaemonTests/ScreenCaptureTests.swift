@@ -55,6 +55,21 @@ struct PixelBufferDepadTests {
                 == [])
     }
 
+    /// The shape of the first live e2e pass's capture stall, pinned so the rejection stays
+    /// deliberate. An `SCStreamConfiguration` with no `pixelFormat` set delivered biplanar 420v on
+    /// macOS 26.5: a 1512-wide frame arrived with a 1536-byte stride — the Y plane's — against the
+    /// 6048 a BGRA row needs. `depad` refused every frame for 20 minutes, which is the correct
+    /// answer to being handed YUV, and looks identical to a missing Screen Recording grant from the
+    /// outside. The fix is `configuration.pixelFormat = kCVPixelFormatType_32BGRA` at the source;
+    /// this test only guarantees the wrong input is never silently reinterpreted.
+    @Test("returns nothing for a planar frame's stride mistaken for a BGRA one")
+    func planarStrideIsRejected() {
+        let yPlaneStride = 1536
+        let source = Array(repeating: UInt8(0), count: yPlaneStride * 982)
+        #expect(
+            PixelBufferCopy.depad(source, bytesPerRow: yPlaneStride, width: 1512, height: 982) == [])
+    }
+
     @Test("returns nothing for zero width or height")
     func degenerateDimensions() {
         #expect(PixelBufferCopy.depad([1, 2, 3, 4], bytesPerRow: 4, width: 0, height: 1) == [])

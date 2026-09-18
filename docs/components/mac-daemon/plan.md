@@ -1528,6 +1528,111 @@ the fix, since the message reads like a broken manifest rather than a missing bu
 
 ---
 
+### 18. `ImageScanner` — the ONNX classifier over UniFFI. **Done.**
+
+**The first thing in this daemon that looks at a pixel.** `AccessibilityScanner` reads what
+applications *declare*; this reads what is actually drawn. `packages/image-sandbox` is consumed over
+a new `packages/image-sandbox-ffi` wrapper, exactly as `text-policy-ffi` is — so the geometry, the
+reduction and the threshold all stay in Rust and Swift never re-derives any of them.
+
+It exists here rather than in `machine-learning` or on Android because of the runtime split in
+[learning-from-feedback.md](../../decisions/learning-from-feedback.md): ONNX Runtime is the desktop
+half, LiteRT is the Android half. `apps/mobile` must not be wired to this crate.
+
+#### What was built
+
+- **`packages/image-sandbox/src/raw.rs`** — `image_from_raw(pixels, width, height, layout)`, reading
+  a tightly packed 4-channel framebuffer as an RGB image. Alpha is dropped (the tensor is RGB and a
+  screen framebuffer is opaque); a short buffer is refused rather than read past; a longer one is
+  accepted with its tail ignored, matching `PixelBufferCopy.depad`'s own `>=` guard.
+- **`ImageSandbox::check_raw`** — the same tile-max geometry, threshold and fail-open contract as
+  `check`, with the decode step replaced. It returns a new `ScoredVerdict` rather than a bare
+  `ImageVerdict`; see the score note below.
+- **`packages/image-sandbox-ffi`** — `ImageGuard` (`withModel`/`disabled`/`classifyFrame`/
+  `threshold`), `ImageOutcome`, `FramePixelLayout`. Construction is fallible; classification is
+  not, because `image-sandbox` already fails open and making every caller reimplement that rule is
+  how the rule gets got wrong.
+- **`ImageScanner.swift`** — `ImageClassifying` (the seam) with `RealImageClassifier` and
+  `FakeImageClassifier`, `ClassificationDispatching` with a background queue and an inline
+  dispatcher, `ImageMapping.scanVerdict(for:)`, and the scanner itself.
+- **`ScanLoop` now takes two scanners**, one per cadence. The single-scanner initializer is kept as
+  a convenience, because the scheduling tests are about *when* a scan happens rather than which
+  scanner runs.
+- **The model ships inside the signed bundle** — `AppBundle.assemble` gained a `resources:`
+  argument and `AppBundle.classifierModelName`; `scripts/bundle.sh` passes the artifact path.
+- An **`image-scan <model.onnx> [size]`** verb, and `scripts/build-ffi.sh` rewritten as a loop over
+  both FFI crates.
+
+#### Six things worth carrying
+
+1. **Classification must not run on the calling thread.** `ScanLoop.tick` is driven by a `Timer` on
+   the main run loop — the same thread AppKit draws the overlay on. Measured with the real model on
+   this machine: **5.3 ms for one tile** (a square frame), 9.6 ms at 1024×1024, and a 1.54-aspect
+   display frame is three tiles. Twenty milliseconds of inference on the main thread twice a second
+   is a visible stutter in the interstitial the daemon is trying to put up. So `scan(_:)` dispatches
+   the work to a serial background queue and returns the most recent *completed* verdict; the cost
+   is one cadence of latency, well inside the debounce the loop already applies. The dispatcher is
+   an injected protocol so tests stay synchronous and deterministic.
+2. **A tick with work in flight repeats the last verdict, never `.allow`** — the rule
+   `AccessibilityScanner` established, load-bearing for the same reason: the overlay is driven by
+   what comes back here, and an `.allow` between classifications would tear the interstitial down
+   and rebuild it over content that never stopped being blocked. The in-flight guard is an atomic
+   test-and-set, so ticks cannot queue up behind an inference slower than the cadence.
+3. **`Allow` carries an *optional* score, and the option is load-bearing.** `None` means nothing was
+   classified at all — no model, unreadable buffer, below the size floor, inference fault.
+   `Some(0.02)` means the model ran and saw nothing. Collapsing them would make a silently broken
+   image path indistinguishable from a clean screen, which is exactly the failure the first live
+   pass spent a session on with `SCStreamConfiguration.pixelFormat`. This is why `check_raw` returns
+   `ScoredVerdict`: the network path has no long-running caller and keeps the plain verdict.
+4. **Whatever threshold is configured, its provenance does not extend to screen frames.** It is
+   calibrated on a corpus of images. A screen frame is a different distribution and nothing here
+   covers it — recorded in
+   [classifier-operating-point.md](../../decisions/classifier-operating-point.md) rather than
+   patched over. The daemon logs the score on every verdict so the margin is observable, and
+   requires the threshold to be configured explicitly rather than shipping a default.
+5. **There is no `warn` band on this path.** A probability has no warn range, and inventing one
+   would be this daemon making up an operating point the measurement never established.
+   `ProtectionMode` in `ScanLoop` is where a block legitimately becomes a warn.
+6. **`regions` stays empty.** The tiled geometry knows which tile scored highest, but a 224-wide
+   band of the frame is not a located object, and
+   [content-classification.md](../../architecture/content-classification.md) is explicit that an
+   empty list on a non-allow verdict means "cover the whole surface". Populating it with tile bounds
+   would claim a localization the model does not do.
+
+#### Two smaller findings
+
+- **`Scanner` collides with `Foundation.Scanner`.** A test double written as
+  `final class X: Scanner` subclasses Foundation's and compiles, then fails at every call site with
+  "does not conform to expected type 'Scanner'". Qualify it as `MacDaemon.Scanner`.
+- **Both FFI targets declare the same rpaths**, so the linker emits a `duplicate -rpath ... ignored`
+  warning on every build. Harmless — the rpath is genuinely needed by each target independently, and
+  neither can rely on the other being linked.
+
+#### Verified live
+
+Real model, from Swift, with no TCC grant needed: `image-scan` loads
+`data/models/baseline-v0.onnx`, reports the threshold as 0.465, hands over a 512×512 BGRA buffer and
+gets `allow(score: 0.26607183)` back in 6.9 ms. The signed bundle passes
+`codesign --verify --deep --strict` with **both** nested dylibs validated, and the bundled binary
+runs the model **with the build tree's `.ffi/lib` moved away entirely** — proving the load is
+bundle-relative. Appending one byte to the bundled model makes `codesign` report *"a sealed resource
+is missing or invalid"*, so a swapped model invalidates the bundle rather than silently disabling
+the image path.
+
+**Not yet verified:** the classifier has never run against a real captured frame, because that needs
+the agent under `launchd` with a Screen Recording grant and a human at a screen. Everything between
+`SCStream` and `ImageGuard` is exercised, but the two ends have only met through a synthetic buffer.
+
+#### Reference documents
+
+- ONNX Runtime Rust bindings (`ort`): <https://ort.pyke.io>
+- Apple, `CVPixelBuffer` — `CVPixelBufferGetBytesPerRow`:
+  <https://developer.apple.com/documentation/corevideo/1456964-cvpixelbuffergetbytesperrow>
+- Apple, Embedding Nonstandard Code Structures in a Bundle:
+  <https://developer.apple.com/documentation/xcode/embedding-nonstandard-code-structures-in-a-bundle>
+
+---
+
 ## What Layer 2 does *not* cover on macOS — honest limits
 
 As with Layer 1, these are inherent to the mechanism and are recorded here rather than discovered
@@ -1642,6 +1747,13 @@ later:
 9. **`SettingsGuard`** (module 15) — can be built at any point after step 1, since it needs no
    permissions; sequenced last because it is defence in depth over `PermissionGate`, not a
    substitute for it.
+10. ~~**`ImageScanner`** (module 18) — the ONNX classifier over UniFFI, and the first `Scanner` that
+    looks at a pixel.~~ **Done.** See module 18's section above for the six carried findings, the
+    load-bearing one being that inference cannot run on the main run loop. It also forces the
+    `ScanLoop` two-scanner split, since one `Scanner` served both cadences before it. 22 new tests
+    (`ImageScannerTests.swift`), plus 2 in `AppBundleTests.swift` for the sealed model resource.
+    **Outstanding: the classifier has never seen a real captured frame** — that needs the agent
+    under `launchd` with a Screen Recording grant, which is a human at a screen rather than code.
 
 ### The first live e2e pass — text-only, split into six sessions
 
@@ -1790,16 +1902,105 @@ merged; 6 is human-only, no code):
    second, non-`async` function that does the Timer wiring did not fix it either — the same error
    persisted with `gate`/`capture` as plain parameters. What actually resolved it was giving the
    timers one `@MainActor` class, `AgentRenderLoop`, to capture instead of two plain ones — the
-   same reason `OverlayController` itself is `@MainActor` and not a plain class. 313 tests. <!-- step: mac-daemon.agent-render-loop -->
-6. **Live verification** (needs 5 merged, human-in-the-loop, no code): rebuild bindings and bundle,
+    same reason `OverlayController` itself is `@MainActor` and not a plain class. 313 tests. <!-- step: mac-daemon.agent-render-loop -->
+6. ~~**Live verification** (needs 5 merged, human-in-the-loop, no code): rebuild bindings and bundle,
    reload the LaunchAgent, grant Accessibility + Screen Recording for real via System Settings
    against `HolyBlockerDaemon.app` specifically (never a shell binary — the responsible-process
    rule), confirm `holy-blocker-macd permissions` reports both granted, bring text the shipped
    starter dictionary scores `Block` on (e.g. "explicit act", already used in
    `text-policy-ffi`'s own test fixtures) frontmost and confirm an interstitial appears and
    swallows a click within ~1–2s, confirm it tears down over clean text, check native-fullscreen
-   Space interaction, and multi-display connect/disconnect if a second display is available. Strike
-   the completed order items above and update this file's status once done. <!-- step: mac-daemon.live-e2e -->
+Space interaction, and multi-display connect/disconnect if a second display is available.~~
+    **Done for the core claim, and it was not "no code" — see below.** The pipeline ran end to end
+    on macOS 26.5: real `SCStream` frame → real AX walk of the frontmost window → `text-policy` over
+    UniFFI scoring `Block` at 0.80 → a real `NSWindow` on screen, and it tears down when the text
+    goes away. The remaining checks (native-fullscreen Space, multi-display) are still outstanding,
+    as is the biggest thing this pass found — see [backlog.md](backlog.md). <!-- step: mac-daemon.live-e2e -->
+
+#### What the first live pass actually found
+
+The session was specified as human-in-the-loop with no code. That was wrong in both directions: two
+of the three blockers were code defects, and neither was reachable by any test in this repo.
+
+1. **The capture stream delivered YUV, not BGRA, and every frame was dropped.**
+   `SCStreamConfiguration.pixelFormat` was never set, and the default on macOS 26.5 is biplanar
+   `420v` — 2 planes, and `CVPixelBufferGetBytesPerRow` returns the *Y plane's* stride (1536 for a
+   1512-wide frame) against the 6048 a BGRA row needs. `PixelBufferCopy.depad` refused all 608 of
+   them, which is exactly right, and `ScanLoop` then bailed at its `!frame.isEmpty` gate forever.
+   **The symptom is indistinguishable from a missing Screen Recording grant** — a permanently empty
+   frame — which is why this cost the session rather than a minute. Fixed by asking for
+   `kCVPixelFormatType_32BGRA` explicitly; pinned by `planarStrideIsRejected` in
+   `ScreenCaptureTests`. Never trust a default pixel format.
+2. **Module 8's point-vs-pixel fix did not work, because `SCDisplay.width` is itself in points.**
+   The comment claimed pixel dimensions; the stream ran at 1512×982 on a 3024×1964 display, i.e.
+   quarter resolution — the trap the plan recorded, avoided in prose and not in fact. Fixed with
+   `CGDisplayCopyDisplayMode(display.displayID).pixelWidth/.pixelHeight`. Note the live frame's
+   stride is 12160 against a tight 12096, so the row padding module 8 warned about is real and
+   `depad` is load-bearing on every frame.
+3. **A TCC grant added by hand through the Settings pane's `+` button does not necessarily match
+   the running process.** Accessibility read as ON in System Settings while the daemon's own
+   `AXIsProcessTrusted()` returned false, indefinitely. Replacing the bundle on disk (which this
+   session did five times) leaves the row in place but stales the recorded signature. Toggling it
+   off and on does **not** repair it; `tccutil reset Accessibility com.holyblocker.daemon` followed
+   by the process requesting access itself does. **Onboarding must therefore call
+   `requestAccess(to:)` from the daemon and never instruct a user to add the app by hand** — Screen
+   Recording never had this problem precisely because it was registered by the process that asked
+   for it. `runAgent` now requests Accessibility once per launch when it is not held.
+4. **The render loop was unobservable, and that is a defect of its own.** With the overlay as its
+   only output, a failure anywhere in capture → AX → policy → window looks identical from outside.
+   `AgentRenderLoop` now prints one line per *state change* (plus a 10s heartbeat) carrying frame
+   geometry, delivery tallies with per-cause drop counts, the live Accessibility state, AX text
+   **length only — never its content**, verdict, intent and whether the overlay is up. Every finding
+   above came from that line; none was diagnosable without it.
+5. **`tccutil reset` resolved and ran unprivileged** against `com.holyblocker.daemon` once the app
+   was in `/Applications`. The earlier `OSStatus -10814` was only a missing bundle to resolve, not a
+   privilege check — see [backlog.md](backlog.md) item 2, whose *standard-user* half is still open.
+
+#### The response is no longer only an overlay — module 17, `WindowSuppression`
+
+The live pass killed the assumption underneath module 10. **Covering the screen is not covering
+content**: the overlay is a picture drawn on top of windows the window server is still compositing,
+and anything that re-arranges them goes around it. Two routes were found within a minute of the
+first successful block, both by the user rather than by design review:
+
+- **Click the desktop.** Every window unfocuses at once, the frontmost-window scan finds nothing,
+  the verdict flips to `allow`, and the cover tears down over content that never moved.
+- **Four-finger swipe up.** Mission Control is composited by the Dock above `.screenSaver` — the
+  highest level `OverlayPlan` has — and its previews are live. Filed as backlog item 2.
+
+So a block now draws the interstitial **and** removes the offending application from the screen.
+`WindowSuppression.swift` is the pure decision (`SuppressionDecision.command`) plus an
+`ApplicationHiding` edge over `NSRunningApplication.hide()`, which needs **no TCC grant** — it is
+application-level window management, not accessibility control of another process. Verified live:
+blocking text in TextEdit produces `hiding: com.apple.TextEdit` and the application goes to
+`visible: false`.
+
+Four decisions worth keeping:
+
+- **Hide, never close.** Closing a window discards unsaved work, and a blocker that loses a
+  half-written document gets uninstalled. Hiding removes it from the screen *and* from Mission
+  Control's previews, and is one Dock click from recovery.
+- **Block only.** A warn is an interstitial the user is meant to be able to think past; taking their
+  window away is not a weaker response than asking them a question.
+- **A protected set that must never be hidden** — ourselves (hiding this process takes the overlay
+  with it), Finder (takes the desktop), Dock/SystemUIServer/loginwindow. They are the shell, not
+  content.
+- **The verdict has to carry its target.** `AXElementProbing` gained `lastWalkedApplication` and
+  `AccessibilityScanner` a `lastVerdictApplication`, retained across rate-limited ticks. Re-reading
+  `NSWorkspace.frontmostApplication` at response time is a race the scan cadence loses, and the cost
+  of losing it is hiding an innocent window.
+- **A refused hide must not stamp the cooldown**, or one refusal buys the application five quiet
+  seconds on screen — the exact window the response exists to close.
+
+This does **not** close the coverage gap, and the plan should not pretend it does: it acts on
+content the daemon has *seen*. Content that is never scanned — a second window beside the focused
+one, another display — produces no verdict at all and is neither covered nor hidden. That is backlog
+item 3, and it is still the largest gap on this platform.
+
+What did **not** need fixing: `AccessibilityText`, `AccessibilityScanner`, `ScanLoop`,
+`OverlayPlan`/`OverlayController`, the UniFFI seam, and the signing identity all behaved exactly as
+specified on their first live run. Grants survived four bundle replacements, which is the whole
+point of the stable certificate.
 
 ### Outstanding verification — one item blocks a tamper-resistance claim
 
