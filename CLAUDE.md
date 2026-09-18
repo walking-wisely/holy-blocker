@@ -48,6 +48,43 @@ Use `pnpm` for the JavaScript workspace.
 - Build the desktop package only: `pnpm --filter @holy-blocker/desktop build`
 - Typecheck the desktop package only: `pnpm --filter @holy-blocker/desktop typecheck`
 
+### Local Ports and Services (Portless is the default)
+
+This repo runs many parallel git worktrees (see "Working Rhythm" below), and a hardcoded port
+number is a collision waiting to happen the moment two worktrees run the same dev server or
+proxy at once. **[Portless](https://github.com/vercel-labs/portless)** (`portless run -- <cmd>`)
+is the default way to run anything that binds a local TCP port:
+
+- It assigns a free ephemeral port via the `PORT` env var and exposes the resulting address as
+  `PORTLESS_URL`, so nothing in a script or config should hardcode a port number.
+- It detects git worktrees automatically and namespaces the URL by branch, so `pnpm dev:desktop`
+  in two different worktrees never collides.
+- `apps/desktop`'s `pnpm dev` script and `vite.config.ts` already use this pattern
+  (`process.env.PORT`, `$PORTLESS_URL`) — follow the same shape for any new package that binds a
+  TCP port for local development or manual testing (e.g. `packages/mitm-proxy`'s `--listen`
+  flag: run it as `portless run --name mitm-proxy -- sh -c 'cargo run -- --listen
+  127.0.0.1:$PORT'` rather than the hardcoded `127.0.0.1:8080` default).
+- Portless auto-injects `--port` for frameworks that ignore `PORT` (Vite, Astro, etc.), but this
+  only works when the framework binary is the literal top-level command — not when it's a quoted
+  sub-command inside `concurrently` or another shell wrapper. In that case (as with
+  `apps/desktop`), have the underlying tool read `process.env.PORT` itself instead of relying on
+  auto-injection.
+- **Unverified as of this writing:** whether Electron's `BrowserWindow.loadURL` trusts Portless's
+  self-signed HTTPS certificate for a `*.localhost` origin out of the box, or needs
+  `NODE_EXTRA_CA_CERTS` threaded through explicitly. Confirm this live (`pnpm dev:desktop` in two
+  worktrees at once) before treating the desktop dev flow as fully proven; if it fails, the
+  fallback is Portless's `--no-tls` flag.
+- Portless is macOS/Linux only. `native-modules/win-daemon`/`win-network` will need a different
+  mechanism (e.g. binding port 0 and passing the OS-assigned port through env/config) once they
+  grow a local TCP listener.
+- **Docker Compose is not covered by `portless run`** — it only wraps a single launched process
+  and cannot inject a port into a static `ports:` mapping in a compose file. If a package
+  introduces Compose: never hardcode `container_name:` (let it default from the worktree's
+  directory name, which is already unique), bind host ports as `ports: ["127.0.0.1::5432"]` (no
+  host port — Docker assigns a free one), discover it with `docker compose port <service>
+  <container_port>`, and register it with `portless alias <name> <port>` so callers still get a
+  stable hostname instead of needing to know the number.
+
 For Rust policy code:
 
 - From `packages/text-policy`, use `cargo test` for tests.

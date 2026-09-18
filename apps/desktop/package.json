@@ -7,7 +7,7 @@
   "scripts": {
     "build:main": "tsc -p tsconfig.main.json",
     "build": "tsc -p tsconfig.main.json && vite build",
-    "dev": "pnpm build:main && concurrently -k \"vite --host 127.0.0.1\" \"tsc -p tsconfig.main.json --watch --preserveWatchOutput\" \"wait-on http://127.0.0.1:5173 && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 electron dist/main/main.js\"",
+    "dev": "pnpm build:main && portless run --name desktop -- concurrently -k \"vite --host 127.0.0.1\" \"tsc -p tsconfig.main.json --watch --preserveWatchOutput\" \"wait-on $PORTLESS_URL && cross-env VITE_DEV_SERVER_URL=$PORTLESS_URL electron dist/main/main.js\"",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run"
   },
@@ -26,6 +26,7 @@
     "@types/react-dom": "^19.3.0",
     "concurrently": "^10.0.5",
     "cross-env": "^10.1.0",
+    "portless": "^0.15.6",
     "vitest": "^4.1.10",
     "wait-on": "^9.1.0"
   }
