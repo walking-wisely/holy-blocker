@@ -302,6 +302,7 @@ The order below is the original plan. What was actually built is recorded under
    **Done.** The size floor is now **96px**, the geometry is **tile-max**, and the threshold has
    no shipped default at all — the caller supplies it explicitly. See
    [Measured constants](#measured-constants).
+<!-- step: image-sandbox.measured-geometry -->
 
 Still to do:
 

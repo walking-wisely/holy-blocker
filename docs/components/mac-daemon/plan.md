@@ -1902,7 +1902,7 @@ merged; 6 is human-only, no code):
    second, non-`async` function that does the Timer wiring did not fix it either — the same error
    persisted with `gate`/`capture` as plain parameters. What actually resolved it was giving the
    timers one `@MainActor` class, `AgentRenderLoop`, to capture instead of two plain ones — the
-    same reason `OverlayController` itself is `@MainActor` and not a plain class. 313 tests.
+    same reason `OverlayController` itself is `@MainActor` and not a plain class. 313 tests. <!-- step: mac-daemon.agent-render-loop -->
 6. ~~**Live verification** (needs 5 merged, human-in-the-loop, no code): rebuild bindings and bundle,
    reload the LaunchAgent, grant Accessibility + Screen Recording for real via System Settings
    against `HolyBlockerDaemon.app` specifically (never a shell binary — the responsible-process
@@ -1915,7 +1915,7 @@ Space interaction, and multi-display connect/disconnect if a second display is a
     on macOS 26.5: real `SCStream` frame → real AX walk of the frontmost window → `text-policy` over
     UniFFI scoring `Block` at 0.80 → a real `NSWindow` on screen, and it tears down when the text
     goes away. The remaining checks (native-fullscreen Space, multi-display) are still outstanding,
-    as is the biggest thing this pass found — see [backlog.md](backlog.md).
+    as is the biggest thing this pass found — see [backlog.md](backlog.md). <!-- step: mac-daemon.live-e2e -->
 
 #### What the first live pass actually found
 

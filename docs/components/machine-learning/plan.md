@@ -342,11 +342,17 @@ testpaths = ["tests"]
 ## Implementation order
 
 1. Add `pytest` to `pyproject.toml` `[project.optional-dependencies]` as `test = ["pytest"]`; add `[tool.pytest.ini_options]` pointing at `tests/`.
+  <!-- step: machine-learning.pytest-config -->
 2. `dataset.py` — implement `LocalImageDataset` and `load_dataset`; write `tests/test_dataset.py` with synthetic images using `tmp_path`.
+  <!-- step: machine-learning.dataset -->
 3. `eval.py` — implement `evaluate` and `report`; write `tests/test_eval.py` with a trivially correct model on a two-label synthetic loader.
+  <!-- step: machine-learning.eval -->
 4. Wire `dataset.py` and `eval.py` into `train.py` — replace the placeholder training loop with a real epoch loop over `load_dataset`, a validation call to `evaluate` after each epoch, and progress printing via `report`.
+  <!-- step: machine-learning.train-wiring -->
 5. `quantize.py` — implement `quantize_onnx`; extend `tests/test_export.py` to verify the quantized model loads and has a smaller file size than the original.
+  <!-- step: machine-learning.quantize -->
 6. `export_tflite.py` — implement TFLite export; add `tests/test_export.py` coverage for the TFLite path using a tiny synthetic model.
+  <!-- step: machine-learning.export-tflite -->
 
 ## Notes for whoever builds this
 
