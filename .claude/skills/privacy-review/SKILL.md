@@ -18,8 +18,9 @@ This skill runs in one of two modes. Decide which before doing anything else.
 whichever data classes the diff touches, and nothing else. Output is inline feedback.
 
 **Audit mode** — a package is being assessed as a whole. Scope is the package. Output is backlog
-entries in `docs/engineering/privacy-backlog.md`, *not* fixes. Do not fix findings during an audit;
-an audit that turns into a refactor stops being an audit.
+entries in `docs/engineering/privacy-backlog.md` (created on the first audit if absent), *not*
+fixes. Do not fix findings during an audit; an audit that turns into a refactor stops being an
+audit.
 
 If the user hasn't said which, infer from scope: a diff means authoring, "audit `packages/x`" means
 audit. Ask only if genuinely ambiguous.

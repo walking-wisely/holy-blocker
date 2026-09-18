@@ -339,7 +339,7 @@ Run 2026-09-19 before writing the skill. All claims settle now; none deferred.
 | OCR text is a concrete copiable class today | `rg -n "Vision\|VNRecognize\|VNImageRequestHandler"` over daemon/mobile/image-sandbox sources | No OCR module anywhere; only the cadence plumbing (`ScanLoop`), `ScanSource.ocr`, `PolicySource.OCR_*`, and doc comments | OCR is planned-only; the inventory records the empty slot rather than the file, settles-now |
 | Tamper-log retention is finite and stated | `rg -n "MAX_ENTRIES\|COALESCE_MILLIS" apps/mobile/.../policy/TamperLog.kt` | `MAX_ENTRIES = 2_000` at ~60 B/entry (< 150 KB), `COALESCE_MILLIS = 10_000` | **TRUE** — settles-now |
 | No enumerated class transmits off-device | `rg` for URLSession/NWConnection/OkHttp/URLConnection across mac-daemon, mobile, desktop sources | None. Only a loopback probe socket and the mobile VPN's by-design DNS forwarding; desktop speaks to a local pipe. Proxy debug trace logs `method`/`host`/`port` per forwarded request (`forward.rs:36`) — device-local, but itself a shallow visited-domain record | **TRUE** on inspection; the debug-level host record is filed as a finding, settles-now |
-| Audit target path is fresh | `ls docs/engineering/privacy-backlog.md` | Does not exist yet | n/a — created by this step, settles-now |
+| Audit target path is fresh | `ls docs/engineering/privacy-backlog.md` | Does not exist yet | n/a — created by the first audit-mode run (this step ships the skill that writes it, not the file itself), settles-now |
 
 ### Step 8 — wire mandatory gates into step-loop
 
