@@ -32,6 +32,8 @@ VALID_ACCEPTANCE = ("code", "observation", "product")
 DEFAULT_ACCEPTANCE = "observation"
 # `feature` — a planned capability. `bug` — a defect found; a `bug` may name the step
 # it regressed (`regressed_step`) or stand alone when found by manual/exploratory testing.
+# Unknown/misspelled `kind` keys silently default to `feature` like every other optional
+# manifest field — a lost bug declaration is indistinguishable from none (recorded narrowing).
 VALID_KIND = ("feature", "bug")
 DEFAULT_KIND = "feature"
 MARKER_RE = re.compile(r"<!--\s*step:\s*([A-Za-z0-9._-]+)\s*-->")
