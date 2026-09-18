@@ -229,6 +229,20 @@ class DependencyValidationTest(unittest.TestCase):
         self.assertTrue(any("dependency cycle" in p for p in problems))
 
 
+class LoadManifestTest(unittest.TestCase):
+    def test_reads_kind_and_regressed_step(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            package = Path(tmp)
+            (package / "steps.toml").write_text(
+                '[[step]]\nid = "p.a"\ntitle = "a"\nstatus = "pending"\n'
+                'kind = "bug"\nregressed_step = "p.done"\n',
+                encoding="utf-8",
+            )
+            steps = ledger.load_manifest(package)
+            self.assertEqual(steps[0].kind, "bug")
+            self.assertEqual(steps[0].regressed_step, "p.done")
+
+
 class WriteTodoTest(unittest.TestCase):
     def test_writes_rendered_table_to_todo_md(self):
         with tempfile.TemporaryDirectory() as tmp:
