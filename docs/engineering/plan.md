@@ -285,6 +285,18 @@ is itself a contract-shaped product decision under step-loop's own gate 3.
 **Do not treat this step as done on a green diff.** It must go through gate 3
 (a one-page "these are the tiers, this is the cap, approve?") before merge.
 
+### Assumption audit (step 6)
+
+| Claim | Falsifier | Observed | Verdict |
+|---|---|---|---|
+| `adversarial-review` really has the consequence axis "a guard that fails open silently outranks a crash" | `grep -n "outranks" .claude/skills/adversarial-review/SKILL.md` | line 93: exact wording present | Held |
+| `step-loop` gate 5's current wording is "if the review finds a load-bearing gap, go back to gate 1" | `grep -n "load-bearing gap" .claude/skills/step-loop/SKILL.md` | line 71: exact wording present; premise of step 6's gap is real | Held |
+| A DNS-shield-like component with a fails-open code path exists in the repo | grep the mobile DNS path we cite | `NetworkGuardService.ask()` (`NetworkGuardService.kt:299`) writes an unvalidated upstream answer into the TUN; matches `coverage.md`'s "forged DNS answer" live defect | Held |
+| A log formatter exists in the repo to anchor the Non-blocking example | read win-daemon's renderer | `Log()` in `native-modules/win-daemon/src/main.cpp:9`, window-rect line at `:42` | Held |
+| A real permission-check decision exists to anchor the Judgment-call example | grep `PermissionGate.swift` | `.protected`/`.weakened` assessment at `:411`; `content-interception.md` records the open decision | Held |
+| The routing table's `kind = "bug"` / `regressed_step` destination is mechanically supported today | `grep -n "kind\|regressed_step" tools/plan/ledger.py` | No such fields — schema support is still step 5 (`engineering.bug-kind-ledger`, `pending`) | **Defers-to-named-step** — the routing table names the target state; it becomes mechanically enforceable when step 5 lands. The doc is not load-bearing on it for a human reader |
+| `python` vs `python3` for this step's verify | `which python; python3 --version` | `python3` 3.14.7; no `python` binary on the machine | Held — verify commands run with `python3` |
+
 Acceptance: `product`. The loop stops at the PR; a human closes it.
 
 ### Step 7 — privacy-review skill
