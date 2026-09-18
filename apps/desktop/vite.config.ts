@@ -9,7 +9,8 @@ export default defineConfig({
     emptyOutDir: true,
   },
   server: {
-    port: 5173,
-    strictPort: true,
+    // Portless (see `pnpm dev` script) injects PORT per worktree; fall back
+    // to 5173 for a plain, non-Portless run.
+    port: process.env.PORT ? Number(process.env.PORT) : 5173,
   },
 });
