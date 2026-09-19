@@ -25,9 +25,21 @@ account in this repo's PR/commit history for context, not reproduced here).
 Recall (does the classifier still catch explicit content) therefore cannot be
 self-measured against a held-out positive set the way `false-positive rate` is measured
 against `synthetic-ui`/`real-world-macbook` below. Whatever validates recall going
-forward has to work without this project ever taking custody of the material — see
-`docs/decisions/` for the follow-up decision once a no-custody approach is chosen; none is
-picked yet.
+forward has to work without this project ever taking custody of the material.
+
+**The no-custody approach is now chosen (2026-09-19)**, in
+[decisions/learning-from-feedback.md](../../decisions/learning-from-feedback.md)'s
+Evaluation section: Confidence-Based Performance Estimation off the deployed model's own
+score stream, third-party vendor benchmarks cited as reference only, and a release gate
+built from a cross-style specificity regression suite (legally-clean imagery: classical
+art nudity, licensed swimwear/lingerie stock, safe-for-work anime, breastfeeding/medical,
+the bed-photo case) plus a dogfood-only shadow-mode comparison — never fleet-wide dual
+inference. That same section also records why holding *any* explicit benchmark, even
+privately and out of this repo, is foreclosed for this project specifically (a
+jurisdictional constraint, not just a preference), and why domain-blocklist coverage
+means the residual distribution this classifier has to catch is now narrow enough that
+live-usage signal converges slowly by construction — read that section before proposing
+a new eval mechanism here.
 
 This document is otherwise the build plan for what exists today: the baseline evaluation
 harness. It does not describe a fine-tuning pipeline — none is planned while the decision
@@ -96,7 +108,11 @@ since a real-screenshot batch (unlike the synthetic one) cannot be regenerated f
   for production.
 - **Recall** — only the benign/false-positive side is measured. Recall needs a held-out
   explicit corpus, which this pipeline deliberately does not source or store (see
-  `corpus.py`'s docstring).
+  `corpus.py`'s docstring), and per
+  [decisions/learning-from-feedback.md](../../decisions/learning-from-feedback.md)'s
+  2026-09-19 revision, no such corpus will be sourced or stored going forward either —
+  see that section for what replaces it (CBPE off the live score stream, vendor
+  benchmarks as reference only, and a specificity-suite release gate).
 - **Fine-tuning** — considered and deliberately not attempted, not merely deferred.
   Fine-tuning against `synthetic-ui`/`real-world-macbook` would only have safe-labeled
   examples to train on, and with no held-out explicit corpus to check afterward (see

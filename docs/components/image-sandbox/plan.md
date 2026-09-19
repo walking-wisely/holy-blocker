@@ -309,6 +309,31 @@ Still to do:
    pass over a larger input yields a spatial logit grid whose max equals the tiled max — and, as
    a side effect, the coarse heatmap the screen-capture path will need for localisation.
 
+   **This is the answer to a distinct, related cost problem worth naming explicitly (noted
+   2026-09-19): a screen frame with many small thumbnails (a chat/gallery grid) costs one
+   inference call per detected photo region under the naive crop-and-classify approach, i.e.
+   linear in thumbnail count.** Batching those crops into one inference call (a stacked `[N, C,
+   H, W]` tensor, one forward call instead of N) is a **constant-factor** win, not an
+   asymptotic one — it removes fixed per-call overhead (kernel launch, memory transfer, FFI
+   marshaling) but FLOPs still scale ~linearly with N, since each region still needs its own
+   backbone pass. The fully-convolutional conversion above is the actual answer to the
+   asymptotic question: cost then scales with the fixed canonical input resolution, not with how
+   many thumbnails are packed into it. Concretely, this would compose with a cheap region-detection
+   gate to find candidate photo regions first — no such gate exists in this repo yet; the nearest
+   related piece is the mac-daemon's `ScanVerdict.regions: [ImageDetection]` field, which is
+   explicitly unpopulated pending "a real detector model, not yet started" (see
+   `docs/architecture/content-classification.md`'s "Image Localization" section and the mac-daemon
+   row in this repo's status table). Once such a gate exists, pack the regions it finds into one
+   composite "contact sheet" canvas, run the FCN-converted model once over the canvas, and read
+   each region's score off the corresponding sub-area of the output heatmap — mechanically an
+   extension of `preprocess_tiles`'s existing sliding-window-plus-max-reduce, not new technique.
+   Until then, this whole item is design-only: nothing to build against here yet.
+   Fine-tuning the FCN head on multi-thumbnail screen layouts (as opposed to single centered
+   photos) can use synthetic composites of already-safe images — recombining legal SFW imagery
+   into synthetic grids raises no custody question — but tuning the model's explicit-detection
+   behavior itself is capped by the same no-corpus constraint recorded in
+   `docs/decisions/learning-from-feedback.md`.
+
 ## What this does not cover
 
 - Video frame handling — that is `packages/video-watchdog` (Phase 5 of the network pipeline).
