@@ -165,3 +165,22 @@ This does not close the screen-path gap two sections up — it only gives the
 warn tier a real class to draw its line against instead of the daemon
 inventing one. No operating point has been measured for either threshold
 against screen content, same as before.
+
+## What replaces a screen-frame corpus: a paired transport-shift measurement
+
+A labelled corpus of explicit screen frames would close the gap above, and it will
+never exist — [image-corpus-custody.md](image-corpus-custody.md) rules out acquiring
+one, and nothing else would serve.
+
+What can be measured instead is `s(X)` against `s(pipeline(X))` over benign imagery
+composited into rendered UI. Because the pipeline's geometry — crop, scale,
+composite, overlay — is content-blind, a shift measured on benign images describes
+what it does to *any* image. A shift near zero licenses transferring the checkpoint's
+own operating point onto the screen path; a shift that is not near zero is the
+quantified loss.
+
+That is an argument resting on one measurement, not a measurement of the thing
+itself, and it is labelled as such wherever it is used. The harness is planned in
+[machine-learning/plan.md](../components/machine-learning/plan.md#synth_compositepy-and-transportpy--the-screen-path-measurement);
+the work it gates is in
+[image-sandbox/plan.md](../components/image-sandbox/plan.md#the-screen-path).

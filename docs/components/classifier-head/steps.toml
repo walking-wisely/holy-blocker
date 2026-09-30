@@ -22,6 +22,18 @@ status = "pending"
 evidence = ""
 
 [[step]]
+id = "classifier-head.parity-fixture"
+title = "parity fixture and its generator"
+status = "pending"
+evidence = ""
+
+[[step]]
+id = "classifier-head.export"
+title = "export side (module 6) — embedding-only backbone export, sidecar identity, holy-blocker-export-head"
+status = "pending"
+evidence = ""
+
+[[step]]
 id = "classifier-head.ffi"
 title = "classifier-head-ffi and the Kotlin bindings"
 status = "pending"

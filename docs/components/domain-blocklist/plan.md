@@ -1105,7 +1105,96 @@ decision doc's [Distribution](../../decisions/domain-blocklist-sourcing.md#distr
    allowlist a real run needs (`--allow-license`) defaults, with a loud warning, to an unratified
    starting set (MIT, CC0-1.0, GPL-3.0, CC-BY-SA-4.0) — ratifying that list, including whether
    copyleft (GPL-3.0) inputs are acceptable for this project, is a human licensing decision this
-   code deliberately does not make silently. <!-- step: domain-blocklist.cli -->
+   code deliberately does not make silently; (7) ~~the sweep held its entire cache in memory and
+   wrote it to disk exactly once, at the end~~ **Done, in a follow-up pass, prompted by a real
+   ~14-hour VPS run with no checkpointing.** `sweep::CheckpointSink` + `--checkpoint-every` (default
+   10,000, rounding up to the next `--canary-every` chunk boundary, since only a canary-validated
+   chunk is trustworthy enough to persist) periodically flushes the accumulated cache via
+   `cache_store::save` mid-sweep, so a crash loses at most one interval instead of the whole run — a
+   restart resumes for free through `due_for_check`'s existing TTL logic, no separate resume state
+   needed. A checkpoint failure aborts the sweep rather than logging and continuing. Also fixed in
+   the same pass: `due_domains` was a second full-corpus `Vec<String>` cloned alongside `entries`,
+   roughly doubling the resident set at multi-million-domain scale — replaced with a `Vec<usize>` of
+   indices, cloning only one chunk's worth of domain strings at a time. Holding the full merged
+   `Vec<MergedEntry>` in memory for the sweep's duration (~500-600MB at the measured 4.75M-domain
+   corpus size) is unchanged and not yet addressed — paging it from an on-disk intermediate file
+   would also require `build()`/`gates.rs`/`review_queue()` to stop assuming a resident `Vec`, which
+   is a larger change than this pass's scope. **That follow-up is done, in a second pass**:
+   `entries_store.rs` writes the merged corpus to a length-prefixed bincode-per-record scratch file
+   right after merge, and `sweep::run_sweep_streaming` reads due-domain batches from it
+   `canary_every` at a time (never pre-collecting a full due list) plus a second reopened pass for
+   final pruning — sufficient because `entries` only ever needs sequential access, never random,
+   so no index or mmap is needed, just a plain reopened file reader. `main.rs` writes and drops
+   `entries` before the sweep starts and only reconstructs it (filtered by `pruned_domains`)
+   afterward, for the fast gates/build phase. `run_sweep`/`run_sweep_with_resolvers` are kept
+   unchanged for tests and small-corpus callers, sharing the per-batch DNS/cache logic
+   (`process_batch`) with the new streaming driver so the two can't silently diverge; a new test
+   asserts they produce byte-identical outcomes over the same input. **Measured, and the honest
+   result is smaller than expected**: a fresh-process stress test shows RSS barely moves
+   immediately after writing `entries` to disk and dropping it (516.1MB vs. 515.9MB) — `drop()`
+   returns memory to the process allocator, not the OS, and macOS's `malloc` doesn't eagerly return
+   millions of small fragmented `String` allocations, so the freed space is mostly silently reused
+   by the cache's own later growth rather than showing as a visible RSS drop. A real but modest
+   ~86MB reduction in final RSS (1960MB → 1874MB) was measured across two independent fresh
+   processes — not the ~516MB a naive "the Vec is gone" story predicts. This is very likely a
+   macOS-allocator artifact (Linux's `ptmalloc` typically returns large freed regions more
+   eagerly) but that is an unverified claim about the real deployment host, not a measured one.
+   What's guaranteed regardless of allocator behavior: no live reference to the full corpus exists
+   during the sweep's duration, a structural fact independent of what `ps` reports. The cache
+   remains the dominant driver of the ~1.9-2GB peak either way — an embedded KV store bounding
+   cache RSS by a page budget instead of corpus size (replacing the `HashMap` +
+   whole-file-bincode design) is the real lever for that number. ~~Now spec'd, not yet built~~
+   **Built.** `docs/decisions/domain-blocklist-sourcing.md`'s "Measured 2026-08-16: the cache's
+   in-process representation — redb, not a `HashMap` blob" section measured the actual production
+   VPS (RAM, real `O_DIRECT` disk-latency percentiles, real corpus) and a real redb file built from
+   the project's actual pinned sources (4,767,348 domains → 515MB compacted, vs. 2.71GB observed
+   live for the then-current in-memory `HashMap`). `cache_store::CacheStore` is now the redb-backed
+   store that section speced: a single-file table (domain → bincode `CacheEntryDto`, the same DTO
+   `load`/`save` already used, kept unchanged for tests/small-corpus callers) behind a new
+   `CacheBackend` trait, with `set` buffering into an in-memory pending map and `flush` committing
+   one batched write transaction — sorted by key first, the free B-tree-locality win the plan named
+   — rather than one transaction per domain. **Correction: redb is not mmap-backed** — it keeps its
+   own in-process page cache (`redb::Builder`, 1 GiB default), which is anonymous process heap the
+   kernel can only swap, not drop the cheap way it drops a clean mmap; `CacheStore::open` now passes
+   `set_cache_size(cache_store::DEFAULT_CACHE_SIZE_BYTES)` (128 MiB, see that constant's own doc
+   comment) explicitly rather than taking the unbounded default, which is the actual mechanism that
+   bounds this cache's RSS — see the sourcing doc's corrected redb section for the full story and
+   why the earlier mmap-reclaim framing was wrong. `sweep::run_sweep_streaming` (the function
+   `main.rs` calls for a real run) is now generic over `CacheBackend`, so `main.rs` passes a real
+   `CacheStore` there instead of a resident `HashMap`; checkpointing is `cache.flush()` at each
+   `canary_every` boundary plus one **unconditional** final flush — no longer gated on
+   `checkpoint_every > 0` (a real bug found and fixed: that gate made `--checkpoint-every 0` on a
+   real run silently buffer every verdict since the sweep began and never reach disk, since the "a
+   dry run never persists `--cache`" guarantee is already enforced upstream, by `main.rs` choosing an
+   in-memory cache for a dry run rather than a real `CacheStore` at all). **On-disk migration was
+   decided, not discovered mid-migration, per this section's own instruction**: no automatic
+   bincode→redb converter was built, because no real production `cache.bin` exists to migrate — a
+   deployment switching to this starts one cold sweep. ~~One real narrowing this decision costs: a
+   dry run can no longer cheaply seed itself from an existing cache file's exact prior state
+   (`CacheBackend::for_each` has no key-yielding variant to reconstruct a `HashMap` from), so a dry
+   run now always starts cold.~~ **Closed in the adversarial-review pass below**: a new
+   `cache_store::read_snapshot(path)` reads an existing redb file read-only (never creates it,
+   never opens a write transaction) into a plain `HashMap`, and `main.rs`'s dry-run branch now
+   seeds `LivenessCache::Memory` from it when `--cache` is given, restoring the "sees exactly the
+   gate decisions a real run would" guarantee `--dry-run`'s own doc comment makes. **Measured
+   against the same 4.8M-synthetic-domain stress harness the streaming-corpus pass
+   above used, same machine, same process shape**: `HashMap`-backed streaming final RSS 1353.8MB;
+   redb with the unbounded 1 GiB default, 1126.7MB (a modest ~17% reduction the sourcing doc
+   originally, and wrongly, attributed to mmap reclaim); redb with the fixed 128 MiB bounded cache,
+   **942.8MB** (cache file still 514.0MB on disk, unchanged — this is a resident-memory fix, not a
+   format change). See the sourcing doc's corrected section for a separately-reproduced run that
+   measured a larger gap (down to 613.9MB) under conditions not fully pinned down between the two
+   runs — both agree the bounded-cache-size fix is real and correctly targeted, neither is confirmed
+   against the real VPS yet. Periodic compaction cadence for steady-state churn remains this
+   section's own named open gap — still unmeasured, not built here. **The same review also closed
+   a silent-error gap in `CacheStore::get`**: four chained `.ok()?` calls previously collapsed a
+   real error (a transaction/table failure, an undecodable row) into the same `None` a genuine
+   cache miss returns, which mattered concretely in `sweep::process_batch` — a transient read
+   error on an already-`Dead` domain silently reset its `first_dead_at` quarantine clock,
+   indistinguishable from a fresh death. `get` now logs and counts real errors distinctly (a new
+   `AtomicU64 error_count` field, exposed via `CacheStore::error_count()` and logged as
+   `cache_errors` on the "liveness sweep complete" line) while leaving the fallback behavior
+   (treat as due/unknown) unchanged for every caller. <!-- step: domain-blocklist.cli -->
  8. ~~`net-shield` integration — the precedence table and the shared `normalize()`, per module 6.~~
     **Done.** `packages/net-shield/src/blocklist.rs` — `BlocklistArtifact` (a `fst::Map<Mmap>` that
     owns the mapping, avoiding the plan's `Arc<Mmap>`-plus-`Map` self-reference while keeping the

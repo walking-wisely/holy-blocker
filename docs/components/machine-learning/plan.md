@@ -1,16 +1,49 @@
 # Machine Learning Pipeline — Implementation Plan
 
-The classification strategy and model gating rationale live in [../content-classification.md](../../architecture/content-classification.md).
-This document is the build plan: what modules to add, in what order, and what each one is responsible for.
+The threshold-choosing *method* (miss-rate budget, not accuracy; ranking metrics for model
+comparison; a threshold is model-and-geometry-specific with no built-in default) is
+recorded in
+[decisions/classifier-operating-point.md](../../decisions/classifier-operating-point.md).
+That document no longer carries specific measured numbers or model/checkpoint names — they
+came from the same local, never-merged fine-tuning pipeline described (and removed) below,
+and were scrubbed for the same reason.
 
-**Note on the "Current state" section below (added on `feat/ml-nsfw-baseline-eval`,
-branched from `master`):** it describes a fine-tuning pipeline (`config.py`, `labels.py`,
-`train.py`, `export_tflite.py`, etc.) that does not exist in `machine-learning/` on this
-branch — only [results.md](results.md) and this plan file carry that history forward. What
-actually exists here is a much smaller, fresh **baseline evaluation harness**, described in
-[Baseline evaluation (v0)](#baseline-evaluation-v0) below. Treat the rest of "Current state"
-as historical/aspirational until the fine-tuning pipeline is rebuilt or merged in from
-elsewhere.
+The classification strategy and model gating rationale live in [../content-classification.md](../../architecture/content-classification.md).
+
+## Decided: no corpus of real explicit imagery, ever, in any form
+
+A prior local (never pushed) pipeline fine-tuned against a gated real-imagery corpus —
+downloaded via `HF_TOKEN`, decoded in memory, immediately reduced to cached feature
+vectors so raw images touched disk only inside one extraction pass. That was already
+more careful than "just keep a folder of images", and it still produced a real near-miss:
+a `.gitignore` anchoring bug once left 58 MB of feature vectors derived from that corpus
+sitting as ordinary untracked files, one `git add -A` away from being committed (full
+account in this repo's PR/commit history for context, not reproduced here).
+
+**As of 2026-08-07, this project holds no explicit corpus and will not acquire one again
+— not on disk, not gitignored, not as cached feature vectors, not transiently in memory.**
+Recall (does the classifier still catch explicit content) therefore cannot be
+self-measured against a held-out positive set the way `false-positive rate` is measured
+against `synthetic-ui`/`real-world-macbook` below. Whatever validates recall going
+forward has to work without this project ever taking custody of the material.
+
+**The no-custody approach is now chosen (2026-09-19)**, in
+[decisions/learning-from-feedback.md](../../decisions/learning-from-feedback.md)'s
+Evaluation section: Confidence-Based Performance Estimation off the deployed model's own
+score stream, third-party vendor benchmarks cited as reference only, and a release gate
+built from a cross-style specificity regression suite (legally-clean imagery: classical
+art nudity, licensed swimwear/lingerie stock, safe-for-work anime, breastfeeding/medical,
+the bed-photo case) plus a dogfood-only shadow-mode comparison — never fleet-wide dual
+inference. That same section also records why holding *any* explicit benchmark, even
+privately and out of this repo, is foreclosed for this project specifically (a
+jurisdictional constraint, not just a preference), and why domain-blocklist coverage
+means the residual distribution this classifier has to catch is now narrow enough that
+live-usage signal converges slowly by construction — read that section before proposing
+a new eval mechanism here.
+
+This document is otherwise the build plan for what exists today: the baseline evaluation
+harness. It does not describe a fine-tuning pipeline — none is planned while the decision
+above holds.
 
 ## Baseline evaluation (v0)
 
@@ -19,14 +52,12 @@ elsewhere.
 (ViT-base, Apache-2.0, `id2label = {0: "normal", 1: "nsfw"}`), downloaded from Hugging Face
 on the first evaluation run rather than shipped as weights in this package, exactly as
 published — no fine-tuning — and measures its false-positive behavior on **rendered UI / text-heavy
-screenshots**, a distribution [classifier-operating-point.md](../../decisions/classifier-operating-point.md)
-never measures for any model or geometry this project has shipped. Per that decision's
+screenshots**, a distribution no model or geometry this project has shipped has been
+measured against. Per [classifier-operating-point.md](../../decisions/classifier-operating-point.md)'s
 "a threshold belongs to a model *and* a geometry" rule, **the numbers below describe a
 different model under a different geometry** — this classifier's own published
 whole-image resize, not `packages/image-sandbox`'s tile-max — and are not comparable to
-`image-sandbox`'s thresholds. Notably, two of the six thresholds swept below (0.20 and
-0.50) coincide with values `classifier-operating-point.md` records as *superseded* or
-*not a real threshold* for the deployed model; that coincidence is numeric only.
+`image-sandbox`'s configured threshold.
 
 - `model.py` — loads the pretrained classifier; resolves the NSFW class index from the
   model's own `id2label` rather than hardcoding it (a silent label-order flip would
@@ -58,6 +89,18 @@ first data point on an off-the-shelf model, under its own preprocessing, against
 synthetic corpus containing no photographic or illustrated content — the two biggest gaps
 to a production number, both listed below.
 
+**Real screenshots.** ~~a small batch of real local screenshots (never committed) would
+sanity-check the synthetic set against reality~~ **Done.** A manually captured 9-image
+batch (`data/eval/real-world-macbook/`, gitignored — Finder, 4 real Safari tabs,
+Calculator, TextEdit, System Settings, Maps) confirms the synthetic tail is real, not a
+generator artifact: `05_calculator.png` scores 0.71, in the same range as the synthetic
+corpus's `document`-scene tail (max 0.77). FPR 11.1% (1 of 9) at every threshold 0.10
+through 0.70, 0% at 0.90 — n=9 is too small to be a rate estimate, its job was only to
+confirm the synthetic signal isn't spurious. `scripts/run_baseline_eval.py` now evaluates
+both corpora in one run via `corpus.discover_corpora`, which finds whichever named
+corpora exist under `data/eval/` and skips the rest with a note rather than raising,
+since a real-screenshot batch (unlike the synthetic one) cannot be regenerated from code.
+
 **What this does not cover, deliberately deferred:**
 - **Geometry** — evaluated with the model's own published preprocessing (direct resize to
   224×224, mean/std 0.5), not `packages/image-sandbox`'s tile-max geometry. Building a
@@ -65,10 +108,21 @@ to a production number, both listed below.
   for production.
 - **Recall** — only the benign/false-positive side is measured. Recall needs a held-out
   explicit corpus, which this pipeline deliberately does not source or store (see
-  `corpus.py`'s docstring).
-- **Real screenshots** — the corpus is 100% synthetic; a small batch of real local
-  screenshots (never committed) would sanity-check the synthetic set against reality.
-- **Fine-tuning** — out of scope for this pass by request.
+  `corpus.py`'s docstring), and per
+  [decisions/learning-from-feedback.md](../../decisions/learning-from-feedback.md)'s
+  2026-09-19 revision, no such corpus will be sourced or stored going forward either —
+  see that section for what replaces it (CBPE off the live score stream, vendor
+  benchmarks as reference only, and a specificity-suite release gate).
+- **Fine-tuning** — considered and deliberately not attempted, not merely deferred.
+  Fine-tuning against `synthetic-ui`/`real-world-macbook` would only have safe-labeled
+  examples to train on, and with no held-out explicit corpus to check afterward (see
+  Recall, above), a recall regression from that fine-tune would be silent — the one
+  failure mode a content blocker least affords. Separately, 300 images from one
+  procedural generator is a narrow enough style that fine-tuning the whole head against
+  it risks learning "not this synthetic look" rather than "UI is safe", with nothing to
+  catch that either. Per the decision above, this project does not hold an explicit
+  corpus to validate against and is not acquiring one — any future fine-tuning needs a
+  no-custody way to check recall first, not just "a validation split".
 
 See `machine-learning/README.md` for setup and how to re-run the eval.
 
@@ -223,8 +277,8 @@ a representative dataset is passed. Both probes above were fp32.
 #### Export contract (decided)
 
 Whatever backbone is chosen, `export_tflite.py` must export the **backbone only**,
-terminating at the embedding, with `forward` returning `(logits, embedding)`.
-Classification stays outside the graph — see the runtime findings recorded in
+terminating at the embedding. Classification stays outside the graph — see the runtime
+findings recorded in
 [../../decisions/learning-from-feedback.md](../../decisions/learning-from-feedback.md#on-device-runtime-and-where-the-head-lives-decided-2026-07-18),
 and [classifier-head/plan.md](../classifier-head/plan.md) for the crate that consumes the
 embedding.
@@ -233,6 +287,41 @@ later, and would break the on-device training design. The quantization recipe mu
 pinned and the embedding dtype/scale treated as a versioned interface: an int8
 backbone's scale and zero-point become part of the head's input contract, so a silent
 re-export would invalidate every fine-tuned head in the field.
+
+**Where "the embedding" is: after the Hardswish.** For `mobilenet_v3_small` the cut is
+`classifier[1]`, so the exported graph emits the **1024-d** penultimate activation and
+the head is the single remaining affine layer, `Linear(1024 → 2)` — 2,050 parameters,
+8.2 KB in f32. (For MobileNetV3-Large, which is **not adopted**, the same cut gives
+1280-d and `Linear(1280 → 2)`.) This is deliberately **not** `BackboneFeatures`, which
+stops at `avgpool` and emits `BACKBONE_FEATURE_DIM = 576`: cutting there would make the
+head the entire `classifier` block, 592,898 parameters and 2.37 MB. The trade-off, the
+rejected option and the consequences for cached 576-d feature artifacts are argued in
+[classifier-head/plan.md § Where the backbone ends and the head begins](../classifier-head/plan.md#where-the-backbone-ends-and-the-head-begins-decided).
+
+**Status: decided, not implemented.** `export_tflite.py` today converts
+`create_classifier(...)` — the whole model, head included — so the artifact it produces
+emits logits, not an embedding, and nothing writes a head-weights file. Two pieces of
+work are outstanding, and they belong together because the second is only valid against
+the first:
+
+1. **`holy_blocker_ml/embedding.py`** — a `PenultimateEmbedding` module (up to and
+   including `classifier[1]`), plus an `--embedding-only` path through
+   `export_tflite.py` producing `data/models/baseline-v0-embedding.tflite` and a sidecar
+   `.json` carrying `backbone_id`, `embedding_dim`, `arch`, `cut` and `sha256`. The
+   `backbone_id` must be **derived from the exported artifact's bytes**, so a silent
+   re-export cannot keep the old identity — that string is what the Rust head compares
+   against before it agrees to score. The existing whole-model export **stays**;
+   `packages/image-sandbox` consumes a logits-emitting ONNX graph and is unaffected.
+2. **`holy_blocker_ml/export_head.py`** with a `holy-blocker-export-head` console script,
+   writing `model.classifier[-1]`'s weight and bias into the versioned binary format
+   specified in
+   [classifier-head/plan.md § `weights`](../classifier-head/plan.md#2-weights--provisioning-and-persistence).
+   `nn.Linear.weight` is `[out_features, in_features]` and the format is row-major
+   `[classes, embedding_dim]`, so the export is `.numpy().astype("<f4").tobytes()` with
+   no transpose. Target artifact `data/models/baseline-v0.head`.
+
+Both artifacts should be produced by a single run computing the identity once; emitting
+them separately is how they get out of sync.
 
 Reference documents:
 
@@ -297,6 +386,107 @@ def check_guardrail(baseline, candidate, thresholds=None) -> GateResult
 **Corpus data never enters the repo.** `CorpusSpec.root` points at a gitignored local
 path; `load_corpus` raises a `FileNotFoundError` that says so. Tests exercise the
 plumbing with synthetic noise images only.
+
+### `synth_composite.py` and `transport.py` — the screen-path measurement
+
+**Planned 2026-08-08, and the next thing to build in this package.** It is the Stage 0 of
+[image-sandbox's screen path](../image-sandbox/plan.md#the-screen-path), and everything downstream
+of it waits on the numbers it produces.
+
+#### Why this exists
+
+[classifier-operating-point.md](../../decisions/classifier-operating-point.md) records that the
+screen path operates outside every measurement this project has, and the macOS daemon has since
+shipped a classifier onto real frames anyway. The gap cannot be closed the obvious way —
+[image-corpus-custody.md](../../decisions/image-corpus-custody.md) forbids acquiring a corpus of
+explicit screen frames, and nothing else would do.
+
+What can be measured instead is the **transport shift**: what the pipeline's *geometry* does to a
+score, independent of content.
+
+```
+shift(X) = s(X) - s(pipeline(X))
+```
+
+where `s` is the classifier under its own published preprocessing and `pipeline` is
+composite-into-UI → capture-geometry → `check_raw`. Because crop, scale, composite and overlay are
+**content-blind** — they do the same thing to a photo of a dog as to anything else — a shift
+measured on benign imagery describes what the pipeline does to any image, including ones this
+project cannot hold. If the shift is near zero, the checkpoint's published operating point
+transfers to the screen path; if it is not, the size of it is the quantified loss.
+
+This is a **paired** design, and that is load-bearing twice over: it licenses the transfer
+argument, and it cancels photo-source bias, since a source's quirks sit in both terms and subtract
+out.
+
+#### `synth_composite.py` — the corpus is a compositor, not a download
+
+Reuses `synth_ui.py`'s pattern exactly: a pure, Pillow-free `plan_*` function that is
+deterministic in `(count, seed)`, a separate renderer, and a `manifest.json` so a stale run is
+detectable.
+
+```python
+@dataclass(frozen=True)
+class OverlaySpec:                 # style, coverage, opacity, font, colour, scrim
+@dataclass(frozen=True)
+class CompositeSpec:
+    background: BackgroundKind     # "synthetic_ui" | "own_screen"
+    inset: InsetKind               # "photo" | "flat_panel"   <- the keep/discard label
+    inset_rect: Rect               # ground truth for any future region proposal
+    overlay: OverlaySpec
+    seed: int
+
+def plan_composites(count: int, seed: int) -> list[CompositeSpec]: ...
+def render_composite(spec: CompositeSpec, photos: PhotoPool) -> Image: ...
+```
+
+Every label falls out of the spec — where the picture is, whether it is one, and how much text
+covers it. No human annotation, nothing to review, nothing explicit anywhere near it.
+
+**Overlay styles are generated, not sourced.** The overlays that matter here — a caption bar with a
+dark scrim, burned-in subtitles, a corner watermark, meme text, a timestamp pill, play-button
+chrome — are axis-aligned and drawn by a compositor. `SynthText`'s value is perspective-warping
+text onto scene geometry (a sign on a wall), which is the opposite of what is needed; borrow
+`SynthTIGER`'s font/colour/opacity sampling *ranges* and cite them, but take neither dependency.
+Fonts from Google Fonts (OFL), vendored so runs reproduce.
+
+**Photo sources**, per [image-corpus-custody.md](../../decisions/image-corpus-custody.md):
+developer's camera roll first, 3D renders second, COCO `val2017` third. Mix them deliberately —
+a single-source pool shares one compression signature, and the statistics under test are sensitive
+to exactly that, so a result could be "can I detect JPEG" wearing the wrong label. **Report every
+number sliced by photo source**; a source-specific effect then announces itself.
+
+#### `transport.py` — the measurement
+
+```python
+@dataclass(frozen=True)
+class TransportResult:             # per-cell shift distribution + n
+def measure_transport(scorer, composites) -> list[TransportResult]
+```
+
+Report median and p95 of the shift, sliced by **inset scale**, **text-overlay coverage**, and
+**photo source**. Improvement means the distribution collapsing toward zero, especially in the
+small-inset and high-overlay cells, which is where it is expected to be worst today.
+
+Two negative controls that must hold, or the corpus is not testing what it claims:
+
+- a photographic inset must survive at *every* overlay coverage level;
+- a flat-UI inset under the *same* overlays must not.
+
+#### What this measures, and what stays an argument
+
+| Term | How | Needs explicit content? | Kind |
+|---|---|---|---|
+| Classifier quality on images | inherited from the checkpoint's published eval | someone else's | measurement |
+| **Transport shift** | paired, benign, above | no | **measurement** |
+| False positives on real screens | run the daemon on the developer's own screen and count | no | measurement |
+| Gate false-discard rate | gated vs ungated, 1 frame in 20 | no | measurement |
+| Latency | timer | no | measurement |
+| **Screen miss rate** | inherited miss rate × measured ≈0 shift | — | **argument** |
+
+The last row is the only inference, and it is labelled as one. Everything else is a number.
+
+**The harness this builds on is on `master`**: `synth_ui.py`, `corpus.py` and `eval.py` landed with the baseline evaluation harness.
 
 ### `quantize.py`
 
@@ -370,6 +560,18 @@ been unreliable for MobileNetV3-shaped classifier heads in adjacent work in
 this repository — check whether the legacy exporter (`dynamo=False`) is still
 needed before relying on the dynamo path.
 
+## Next steps
+
+1. **The screen-path transport measurement** — `synth_composite.py` + `transport.py` above. This is
+   the highest-value next step in this package: it is the baseline for every claim about the macOS
+   daemon's image path, it needs only benign imagery, and it splits the live-observed failures into
+   geometry (fixable and measurable here) versus concept (needs a second expert, unmeasurable
+   here). Run it against the pipeline as it exists **before** changing anything.
+2. **Sourcing rules are now a decision, not a judgement call** — see
+   [image-corpus-custody.md](../../decisions/image-corpus-custody.md). It supersedes the
+   "read a corpus archive in memory and delete it afterwards" allowance for corpora of *unknown*
+   provenance: no third-party imagery is ingested at all.
+
 ## What this does not cover
 
 - Federated learning, server aggregation, or any cloud components. This pipeline stays
@@ -379,5 +581,6 @@ needed before relying on the dynamo path.
   local-first rule in AGENTS.md.
 - Sourcing or curating training data. The `data/` directory is gitignored; data curation is a separate out-of-repo process.
 - Text NLP model training. Text classification is handled deterministically by `packages/text-policy`; see [../content-classification.md](../../architecture/content-classification.md) (§ When To Add ML) for the gating rationale.
-- iOS CoreML export — deferred until iOS platform work begins.
-- Int8 static quantization — requires a calibration dataset and is noted in `export_tflite.py` comments for a later pass.
+- Export/quantization tooling (ONNX, TFLite, int8) — belonged to the removed fine-tuning
+  pipeline above and is not part of the baseline evaluation harness this document now
+  describes.

@@ -40,6 +40,10 @@ class ValidateTest(unittest.TestCase):
         steps = [ledger.Step("p.a", "a", "done", "  ")]
         self.assertTrue(any("done without evidence" in p for p in self._validate(steps, ["p.a"])))
 
+    def test_at_pr_status_is_valid(self):
+        steps = [ledger.Step("p.a", "a", "at-pr", "PR #12")]
+        self.assertEqual(self._validate(steps, ["p.a"]), [])
+
     def test_manifest_entry_without_marker(self):
         steps = [ledger.Step("p.a", "a", "pending", "")]
         self.assertTrue(any("no <!-- step" in p for p in self._validate(steps, [])))
@@ -53,12 +57,51 @@ class ValidateTest(unittest.TestCase):
         self.assertTrue(any("duplicate marker" in p for p in self._validate(steps, ["p.a", "p.a"])))
 
 
+class KindTest(unittest.TestCase):
+    def test_default_kind_is_feature(self):
+        step = ledger.Step("p.a", "a", "pending", "")
+        self.assertEqual(step.kind, "feature")
+
+    def test_bug_kind_is_valid(self):
+        steps = [ledger.Step("p.a", "a", "pending", "", kind="bug")]
+        self.assertEqual(ledger.validate(steps, ["p.a"]), [])
+
+    def test_bug_without_regressed_step_is_valid(self):
+        steps = [ledger.Step("p.a", "a", "pending", "", kind="bug")]
+        self.assertEqual(ledger.validate(steps, ["p.a"]), [])
+
+    def test_invalid_kind(self):
+        steps = [ledger.Step("p.a", "a", "pending", "", kind="vulnerability")]
+        problems = ledger.validate(steps, ["p.a"])
+        self.assertTrue(any("invalid kind" in p for p in problems))
+
+
+class RegressedStepValidationTest(unittest.TestCase):
+    def test_regressed_step_in_same_manifest_is_valid(self):
+        steps = [
+            ledger.Step("p.a", "a", "done", "observed on emulator"),
+            ledger.Step("p.b", "b", "pending", "", kind="bug", regressed_step="p.a"),
+        ]
+        self.assertEqual(ledger.validate(steps, ["p.a", "p.b"]), [])
+
+    def test_unknown_regressed_step(self):
+        steps = [ledger.Step("p.a", "a", "pending", "", kind="bug", regressed_step="p.ghost")]
+        problems = ledger.validate(steps, ["p.a"])
+        self.assertTrue(any("unknown regressed_step" in p for p in problems))
+
+
 class RenderTest(unittest.TestCase):
     def test_renders_status_table(self):
         steps = [ledger.Step("p.a", "a", "done", "commit abc")]
         rendered = ledger.render(steps)
-        self.assertIn("| Step | Status | Evidence |", rendered)
-        self.assertIn("| `p.a` | done | commit abc |", rendered)
+        self.assertIn("| Step | Kind | Status | Evidence |", rendered)
+        self.assertIn("| `p.a` | feature | done | commit abc |", rendered)
+
+    def test_bug_row_is_distinguishable(self):
+        steps = [ledger.Step("p.a", "a", "done", "obs", kind="bug")]
+        rendered = ledger.render(steps)
+        self.assertIn("| Step | Kind | Status | Evidence |", rendered)
+        self.assertIn("| `p.a` | bug | done | obs |", rendered)
 
 
 class NextPlanTest(unittest.TestCase):
@@ -78,6 +121,29 @@ class NextPlanTest(unittest.TestCase):
         step, reason = ledger.next_plan([ledger.Step("p.a", "a", "pending", "")])
         self.assertEqual(step.id, "p.a")
         self.assertEqual(reason, "")
+
+    def test_at_pr_step_is_not_actionable(self):
+        step, reason = ledger.next_plan([ledger.Step("p.a", "a", "at-pr", "PR #12")])
+        self.assertIsNone(step)
+        self.assertIn("awaiting merge", reason)
+
+    def test_at_pr_is_not_a_satisfied_dependency(self):
+        steps = [
+            ledger.Step("p.a", "a", "at-pr", "PR #12"),
+            ledger.Step("p.b", "b", "pending", "", depends_on=("p.a",)),
+        ]
+        step, reason = ledger.next_plan(steps)
+        self.assertIsNone(step)
+        self.assertIn("waits on", reason)
+        self.assertIn("p.a", reason)
+
+    def test_pending_is_offered_with_an_at_pr_sibling(self):
+        steps = [
+            ledger.Step("p.a", "a", "at-pr", "PR #12"),
+            ledger.Step("p.b", "b", "pending", ""),
+        ]
+        step, _reason = ledger.next_plan(steps)
+        self.assertEqual(step.id, "p.b")
 
 
 class NextStepTest(unittest.TestCase):
@@ -117,6 +183,10 @@ class AcceptanceTest(unittest.TestCase):
         steps = [ledger.Step("p.a", "a", "pending", "", acceptance="code")]
         self.assertEqual(ledger.validate(steps, ["p.a"]), [])
 
+    def test_product_acceptance_is_valid(self):
+        steps = [ledger.Step("p.a", "a", "pending", "", acceptance="product")]
+        self.assertEqual(ledger.validate(steps, ["p.a"]), [])
+
     def test_invalid_acceptance(self):
         steps = [ledger.Step("p.a", "a", "pending", "", acceptance="maybe")]
         problems = ledger.validate(steps, ["p.a"])
@@ -142,6 +212,14 @@ class DependencyValidationTest(unittest.TestCase):
         problems = ledger.validate(steps, ["p.a", "p.b"])
         self.assertTrue(any("dependency 'p.a' is not" in p for p in problems))
 
+    def test_done_with_at_pr_dependency(self):
+        steps = [
+            ledger.Step("p.a", "a", "at-pr", "PR #12"),
+            ledger.Step("p.b", "b", "done", "obs", depends_on=("p.a",)),
+        ]
+        problems = ledger.validate(steps, ["p.a", "p.b"])
+        self.assertTrue(any("dependency 'p.a' is not" in p for p in problems))
+
     def test_cycle_is_reported(self):
         steps = [
             ledger.Step("p.a", "a", "pending", "", depends_on=("p.b",)),
@@ -149,6 +227,54 @@ class DependencyValidationTest(unittest.TestCase):
         ]
         problems = ledger.validate(steps, ["p.a", "p.b"])
         self.assertTrue(any("dependency cycle" in p for p in problems))
+
+
+class LoadManifestTest(unittest.TestCase):
+    def test_reads_kind_and_regressed_step(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            package = Path(tmp)
+            (package / "steps.toml").write_text(
+                '[[step]]\nid = "p.a"\ntitle = "a"\nstatus = "pending"\n'
+                'kind = "bug"\nregressed_step = "p.done"\n',
+                encoding="utf-8",
+            )
+            steps = ledger.load_manifest(package)
+            self.assertEqual(steps[0].kind, "bug")
+            self.assertEqual(steps[0].regressed_step, "p.done")
+
+
+class WriteTodoTest(unittest.TestCase):
+    def test_writes_rendered_table_to_todo_md(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            package = Path(tmp)
+            steps = [ledger.Step("p.a", "a", "done", "obs")]
+            path = ledger.write_todo(package, steps)
+            self.assertEqual(path, package / "TODO.md")
+            content = path.read_text(encoding="utf-8")
+            self.assertIn("p.a", content)
+            self.assertIn("Generated by", content)
+
+    def test_overwrites_existing_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            package = Path(tmp)
+            (package / "TODO.md").write_text("stale", encoding="utf-8")
+            ledger.write_todo(package, [ledger.Step("p.a", "a", "pending", "")])
+            self.assertNotIn("stale", (package / "TODO.md").read_text(encoding="utf-8"))
+
+    def test_render_write_flag_writes_file_and_suppresses_stdout(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            package = Path(tmp)
+            (package / "steps.toml").write_text(
+                '[[step]]\nid = "p.a"\ntitle = "a"\nstatus = "pending"\n',
+                encoding="utf-8",
+            )
+            (package / "plan.md").write_text("<!-- step: p.a -->", encoding="utf-8")
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                code = ledger.main(["render", "--write", str(package)])
+            self.assertEqual(code, 0)
+            self.assertTrue((package / "TODO.md").exists())
+            self.assertEqual(stdout.getvalue(), "")
 
 
 class MissingPathTest(unittest.TestCase):

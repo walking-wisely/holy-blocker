@@ -19,13 +19,23 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
-VALID_STATUS = ("pending", "done")
+VALID_STATUS = ("pending", "at-pr", "done")
+# `pending` — not settled. `at-pr` — settled through every loop gate, PR open, not
+# yet on master; it is not actionable and does not satisfy dependencies. `done` —
+# the step's implementation is on master (see the steps.toml header); observationally
+# verified routes live in coverage.md, never in a status.
 # What kind of claim does `done` make? A `code` step is done when the diff exists and
 # its checks pass; an `observation` step is done only once the world has been seen to
-# change. The loop may merge the former on green and must stop at a PR for the latter.
-# Default is the safe one: never auto-merge a step unless it says it is code.
-VALID_ACCEPTANCE = ("code", "observation")
+# change; a `product` step is done only once the user's verdict has closed it. The
+# loop may merge the former on green and must stop at a PR for the latter two.
+VALID_ACCEPTANCE = ("code", "observation", "product")
 DEFAULT_ACCEPTANCE = "observation"
+# `feature` — a planned capability. `bug` — a defect found; a `bug` may name the step
+# it regressed (`regressed_step`) or stand alone when found by manual/exploratory testing.
+# Unknown/misspelled `kind` keys silently default to `feature` like every other optional
+# manifest field — a lost bug declaration is indistinguishable from none (recorded narrowing).
+VALID_KIND = ("feature", "bug")
+DEFAULT_KIND = "feature"
 MARKER_RE = re.compile(r"<!--\s*step:\s*([A-Za-z0-9._-]+)\s*-->")
 
 
@@ -38,6 +48,8 @@ class Step:
     acceptance: str = DEFAULT_ACCEPTANCE
     depends_on: tuple[str, ...] = field(default_factory=tuple)
     verify: str = ""
+    kind: str = DEFAULT_KIND
+    regressed_step: str = ""
 
 
 def load_manifest(package_dir: Path) -> list[Step]:
@@ -52,6 +64,8 @@ def load_manifest(package_dir: Path) -> list[Step]:
             acceptance=raw.get("acceptance", DEFAULT_ACCEPTANCE),
             depends_on=tuple(raw.get("depends_on", ())),
             verify=raw.get("verify", ""),
+            kind=raw.get("kind", DEFAULT_KIND),
+            regressed_step=raw.get("regressed_step", ""),
         )
         for raw in data.get("step", [])
     ]
@@ -75,6 +89,10 @@ def validate(steps: list[Step], markers: list[str]) -> list[str]:
             problems.append(f"{step.id}: done without evidence")
         if step.acceptance not in VALID_ACCEPTANCE:
             problems.append(f"{step.id}: invalid acceptance {step.acceptance!r}")
+        if step.kind not in VALID_KIND:
+            problems.append(f"{step.id}: invalid kind {step.kind!r}")
+        if step.regressed_step and step.regressed_step not in ids:
+            problems.append(f"{step.id}: unknown regressed_step {step.regressed_step!r}")
     problems.extend(_dependency_problems(steps))
 
     counts: dict[str, int] = {}
@@ -140,13 +158,18 @@ def next_step(steps: list[Step]) -> Step | None:
 def next_plan(steps: list[Step]) -> tuple[Step | None, str]:
     """The next actionable step, or a reason there is none.
 
-    "All done" and "pending but blocked" are different answers: a dangling or
-    mistyped dependency must not read as a finished plan.
+    "All done", "settled but unmerged", and "pending but blocked" are different
+    answers: a dangling or mistyped dependency must not read as a finished plan,
+    and a step whose branch is open at a PR must not be offered again or read as
+    a satisfied dependency.
     """
     done = {step.id for step in steps if step.status == "done"}
     pending = [step for step in steps if step.status == "pending"]
     if not pending:
-        return None, "all steps are done"
+        awaiting = [step.id for step in steps if step.status == "at-pr"]
+        if not awaiting:
+            return None, "all steps are done"
+        return None, "no pending steps; awaiting merge for " + ", ".join(awaiting)
     for step in pending:
         if all(dep in done for dep in step.depends_on):
             return step, ""
@@ -158,10 +181,27 @@ def next_plan(steps: list[Step]) -> tuple[Step | None, str]:
 
 
 def render(steps: list[Step]) -> str:
-    lines = ["| Step | Status | Evidence |", "|---|---|---|"]
+    lines = ["| Step | Kind | Status | Evidence |", "|---|---|---|---|"]
     for step in steps:
-        lines.append(f"| `{step.id}` | {step.status} | {step.evidence} |")
+        lines.append(f"| `{step.id}` | {step.kind} | {step.status} | {step.evidence} |")
     return "\n".join(lines)
+
+
+def write_todo(package: Path, steps: list[Step]) -> Path:
+    """Render steps to <package>/TODO.md — a gitignored, human-readable view.
+
+    steps.toml stays the source of truth scripts read; this file exists only so
+    a person can glance at status without parsing TOML. Regenerated on every
+    render --write, never hand-edited.
+    """
+    path = Path(package) / "TODO.md"
+    body = (
+        f"<!-- Generated by `python -m tools.plan.ledger render --write {package}`. "
+        "Do not edit by hand — edit steps.toml instead. -->\n\n"
+        f"{render(steps)}\n"
+    )
+    path.write_text(body, encoding="utf-8")
+    return path
 
 
 def _packages(paths: list[str]) -> tuple[list[Path], list[Path], list[Path]]:
@@ -189,6 +229,11 @@ def _packages(paths: list[str]) -> tuple[list[Path], list[Path], list[Path]]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m tools.plan.ledger")
     parser.add_argument("command", choices=("validate", "render", "next"))
+    parser.add_argument(
+        "--write",
+        action="store_true",
+        help="render: write <package>/TODO.md instead of printing to stdout",
+    )
     parser.add_argument("packages", nargs="+")
     args = parser.parse_args(argv)
 
@@ -223,9 +268,12 @@ def main(argv: list[str] | None = None) -> int:
             for problem in problems:
                 print(f"{package}: {problem}", file=sys.stderr)
         if args.command == "render":
-            print(f"### {package.name}\n")
-            print(render(steps))
-            print()
+            if args.write:
+                write_todo(package, steps)
+            else:
+                print(f"### {package.name}\n")
+                print(render(steps))
+                print()
     return 1 if failures or missing else 0
 
 
