@@ -10,6 +10,7 @@ Why this project exists. The covenant rationale, Christian mission, and what tha
 ### [`product/`](product/)
 What the product is and how it behaves from a user perspective. Platform-neutral.
 
+- [`product/outcomes.md`](product/outcomes.md) — user-facing capabilities, their honest status, and the packages that carry them
 - [`product/flows/`](product/flows/) — runtime behavior traces: what happens step by step when a block fires, a warn interstitial appears, an override is attempted, etc.
 
 ### [`architecture/`](architecture/)
@@ -26,6 +27,7 @@ How the codebase is built, tested, and maintained. Audience: contributors.
 - [`evaluation-and-ci.md`](engineering/evaluation-and-ci.md) — eval layers, CI tiers, private eval pack strategy
 - [`security-backlog.md`](engineering/security-backlog.md) — secure SDLC, trust-boundary hardening, release-integrity work
 - [`aspect-skills-plan.md`](engineering/aspect-skills-plan.md) — plan for privacy/compliance, testing, and security agent skills
+- [`coverage.md`](engineering/coverage.md) — the coverage ledger: what actually gets blocked, on which platform, by which layer, and what does not
 
 ### [`decisions/`](decisions/)
 Architecture Decision Records — one file per significant discrete choice. Records what was decided, why, and what was rejected. Never deleted, only superseded.
@@ -40,6 +42,7 @@ One folder per component. Each contains a `plan.md` (implementation phases, curr
 | `net-shield` | Rust | [plan.md](components/net-shield/plan.md) |
 | `image-sandbox` | Rust | [plan.md](components/image-sandbox/plan.md) |
 | `video-watchdog` | Rust | [plan.md](components/video-watchdog/plan.md) |
+| `domain-blocklist` | Rust | [plan.md](components/domain-blocklist/plan.md) |
 | `win-daemon` | C++20 | [plan.md](components/win-daemon/plan.md) |
 | `win-network` | C++ / Windows Service | [plan.md](components/win-network/plan.md) |
 | `mobile` | Kotlin / Android | [plan.md](components/mobile/plan.md) |

@@ -1,0 +1,74 @@
+# Thin step ledger for mitm-proxy. Source of truth for whether each build step exists.
+#
+#   python -m tools.plan.ledger validate docs/components/mitm-proxy
+#   python -m tools.plan.ledger render   docs/components/mitm-proxy
+#
+# `done` means the step's implementation exists on master. It does NOT mean the
+# route is covered: live and observational verification lives in
+# docs/engineering/coverage.md, never here.
+#
+# Do not put narrative here. Gotchas, wrong-constant war stories, and "measured
+# wrong in module N" notes live in plan.md. `evidence` is one line pointing at
+# where the step landed (commit, PR, or the plan's own wording), not an argument.
+#
+# Steps are the numbered `## Implementation order` list, in the plan's own order.
+
+[[step]]
+id = "mitm-proxy.tls"
+title = "tls — certificate generation and two-leg TLS setup"
+status = "done"
+evidence = "implementation order 1 **Done.**; src/tls.rs and TLS deps in Cargo.toml on master (commit 44aa3f3, PR #2)"
+
+[[step]]
+id = "mitm-proxy.connect"
+title = "connect — HTTPS CONNECT handler replacing the 501 branch"
+status = "done"
+evidence = "implementation order 2 **Done.**; src/connect.rs on master (commit 44aa3f3, PR #2)"
+
+[[step]]
+id = "mitm-proxy.tunnel"
+title = "tunnel — HTTP/1.1 loop over decrypted HTTPS with phase 3/4/5 hook call sites"
+status = "done"
+evidence = "implementation order 3 **Done.**; src/tunnel.rs on master (commit 44aa3f3, PR #2)"
+
+[[step]]
+id = "mitm-proxy.scan"
+title = "scan — policy hook types and stub contracts"
+status = "done"
+evidence = "implementation order 4 **Done.**; src/scan.rs on master (commit 44aa3f3, PR #2)"
+
+[[step]]
+id = "mitm-proxy.hook-wiring"
+title = "phase 4 image stub and phase 5 tee stub wired into tunnel"
+status = "done"
+evidence = "implementation order 5 **Done.**; image/video hook call sites in src/tunnel.rs on master"
+
+[[step]]
+id = "mitm-proxy.text-policy"
+title = "text-policy wiring — real PolicyEngine calls in scan.rs"
+status = "done"
+evidence = "implementation order 6 **Done.**; text-policy path dep in src/scan.rs on master (commit 89b4919, PR #5)"
+
+[[step]]
+id = "mitm-proxy.protection-mode"
+title = "ProtectionMode — mode-aware verdict mapping and runtime switching"
+status = "done"
+evidence = "implementation order 7 **Done.**; ProtectionMode in src/scan.rs and src/main.rs on master (commit 3213888, PR #39)"
+
+[[step]]
+id = "mitm-proxy.benchmarks"
+title = "Criterion benchmark suite and the [lib] target"
+status = "done"
+evidence = "implementation order 8 **Done.**; benches/ and [lib] in Cargo.toml on master (commit e9a3be1, PR #4)"
+
+[[step]]
+id = "mitm-proxy.tls-cold-miss"
+title = "optimize TlsState::server_config cold miss with a shared leaf KeyPair"
+status = "done"
+evidence = "implementation order 9 **Done.**; shared leaf key in src/tls.rs on master (commit e9a3be1, PR #4)"
+
+[[step]]
+id = "mitm-proxy.integration-tests"
+title = "end-to-end integration tests over real TCP listeners"
+status = "done"
+evidence = "implementation order 10 **Done.**; tests/proxy_integration.rs and reqwest dev-dep on master (commit e9a3be1, PR #4)"

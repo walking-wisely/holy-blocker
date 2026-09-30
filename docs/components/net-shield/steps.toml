@@ -1,0 +1,48 @@
+# Thin step ledger for net-shield. Source of truth for whether each build step exists.
+#
+#   python -m tools.plan.ledger validate docs/components/net-shield
+#   python -m tools.plan.ledger render   docs/components/net-shield
+#
+# `done` means the step's implementation exists on master. It does NOT mean the
+# route is covered: live and observational verification lives in
+# docs/engineering/coverage.md, never here.
+#
+# Do not put narrative here. Gotchas, wrong-constant war stories, and "measured
+# wrong in module N" notes live in plan.md. `evidence` is one line pointing at
+# where the step landed (commit, PR, or the plan's own wording), not an argument.
+
+[[step]]
+id = "net-shield.radix"
+title = "radix — domain trie and IP CIDR filter"
+status = "done"
+evidence = "implementation order 1 **Done.**; src/radix.rs on master"
+
+[[step]]
+id = "net-shield.sni"
+title = "sni — TLS ClientHello SNI extraction"
+status = "done"
+evidence = "implementation order 2 **Done.**; src/sni.rs on master"
+
+[[step]]
+id = "net-shield.lib"
+title = "lib — public re-exports and the NetShield struct shell"
+status = "done"
+evidence = "implementation order 3 **Done.**; src/lib.rs on master"
+
+[[step]]
+id = "net-shield.tun"
+title = "tun — PacketSink dispatch and Wintun TunAdapter"
+status = "done"
+evidence = "implementation order 4 **Done.**; src/tun.rs on master"
+
+[[step]]
+id = "net-shield.run-loop"
+title = "run loop — wire NetShield::run to the full loop"
+status = "done"
+evidence = "implementation order 5 **Done.**; src/lib.rs on master"
+
+[[step]]
+id = "net-shield.dns"
+title = "dns — DNS path (dns, udp, dns_shield)"
+status = "done"
+evidence = "implementation order 6 **Done.**; src/dns.rs, src/udp.rs, src/dns_shield.rs on master"

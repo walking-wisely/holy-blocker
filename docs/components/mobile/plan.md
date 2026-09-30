@@ -820,11 +820,15 @@ scaffolding and will fail at load time if they fall out of sync with the `.so`.
 ## Implementation order
 
 1. ~~Policy core (`TextPolicy`, `TextAssembler`, `ScanGate`) with JVM unit tests.~~ **Done.**
+   <!-- step: mobile.policy-core -->
 2. ~~`text-policy-ffi` UniFFI crate + `NativeTextPolicy` adapter.~~ **Done.**
+   <!-- step: mobile.text-policy-ffi -->
 3. ~~`ScreenGuardService` + `OverlayController` + onboarding.~~ **Done.**
+   <!-- step: mobile.screenguard-overlay-onboarding -->
 4. ~~Build the `.so` (NDK) and validate on a device — the first end-to-end run.~~ **Done** —
    `scripts/build-ffi.sh` builds all three ABIs; `scripts/smoke-test.sh` passes on an
    android-36 arm64 emulator.
+   <!-- step: mobile.ffi-device-e2e -->
 5. ~~`SettingsGuard` — back out of the Accessibility settings and our own App Info screens (§7),
    with unrecognised-device reporting, bounded back-action, and the in-app disable.~~
    **Done** — AOSP profile verified on an android-36 arm64 emulator: the accessibility list and
@@ -832,12 +836,14 @@ scaffolding and will fail at load time if they fall out of sync with the `.so`.
    identifiers were confirmed in step 6, once a receiver existed to open the screen with. Xiaomi
    profile still to be added. The disable path was later reshaped into the protection mode (§7):
    the guard blocks only while the user has armed it, and disarming is the timed operation.
+   <!-- step: mobile.settings-guard -->
 6. ~~Device Admin — `DeviceAdminReceiver` for uninstall friction, plus an `onDisableRequested`
    warning. Plain admin only; no owner-only calls. Also the only way to verify the
    `DeviceAdminAdd` identifier, which cannot be reached until a receiver exists.~~ **Done** —
    uninstall refused (`DELETE_FAILED_DEVICE_POLICY_MANAGER`) on an android-36 emulator. The
    `DeviceAdminAdd` identifier is confirmed, and the screen turned out to need resource-id
    matching rather than the class; see §7.
+   <!-- step: mobile.device-admin -->
 7. ~~**The empty harvest** — the catch-all cannot fire on a tree with no text in it, which left
    the device admin list unguarded and silently weakened `mentionsSelf` on *any* screen that
    harvests empty.~~ **Done** — the rows are marked `accessibilityDataSensitive` and were being
@@ -848,6 +854,7 @@ scaffolding and will fail at load time if they fall out of sync with the `.so`.
    as the user leaving, cancelling the re-look budget, and the now-visible list needed the same
    admin-inactive exemption as the prompt. See [backlog.md](backlog.md#closed-1-the-empty-harvest)
    for the full evidence and what was ruled out.
+   <!-- step: mobile.empty-harvest -->
 8. ~~Split-screen window resolution~~ **Done**, then recents (§7 and
    [backlog.md](backlog.md#closed-2-split-screen)) — the bypasses that go around step 5 rather
    than defeating it. Ranked after step 7
@@ -865,6 +872,7 @@ scaffolding and will fail at load time if they fall out of sync with the `.so`.
    re-look. See [backlog.md](backlog.md#closed-2-split-screen) for both.
 
    **Recents is deferred**, not skipped — see below.
+   <!-- step: mobile.split-screen -->
 9. ~~**Tamper log** — append-only local record of guard-state transitions and removal attempts.~~
    **Done** — `policy/TamperLog.kt` (pure: format, tolerant parse, coalescing, trim, session
    classification) and `TamperLogStore.kt` (the `filesDir` edge). Written by the accessibility
@@ -883,6 +891,7 @@ scaffolding and will fail at load time if they fall out of sync with the `.so`.
    an app update, but **not** clear-data — reachable from App Info, which this product can guard
    but not prevent. Exporting somewhere that survives uninstall means writing user-readable
    history to shared storage and is a product decision, not a storage one.
+   <!-- step: mobile.tamper-log -->
 10. ~~Foreground service + restart-on-boot.~~ **Done** — `policy/GuardStatus.kt` (pure),
    `GuardStatusService.kt`, and `BootReceiver.kt`; see §8 above for what the service is and is not
    for. **A boot receiver must not write a boot marker the rest of the system can trigger** —
@@ -910,6 +919,7 @@ scaffolding and will fail at load time if they fall out of sync with the `.so`.
    (nothing restarts it, which is what the tamper log is for) and reads `UNCLEAN_STOP` on the next
    connect; and with nothing armed and the guard disabled the service stops itself and posts
    nothing.
+   <!-- step: mobile.foreground-status-boot -->
 11. ~~`VpnService` DNS filter.~~ **Done for DNS; SNI/IP deferred to step 13.** `policy/NetworkGuard.kt`
     (pure) + `NetworkGuardService.kt`, over a new `packages/net-shield-ffi` wrapping net-shield's
     `dns`, `udp` and `dns_shield` modules. See §5 for why the DNS/SNI split is forced by the
@@ -934,6 +944,7 @@ scaffolding and will fail at load time if they fall out of sync with the `.so`.
     settings list names the active VPN app — but "plausibly" is the reason to dump it rather than
     the reason not to. `TamperEvent.NETWORK_GUARD_REVOKED` records the removal either way, which
     is the same ceiling every other bypass here sits under.
+   <!-- step: mobile.vpn-dns-filter -->
 12. ~~`MediaProjection` capture.~~ **Done for capture; the analysis waits on `image-sandbox`.**
     `policy/ScreenCapture.kt` and `policy/FrameGate.kt` (pure) + `ScreenCaptureService.kt` +
     `FrameSink.kt`, with the consent flow in `MainActivity`. See §6 for the start order, the gate,
@@ -957,6 +968,7 @@ scaffolding and will fail at load time if they fall out of sync with the `.so`.
     Ordered before the SNI/IP work (now step 14) rather than after it because it needs no new
     Rust: the userspace TCP stack SNI filtering wants is a larger piece of work than the whole
     capture path was. What remains of this step is the image path — step 13, and §9.
+   <!-- step: mobile.mediaprojection-capture -->
 13. **The image path** — §9, and the rest of step 12. Ordered ahead of step 14 because capture
     without it produces frames nobody looks at, which is the one part of this module that
     currently costs battery and returns nothing.
@@ -969,8 +981,10 @@ scaffolding and will fail at load time if they fall out of sync with the `.so`.
     **Blocked on an artifact for verification, not for building.** `data/models/` is gitignored
     and nothing is on disk, so (a) is fully testable today, (b) and (c) can be built and shown
     to fail open, and only an exported checkpoint makes an end-to-end smoke test possible.
+   <!-- step: mobile.image-path -->
 14. SNI/IP filtering in the VPN, which needs the userspace TCP stack §5 describes. Reuses
     net-shield's `extract_sni` and `IpFilter` over the FFI surface step 11 established.
+    <!-- step: mobile.sni-ip-filter -->
 
 #### Reference documents — steps 7 and 8
 

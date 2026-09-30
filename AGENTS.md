@@ -23,6 +23,7 @@ The packages below are **planned but not yet created** — do not assume they ex
 - `packages/net-shield` — TUN adapter + domain/IP radix filter
 - `packages/image-sandbox` — perceptual hashing + ONNX image classifier
 - `packages/video-watchdog` — async HLS/DASH segment sampler
+- `machine-learning` — MobileNetV3 fine-tuning, eval, and export pipeline; see `docs/components/machine-learning/plan.md`
 
 Each active package has a step-by-step implementation plan in `docs/<package>/PLAN.md`. Read the relevant plan before starting work on a package — it lists the next modules to add, their types, and the correct implementation order.
 
@@ -46,9 +47,9 @@ For Rust policy code:
 
 For Python ML code:
 
-- The package lives under `machine-learning/src/holy_blocker_ml`.
+- Not yet built. See `docs/components/machine-learning/plan.md` for the intended package layout under `machine-learning/src/holy_blocker_ml`.
 - Prefer small, importable functions over script-only code so behavior can be unit tested.
-- If you add Python tests, place them under `machine-learning/tests` and wire a standard runner such as `pytest` before relying on it.
+- Place tests under `machine-learning/tests` and wire a standard runner such as `pytest` before relying on it.
 
 For the Windows daemon:
 
@@ -97,3 +98,22 @@ Before finishing a code change, run the narrowest relevant checks:
 - Native daemon changes: build with CMake and run any added unit tests
 
 If a relevant check cannot be run, report the reason clearly.
+
+## Before And After The Code
+
+Two skills bracket implementation work, and they exist because of a measured pattern: modules here
+rest on claims about the outside world, and when those claims go unverified they are wrong often
+enough to invalidate the module rather than a detail of it.
+
+- **Before implementing a plan step**, run the `assumption-audit` skill. It enumerates the external
+  facts the step depends on, attaches one falsifying command to each, runs them, and reports before
+  any code is written.
+- **After writing code**, run the `adversarial-review` skill on the diff, branch, or PR. Its
+  catalogue is this repository's own recurring failure modes, ordered by frequency, with two rules
+  that make a review trustworthy: reproduce or label, and cite or omit.
+
+**Any change that alters what a layer covers updates
+[`docs/engineering/coverage.md`](docs/engineering/coverage.md) in the same PR.** Each component here
+is scoped narrowly and honestly and records its own narrowing; the ledger is the only place the
+union is computed, and the union is the product. `Unverified` is promoted to `Covered` by an
+observation, never by an argument.

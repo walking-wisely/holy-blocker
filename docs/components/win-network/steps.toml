@@ -1,0 +1,50 @@
+# Thin step ledger for win-network. Source of truth for whether each build step exists.
+#
+#   python -m tools.plan.ledger validate docs/components/win-network
+#   python -m tools.plan.ledger render   docs/components/win-network
+#
+# `done` means the step's implementation exists on master. It does NOT mean the
+# route is covered: live and observational verification lives in
+# docs/engineering/coverage.md, never here.
+#
+# Do not put narrative here. Gotchas, wrong-constant war stories, and "measured
+# wrong in module N" notes live in plan.md. `evidence` is one line pointing at
+# where the step landed (commit, PR, or the plan's own wording), not an argument.
+#
+# Steps are the plan's `## Implementation order` items, in its own order.
+
+[[step]]
+id = "win-network.cmake-scaffold"
+title = "scaffold CMakeLists.txt and fake_win32 shim"
+status = "done"
+evidence = "implementation order 1 **Done.**; native-modules/win-network/CMakeLists.txt on master (commit ac3485d, PR #14)"
+
+[[step]]
+id = "win-network.wintun-adapter"
+title = "wintun_adapter — driver install and adapter lifecycle"
+status = "done"
+evidence = "implementation order 2 **Done.**; src/wintun_adapter.cpp on master (commit ac3485d, PR #14)"
+
+[[step]]
+id = "win-network.routing"
+title = "routing — Windows routing table management"
+status = "done"
+evidence = "implementation order 3 **Done.**; src/routing.cpp on master (commit ac3485d, PR #14)"
+
+[[step]]
+id = "win-network.ipc-server"
+title = "ipc_server — named pipe command server"
+status = "done"
+evidence = "implementation order 4 **Done.**; src/ipc_server.cpp on master (commit ac3485d, PR #14)"
+
+[[step]]
+id = "win-network.service-host"
+title = "service_host — SCM lifecycle and module wiring"
+status = "pending"
+evidence = ""
+
+[[step]]
+id = "win-network.installer-actions"
+title = "installer_actions — install/uninstall helpers"
+status = "pending"
+evidence = ""
