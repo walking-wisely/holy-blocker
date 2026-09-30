@@ -72,19 +72,17 @@ left-to-right so that tile *position* is visible in each tile's mean.
 
 ### Measured constants
 
-Both were guesses on the first pass and both were wrong. They remain
-`SandboxConfig`/`PreprocessConfig` fields rather than hardcoded values.
+Both were guesses on the first pass and both were wrong.
 
-- **Threshold 0.4650** — the 5%-miss-budget operating point for the full-unfreeze checkpoint
-  *under tile-max*, costing 10.09% over-blocking. It replaces a provisional **0.20**, which was
-  the unfreeze-3 model's operating point. Note the same checkpoint under a centre crop operates
-  at **0.2717**: a threshold belongs to a model *and* a geometry, because the max over tiles
-  shifts the whole score distribution upward. See
+- **Threshold** — has no shipped default at all: `SandboxConfig`, the FFI surface, and the
+  daemon's `HOLY_BLOCKER_IMAGE_THRESHOLD` all require the caller to supply one explicitly. A
+  threshold belongs to a model *and* a geometry, because the max over tiles shifts the whole
+  score distribution relative to a centre crop, and this project has already shipped the wrong
+  pairing more than once with nothing failing to indicate it. See
   [the operating point decision](../../decisions/classifier-operating-point.md).
 - **96px size floor** — the smallest measured arm still at or above 0.93 combined ROC-AUC. It
-  replaces a provisional **32px**, which sits at 0.8619. Degradation is smooth rather than
-  cliff-edged (0.9255 at 64px, still 0.7640 at 16px), so this is a chosen point on a curve.
-  A floor is also a bypass: content served just under it is unfiltered.
+  replaces a provisional **32px**. Degradation is smooth rather than cliff-edged, so this is a
+  chosen point on a curve. A floor is also a bypass: content served just under it is unfiltered.
 
 The 8:1 aspect clamp remains, now bounding *inference count* rather than allocation — the widest
 admissible image resizes to 1792×224 and costs 15 forward passes.
@@ -299,11 +297,11 @@ The order below is the original plan. What was actually built is recorded under
 5. ~~Wire `ImageSandbox` into `packages/mitm-proxy` at the Phase 4 hook~~ **Done.** Inference runs under `tokio::task::spawn_blocking` — `image_scanner` is a sync `Fn` invoked inside the async handler, so running a MobileNetV3 forward pass inline would hold a tokio worker and stall every other connection it drives.
 <!-- step: image-sandbox.mitm-wiring -->
 
-6. ~~Replace the provisional threshold and size floor with measured values from
-   `holy_blocker_ml.inputs`, and adopt whichever geometry that experiment selects.~~
-   **Done.** Threshold 0.20 → **0.4650**, floor 32px → **96px**, and the centre crop replaced by
-   **tile-max**. See [Measured constants](#measured-constants) and the
-   [experiment](../machine-learning/experiments/input-handling.md).
+6. ~~Replace the provisional threshold and size floor with measured values, and adopt whichever
+   geometry the input-handling measurement selects.~~
+   **Done.** The size floor is now **96px**, the geometry is **tile-max**, and the threshold has
+   no shipped default at all — the caller supplies it explicitly. See
+   [Measured constants](#measured-constants).
 <!-- step: image-sandbox.measured-geometry -->
 
 Still to do:
@@ -316,6 +314,31 @@ Still to do:
    pass over a larger input yields a spatial logit grid whose max equals the tiled max — and, as
    a side effect, the coarse heatmap the screen-capture path will need for localisation.
 <!-- step: image-sandbox.fcn-tile-max -->
+
+   **This is the answer to a distinct, related cost problem worth naming explicitly (noted
+   2026-09-19): a screen frame with many small thumbnails (a chat/gallery grid) costs one
+   inference call per detected photo region under the naive crop-and-classify approach, i.e.
+   linear in thumbnail count.** Batching those crops into one inference call (a stacked `[N, C,
+   H, W]` tensor, one forward call instead of N) is a **constant-factor** win, not an
+   asymptotic one — it removes fixed per-call overhead (kernel launch, memory transfer, FFI
+   marshaling) but FLOPs still scale ~linearly with N, since each region still needs its own
+   backbone pass. The fully-convolutional conversion above is the actual answer to the
+   asymptotic question: cost then scales with the fixed canonical input resolution, not with how
+   many thumbnails are packed into it. Concretely, this would compose with a cheap region-detection
+   gate to find candidate photo regions first — no such gate exists in this repo yet; the nearest
+   related piece is the mac-daemon's `ScanVerdict.regions: [ImageDetection]` field, which is
+   explicitly unpopulated pending "a real detector model, not yet started" (see
+   `docs/architecture/content-classification.md`'s "Image Localization" section and the mac-daemon
+   row in this repo's status table). Once such a gate exists, pack the regions it finds into one
+   composite "contact sheet" canvas, run the FCN-converted model once over the canvas, and read
+   each region's score off the corresponding sub-area of the output heatmap — mechanically an
+   extension of `preprocess_tiles`'s existing sliding-window-plus-max-reduce, not new technique.
+   Until then, this whole item is design-only: nothing to build against here yet.
+   Fine-tuning the FCN head on multi-thumbnail screen layouts (as opposed to single centered
+   photos) can use synthetic composites of already-safe images — recombining legal SFW imagery
+   into synthetic grids raises no custody question — but tuning the model's explicit-detection
+   behavior itself is capped by the same no-corpus constraint recorded in
+   `docs/decisions/learning-from-feedback.md`.
 
 ## What this does not cover
 

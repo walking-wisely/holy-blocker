@@ -9,6 +9,8 @@
 #[cfg_attr(not(feature = "net"), allow(dead_code))]
 mod cache_store;
 mod cli;
+#[cfg_attr(not(feature = "net"), allow(dead_code))]
+mod entries_store;
 mod publish_policy;
 mod slots;
 #[cfg(feature = "net")]
@@ -104,9 +106,9 @@ fn parse_key_arg(arg: &str) -> Result<(String, [u8; 32])> {
         .split_once(':')
         .with_context(|| format!("expected `key_id:path`, got {arg:?}"))?;
     let bytes = std::fs::read(path).with_context(|| format!("failed to read key file {path}"))?;
-    let key: [u8; 32] = bytes
-        .try_into()
-        .map_err(|v: Vec<u8>| anyhow::anyhow!("key file {path} is {} bytes, expected exactly 32", v.len()))?;
+    let key: [u8; 32] = bytes.try_into().map_err(|v: Vec<u8>| {
+        anyhow::anyhow!("key file {path} is {} bytes, expected exactly 32", v.len())
+    })?;
     Ok((id.to_string(), key))
 }
 
@@ -331,24 +333,18 @@ async fn fetch_ut1(job: &SourceJob) -> Result<FetchedSource, FetchError> {
     let connect = std::time::Duration::from_secs(15);
     let request = std::time::Duration::from_secs(120);
     match job.category {
-        Category::Adult => {
-            Ut1SourceFetcher::<Adult>::new(retry, connect, request)
-                .fetch_files(&job.config)
-                .await
-                .map(|f| f.fetched)
-        }
-        Category::Gambling => {
-            Ut1SourceFetcher::<Gambling>::new(retry, connect, request)
-                .fetch_files(&job.config)
-                .await
-                .map(|f| f.fetched)
-        }
-        Category::Dating => {
-            Ut1SourceFetcher::<Dating>::new(retry, connect, request)
-                .fetch_files(&job.config)
-                .await
-                .map(|f| f.fetched)
-        }
+        Category::Adult => Ut1SourceFetcher::<Adult>::new(retry, connect, request)
+            .fetch_files(&job.config)
+            .await
+            .map(|f| f.fetched),
+        Category::Gambling => Ut1SourceFetcher::<Gambling>::new(retry, connect, request)
+            .fetch_files(&job.config)
+            .await
+            .map(|f| f.fetched),
+        Category::Dating => Ut1SourceFetcher::<Dating>::new(retry, connect, request)
+            .fetch_files(&job.config)
+            .await
+            .map(|f| f.fetched),
     }
 }
 
@@ -371,10 +367,18 @@ async fn run(cli: cli::Cli) -> Result<()> {
             .map(|s| LicenseId(s.to_string()))
             .collect()
     } else {
-        cli.allow_license.iter().map(|s| LicenseId(s.clone())).collect()
+        cli.allow_license
+            .iter()
+            .map(|s| LicenseId(s.clone()))
+            .collect()
     };
 
-    let denylist_owned = cli.denylist.as_deref().map(read_lines).transpose()?.unwrap_or_default();
+    let denylist_owned = cli
+        .denylist
+        .as_deref()
+        .map(read_lines)
+        .transpose()?
+        .unwrap_or_default();
     let denylist_refs: Vec<&str> = denylist_owned.iter().map(String::as_str).collect();
 
     let jobs = default_source_jobs();
@@ -428,7 +432,9 @@ async fn run(cli: cli::Cli) -> Result<()> {
         entries = kept;
         negative_report = Some(report);
     } else {
-        tracing::warn!("liveness skipped (--skip-liveness or --fixture-dir): every merged entry is kept without a DNS check");
+        tracing::warn!(
+            "liveness skipped (--skip-liveness or --fixture-dir): every merged entry is kept without a DNS check"
+        );
     }
 
     let new_keys: BTreeSet<String> = entries.iter().map(|e| e.domain.clone()).collect();
@@ -458,7 +464,12 @@ async fn run(cli: cli::Cli) -> Result<()> {
     let mut gate_report: Vec<(&'static str, GateResult)> = Vec::new();
     gate_report.push((
         "shrinkage",
-        domain_blocklist::shrinkage_gate(prev_count, entries.len() as u64, cli.max_shrinkage_pct, cli.shrinkage_floor),
+        domain_blocklist::shrinkage_gate(
+            prev_count,
+            entries.len() as u64,
+            cli.max_shrinkage_pct,
+            cli.shrinkage_floor,
+        ),
     ));
     gate_report.push((
         "growth",
@@ -482,9 +493,19 @@ async fn run(cli: cli::Cli) -> Result<()> {
         domain_blocklist::license_gate(&entries, &snapshots, &allowlist),
     ));
 
-    let control_set_owned = cli.control_set.as_deref().map(read_lines).transpose()?.unwrap_or_default();
+    let control_set_owned = cli
+        .control_set
+        .as_deref()
+        .map(read_lines)
+        .transpose()?
+        .unwrap_or_default();
     let control_set_refs: Vec<&str> = control_set_owned.iter().map(String::as_str).collect();
-    let exclusions_owned = cli.exclusions.as_deref().map(read_lines).transpose()?.unwrap_or_default();
+    let exclusions_owned = cli
+        .exclusions
+        .as_deref()
+        .map(read_lines)
+        .transpose()?
+        .unwrap_or_default();
     let exclusions_refs: Vec<&str> = exclusions_owned.iter().map(String::as_str).collect();
     if control_set_owned.is_empty() {
         tracing::warn!("no --control-set given; the false-positive gate is effectively disabled");
@@ -511,8 +532,15 @@ async fn run(cli: cli::Cli) -> Result<()> {
     let review: Vec<FalsePositiveHit> = review_queue(&entries, &control_set_refs, &exclusions_refs);
 
     // --- Build the artifact (needed for the size gate and, if everything passes, publish) ------
-    let artifact = build(&entries, output_license, snapshots, version, now_timestamp(), &signing_keys)
-        .context("failed to build the FST artifact")?;
+    let artifact = build(
+        &entries,
+        output_license,
+        snapshots,
+        version,
+        now_timestamp(),
+        &signing_keys,
+    )
+    .context("failed to build the FST artifact")?;
     tracing::info!(
         entry_count = artifact.report.entry_count,
         fst_bytes = artifact.report.fst_bytes,
@@ -561,6 +589,30 @@ async fn run(cli: cli::Cli) -> Result<()> {
     Ok(())
 }
 
+/// [`sweep::CheckpointSink`] backed by [`cache_store::save`]. `path: None` means checkpointing is
+/// disabled for this run (`--dry-run` or no `--cache`) — `sweep::SweepConfig::checkpoint_every` is
+/// set to `0` in that case, so `checkpoint` never actually gets called, but the no-op fallback
+/// keeps this type total instead of panicking if that invariant is ever violated.
+#[cfg(feature = "net")]
+struct CacheStoreCheckpoint {
+    path: Option<std::path::PathBuf>,
+}
+
+#[cfg(feature = "net")]
+impl sweep::CheckpointSink for CacheStoreCheckpoint {
+    async fn checkpoint(
+        &mut self,
+        cache: &HashMap<String, domain_blocklist::CacheEntry>,
+    ) -> Result<()> {
+        let Some(path) = &self.path else {
+            return Ok(());
+        };
+        cache_store::save(path, cache)?;
+        tracing::info!(cached = cache.len(), path = %path.display(), "checkpointed liveness cache");
+        Ok(())
+    }
+}
+
 #[cfg(feature = "net")]
 async fn run_liveness(
     cli: &cli::Cli,
@@ -577,7 +629,9 @@ async fn run_liveness(
                      --dry-run/--skip-liveness"
                 );
             }
-            tracing::warn!("no --cache given: the liveness sweep runs with no prior state and its results are not persisted");
+            tracing::warn!(
+                "no --cache given: the liveness sweep runs with no prior state and its results are not persisted"
+            );
             Default::default()
         }
     };
@@ -588,8 +642,9 @@ async fn run_liveness(
              domain — a canary with an empty control list can never guard the sweep, per liveness::CanaryConfig::new"
         );
     }
-    let canary = domain_blocklist::CanaryConfig::new(cli.canary_alive.clone(), cli.canary_dead.clone())
-        .map_err(|e| anyhow::anyhow!("invalid canary config: {e:?}"))?;
+    let canary =
+        domain_blocklist::CanaryConfig::new(cli.canary_alive.clone(), cli.canary_dead.clone())
+            .map_err(|e| anyhow::anyhow!("invalid canary config: {e:?}"))?;
 
     let sweep_config = sweep::SweepConfig {
         primary: domain_blocklist::liveness::ResolverConfig {
@@ -605,18 +660,63 @@ async fn run_liveness(
         canary_every: cli.canary_every,
         ttl_seconds: cli.ttl_seconds,
         quarantine_seconds: cli.quarantine_seconds,
+        checkpoint_every: if cli.dry_run || cli.cache.is_none() {
+            0
+        } else {
+            cli.checkpoint_every
+        },
     };
 
     let now = now_timestamp();
-    let outcome = sweep::run_sweep(&entries, cache, &canary, &sweep_config, now)
-        .await
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
-    let negative_report = domain_blocklist::negative_outcome_report(&outcome.cache);
+    let mut checkpoint = CacheStoreCheckpoint {
+        path: cli.cache.clone(),
+    };
+
+    // `entries` is never resident during the sweep: written once to a scratch file, then dropped,
+    // so a multi-hour sweep doesn't hold the full merged corpus in memory the whole time — see
+    // `entries_store`'s doc comment. Reconstructed after the sweep from the same file (filtered by
+    // `pruned_domains`) below, since gates/`build()` run in seconds and can afford to hold it.
+    let scratch_path = std::env::temp_dir().join(format!(
+        "domain-blocklist-entries-{}.bin",
+        std::process::id()
+    ));
+    entries_store::write(&scratch_path, &entries)
+        .context("failed to write the entry corpus scratch file")?;
+    drop(entries);
+
+    let primary = domain_blocklist::liveness::HickoryDnsLookup::new(sweep_config.primary)
+        .map(std::sync::Arc::new)
+        .context("failed to start the primary DNS client")?;
+    let secondary = domain_blocklist::liveness::HickoryDnsLookup::new(sweep_config.secondary)
+        .map(std::sync::Arc::new)
+        .context("failed to start the secondary DNS client")?;
+
+    let sweep_result = sweep::run_sweep_streaming(
+        &scratch_path,
+        cache,
+        &canary,
+        &sweep_config,
+        now,
+        primary,
+        secondary,
+        &mut checkpoint,
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("{e}"));
+
+    let outcome = match sweep_result {
+        Ok(outcome) => outcome,
+        Err(e) => {
+            // The scratch file is only useful while a sweep might still read it; on failure
+            // there's nothing left to recover from it (the cache checkpoint already covers that).
+            let _ = std::fs::remove_file(&scratch_path);
+            return Err(e);
+        }
+    };
+
     tracing::info!(
         checked = outcome.checked_count,
         pruned = outcome.pruned_domains.len(),
-        dead = negative_report.dead.len(),
-        unknown = negative_report.total() - negative_report.dead.len(),
         "liveness sweep complete"
     );
     log_verdict_breakdown(&outcome.cache);
@@ -627,11 +727,21 @@ async fn run_liveness(
         cache_store::save(path, &outcome.cache)?;
     }
 
-    let kept = entries
-        .into_iter()
-        .filter(|e| !outcome.pruned_domains.contains(&e.domain))
-        .collect();
-    Ok((kept, negative_report))
+let mut reader = entries_store::EntryReader::open(&scratch_path).context(
+        "failed to reopen the entry corpus scratch file to rebuild the pruned entry list",
+    )?;
+    let mut kept = Vec::new();
+    while let Some(entry) = reader.next()? {
+        if !outcome.pruned_domains.contains(&entry.domain) {
+            kept.push(entry);
+        }
+    }
+    let _ = std::fs::remove_file(&scratch_path);
+
+    Ok((
+        kept,
+        domain_blocklist::negative_outcome_report(&outcome.cache),
+    ))
 }
 
 /// Tallies `outcome.cache`'s verdicts into a log line naming each `Unknown` reason separately —
@@ -680,7 +790,10 @@ fn log_verdict_breakdown(cache: &HashMap<String, domain_blocklist::CacheEntry>) 
         unknown_filtered,
         unknown_uncorroborated_dead,
         unknown_other,
-        unknown_pct = format!("{:.4}", (cache.len() - alive as usize - dead as usize) as f64 / total * 100.0),
+        unknown_pct = format!(
+            "{:.4}",
+            (cache.len() - alive as usize - dead as usize) as f64 / total * 100.0
+        ),
         "verdict breakdown"
     );
 }
@@ -701,7 +814,8 @@ fn write_review_queue(
     personal_names: &[String],
     false_positives: &[FalsePositiveHit],
 ) -> Result<()> {
-    std::fs::create_dir_all(output).with_context(|| format!("failed to create {}", output.display()))?;
+    std::fs::create_dir_all(output)
+        .with_context(|| format!("failed to create {}", output.display()))?;
 
     let mut personal = String::new();
     for domain in personal_names {
@@ -712,7 +826,10 @@ fn write_review_queue(
 
     let mut fp = String::new();
     for hit in false_positives {
-        fp.push_str(&format!("{}\t{:?}\t{:?}\n", hit.domain, hit.scope, hit.sources));
+        fp.push_str(&format!(
+            "{}\t{:?}\t{:?}\n",
+            hit.domain, hit.scope, hit.sources
+        ));
     }
     std::fs::write(output.join("review-queue-false-positives.txt"), fp)?;
     Ok(())
