@@ -213,8 +213,53 @@ struct BundleAssemblyTests {
     @Test("names the library the executable actually links")
     func embeddedLibraryNames() {
         // The list is here rather than in bundle.sh so the name the linker uses and the name the
-        // bundler copies cannot drift apart silently.
-        #expect(AppBundle.embeddedLibraryNames == ["libtext_policy_ffi.dylib"])
+        // bundler copies cannot drift apart silently. Both UniFFI crates are linked: the text
+        // policy engine (module 16) and the image classifier (module 18). A name missing here
+        // produces a bundle that assembles, signs and installs cleanly and then dies at launch
+        // with a dyld error.
+        #expect(
+            AppBundle.embeddedLibraryNames == [
+                "libtext_policy_ffi.dylib", "libimage_sandbox_ffi.dylib",
+            ])
+    }
+
+    @Test("copies resources into Contents/Resources")
+    func assembleCopiesResources() throws {
+        // The classifier model rides here rather than beside the bundle: Resources are sealed by
+        // the signature, so a model swapped for one that scores everything zero invalidates the
+        // bundle instead of silently disabling the image path.
+        try withTemporaryDirectory { directory in
+            let root = directory.appendingPathComponent("HolyBlockerDaemon.app")
+            let identity = BundleIdentity.holyBlocker
+            let model = directory.appendingPathComponent(AppBundle.classifierModelName)
+            try Data([0x01, 0x02, 0x03]).write(to: model)
+
+            try AppBundle.assemble(
+                at: root, identity: identity, executable: try makeExecutable(in: directory),
+                resources: [model])
+
+            let layout = AppBundle.layout(root: root, identity: identity)
+            let copied = layout.resources.appendingPathComponent(AppBundle.classifierModelName)
+            #expect(FileManager.default.fileExists(atPath: copied.path))
+        }
+    }
+
+    @Test("assembles without resources, since a fresh checkout has no model")
+    func assembleWithoutResources() throws {
+        // data/models/ is gitignored. A daemon with no model must still assemble and run its text
+        // path — refusing here would make the image artifact a build prerequisite it is not.
+        try withTemporaryDirectory { directory in
+            let root = directory.appendingPathComponent("HolyBlockerDaemon.app")
+            let identity = BundleIdentity.holyBlocker
+
+            try AppBundle.assemble(
+                at: root, identity: identity, executable: try makeExecutable(in: directory))
+
+            let layout = AppBundle.layout(root: root, identity: identity)
+            let contents = try FileManager.default.contentsOfDirectory(
+                atPath: layout.resources.path)
+            #expect(contents.isEmpty)
+        }
     }
 
     @Test("reports the nested code that has to be signed, deepest first")
