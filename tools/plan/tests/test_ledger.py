@@ -57,12 +57,51 @@ class ValidateTest(unittest.TestCase):
         self.assertTrue(any("duplicate marker" in p for p in self._validate(steps, ["p.a", "p.a"])))
 
 
+class KindTest(unittest.TestCase):
+    def test_default_kind_is_feature(self):
+        step = ledger.Step("p.a", "a", "pending", "")
+        self.assertEqual(step.kind, "feature")
+
+    def test_bug_kind_is_valid(self):
+        steps = [ledger.Step("p.a", "a", "pending", "", kind="bug")]
+        self.assertEqual(ledger.validate(steps, ["p.a"]), [])
+
+    def test_bug_without_regressed_step_is_valid(self):
+        steps = [ledger.Step("p.a", "a", "pending", "", kind="bug")]
+        self.assertEqual(ledger.validate(steps, ["p.a"]), [])
+
+    def test_invalid_kind(self):
+        steps = [ledger.Step("p.a", "a", "pending", "", kind="vulnerability")]
+        problems = ledger.validate(steps, ["p.a"])
+        self.assertTrue(any("invalid kind" in p for p in problems))
+
+
+class RegressedStepValidationTest(unittest.TestCase):
+    def test_regressed_step_in_same_manifest_is_valid(self):
+        steps = [
+            ledger.Step("p.a", "a", "done", "observed on emulator"),
+            ledger.Step("p.b", "b", "pending", "", kind="bug", regressed_step="p.a"),
+        ]
+        self.assertEqual(ledger.validate(steps, ["p.a", "p.b"]), [])
+
+    def test_unknown_regressed_step(self):
+        steps = [ledger.Step("p.a", "a", "pending", "", kind="bug", regressed_step="p.ghost")]
+        problems = ledger.validate(steps, ["p.a"])
+        self.assertTrue(any("unknown regressed_step" in p for p in problems))
+
+
 class RenderTest(unittest.TestCase):
     def test_renders_status_table(self):
         steps = [ledger.Step("p.a", "a", "done", "commit abc")]
         rendered = ledger.render(steps)
-        self.assertIn("| Step | Status | Evidence |", rendered)
-        self.assertIn("| `p.a` | done | commit abc |", rendered)
+        self.assertIn("| Step | Kind | Status | Evidence |", rendered)
+        self.assertIn("| `p.a` | feature | done | commit abc |", rendered)
+
+    def test_bug_row_is_distinguishable(self):
+        steps = [ledger.Step("p.a", "a", "done", "obs", kind="bug")]
+        rendered = ledger.render(steps)
+        self.assertIn("| Step | Kind | Status | Evidence |", rendered)
+        self.assertIn("| `p.a` | bug | done | obs |", rendered)
 
 
 class NextPlanTest(unittest.TestCase):
@@ -188,6 +227,20 @@ class DependencyValidationTest(unittest.TestCase):
         ]
         problems = ledger.validate(steps, ["p.a", "p.b"])
         self.assertTrue(any("dependency cycle" in p for p in problems))
+
+
+class LoadManifestTest(unittest.TestCase):
+    def test_reads_kind_and_regressed_step(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            package = Path(tmp)
+            (package / "steps.toml").write_text(
+                '[[step]]\nid = "p.a"\ntitle = "a"\nstatus = "pending"\n'
+                'kind = "bug"\nregressed_step = "p.done"\n',
+                encoding="utf-8",
+            )
+            steps = ledger.load_manifest(package)
+            self.assertEqual(steps[0].kind, "bug")
+            self.assertEqual(steps[0].regressed_step, "p.done")
 
 
 class WriteTodoTest(unittest.TestCase):
