@@ -622,6 +622,51 @@ field permits it in principle, but essentially no real-world resolver answers mo
 per message. The available lever is **concurrency** (many in-flight query packets at once,
 rate-limited to the chosen qps), not batching.
 
+#### Measured 2026-08-16: the incremental qps ramp, run against the real deployment VPS
+
+The section above prescribed running the qps ramp against the real deployment host rather than
+guessing from the dev-machine result. That ramp was run on the production VPS (4 vCPU, datacenter
+uplink), each step a real `--sample` slice (a new CLI flag added for exactly this purpose — see its
+own doc comment in `cli.rs`) of the actual fetched 4.75M-domain corpus, against real 1.1.1.1/8.8.8.8
+resolvers, canary passing at every step:
+
+| qps / concurrency | sample | Unknown% | Timeouts | UncorroboratedDead |
+|---|---|---|---|---|
+| 11.5 / 50 (shipped default) | 2,000 | 2.35% | 0 | 0 |
+| 23 / 100 | 4,000 | 1.98% | 5 | 0 |
+| 46 / 200 | 8,000 | 1.80% | 10 | 0 |
+| 92 / 400 | 16,000 | 1.43% | 14 | 0 |
+
+No degradation signal anywhere in this ramp, unlike the dev-machine measurement above, which broke
+down at 57.5 qps (10.6% Unknown, 15x worse). This VPS's datacenter uplink and IP reputation history
+tolerate roughly 8x the shipped default cleanly — confirming the section above's own caveat that a
+VPS could show a materially different ceiling than a residential/office network, in either
+direction. **This does not change the shipped CLI defaults** — the defaults are a safe floor for an
+unknown deployment host, and this result is evidence for *this* host's operator to raise `--qps`
+explicitly for its own scheduled runs, not a reason to move the shipped default itself. A full
+92 qps / 400-concurrency production sweep against the complete real corpus was then launched from
+this measurement, detached from the invoking shell (`setsid`/`disown`, reparented to PID 1) so it
+survives an SSH disconnect, logging to `dbl-run/logs/production.log` on the host.
+
+Two real defects were found and fixed while getting the real (non-fixture) fetch path to run at
+all, neither previously exercised end-to-end against live sources:
+
+- `SourceConfig.pinned_revision` for the two GitHub sources and the three UT1 categories were
+  literal `"UNPINNED"` placeholders (`main.rs`'s own doc comment: "left as a placeholder ... so a
+  real fetch fails loudly and closed"). Moved to real pins via the reviewed pin-bump process this
+  file's "Pinned revisions, never floating HEAD" section requires: StevenBlack `35db0ae9...`,
+  hagezi `3975aafc...` (both `git commit` SHAs baked into the raw-content URL path), and the three
+  UT1 categories to `last-modified=Sat, 15 Aug 2026 20:50:17 GMT` (UT1 publishes no ETag;
+  `fetchers::ut1::pick_revision` falls back to the `Last-Modified` header, prefixed — the prefix
+  format was undocumented outside the function body and cost one failed real-fetch attempt to
+  discover).
+- `fetchers::ut1::MAX_MEMBER_BYTES` was 64 MiB on the doc comment's claim that "UT1's largest
+  `domains`/`urls` member measures a few MB" (2026-08-15 assumption audit). A real fetch of
+  `adult.tar.gz` hit the ceiling: `adult/domains` is **124,529,768 bytes** (4,599,280 lines), not
+  "a few MB" — the assumption audit measured the wrong file, or measured before UT1's adult list
+  grew to its current size. Raised to 256 MiB (~2x headroom over the measured real file), documented
+  in the constant's own doc comment as measured-wrong rather than silently widened.
+
 #### The TTL cache needs a real home
 
 The cache is a multi-million-row `domain → {last_checked, verdict, sources}` table that must survive

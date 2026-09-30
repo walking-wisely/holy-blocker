@@ -68,6 +68,7 @@ mod corroboration;
 mod lookup;
 #[cfg(feature = "net")]
 pub mod net;
+mod report;
 
 pub use cache::{
     CacheEntry, due_for_check, is_special_use_domain, should_prune, should_prune_with_hysteresis,
@@ -80,6 +81,7 @@ pub use corroboration::{check_corroborated, corroborate};
 pub use lookup::{DnsLookup, LookupResult, RecordType, UnknownReason, Verdict, check, combine};
 #[cfg(feature = "net")]
 pub use net::{HickoryDnsLookup, ResolverConfig};
+pub use report::{NegativeOutcomeReport, negative_outcome_report};
 
 /// Test-only fixtures shared by [`lookup`]'s and [`canary`]'s test modules — kept here, one level
 /// up from both, since neither concern owns the other and duplicating the fixture would risk the

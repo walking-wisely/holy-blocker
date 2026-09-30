@@ -1,0 +1,5 @@
+# `packages/domain-normalize` — status
+
+Language: Rust
+
+**Module 0 of the domain-blocklist plan, done.** `normalize()` (comparison key: strip a trailing dot, UTS #46 mapping/case-folding + RFC 3492 punycode via the `idna` crate in one pass, then explicit post-conversion 63-byte label / 253-byte name limits per RFC 1035 §2.3.4) and `classify_scope()` (`Apex` only when the normalized entry is exactly the registrable domain per the compiled-in Public Suffix List via the `psl` crate — no I/O, no network fetch — backstopped by a caller-supplied shared-hosting denylist; `ExactHost` otherwise; `None`, meaning drop the entry, when it's a public suffix itself or denylisted). **Deliberately does not strip `www.`** — see the plan doc's Module 0 for why that would silently conflate a rule naming `www.example.com` with one naming `example.com`. 22 tests, covering every named case in the plan (`com`, `co.uk`, `blogspot.com`, `s3.amazonaws.com` never `Apex`; `someone.blogspot.com` is `Apex`). Now consumed by `packages/domain-blocklist`'s `merge.rs` (module 2) and, at query time, by `net-shield`'s `DnsShield` (module 6, done — see the `net-shield` row)

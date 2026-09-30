@@ -1,0 +1,46 @@
+# Thin step ledger for classifier-head. Source of truth for whether each build step exists.
+#
+#   python -m tools.plan.ledger validate docs/components/classifier-head
+#   python -m tools.plan.ledger render   docs/components/classifier-head
+#
+# `done` means the step's implementation exists on master. It does NOT mean the
+# route is covered: live and observational verification lives in
+# docs/engineering/coverage.md, never here.
+#
+# Do not put narrative here. Gotchas, wrong-constant war stories, and "measured
+# wrong in module N" notes live in plan.md. `evidence` is one line pointing at
+# where the step landed (commit, PR, or the plan's own wording), not an argument.
+#
+# Steps are the plan's `## Implementation order` items, in its own order. The
+# component is planned-not-created: packages/classifier-head/ does not exist on
+# master, so every step is pending.
+
+[[step]]
+id = "classifier-head.head-weights-verdict"
+title = "head + weights + verdict with unit tests, no FFI"
+status = "pending"
+evidence = ""
+
+[[step]]
+id = "classifier-head.ffi"
+title = "classifier-head-ffi and the Kotlin bindings"
+status = "pending"
+evidence = ""
+
+[[step]]
+id = "classifier-head.mobile-frame-sink"
+title = "wire apps/mobile FrameSink to the crate"
+status = "pending"
+evidence = ""
+
+[[step]]
+id = "classifier-head.windows-path"
+title = "wire the Windows path to the same crate"
+status = "pending"
+evidence = ""
+
+[[step]]
+id = "classifier-head.train"
+title = "train — the backward pass, behind a feature"
+status = "pending"
+evidence = ""

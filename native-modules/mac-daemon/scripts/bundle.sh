@@ -34,7 +34,12 @@ swift build -c "$CONFIGURATION"
 BINARY="$(swift build -c "$CONFIGURATION" --show-bin-path)/holy-blocker-macd"
 [[ -x "$BINARY" ]] || { echo "bundle.sh: no binary at $BINARY" >&2; exit 1; }
 
-"$BINARY" bundle "$OUTPUT" "$IDENTITY" "$PWD/.ffi/lib"
+# The classifier model is sealed inside the bundle. MODEL overrides where it comes from; the
+# default is the repository's gitignored artifact directory, and a missing one is reported by the
+# bundle verb rather than failing — the text path does not depend on it.
+MODEL="${MODEL:-$PWD/../../data/models/baseline-v0.onnx}"
+
+"$BINARY" bundle "$OUTPUT" "$IDENTITY" "$PWD/.ffi/lib" "$MODEL"
 
 echo
 echo "next: $OUTPUT/HolyBlockerDaemon.app/Contents/MacOS/holy-blocker-macd bundle-status"

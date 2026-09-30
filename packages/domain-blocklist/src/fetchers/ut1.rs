@@ -63,10 +63,17 @@ pub const MAX_FETCHED_BYTES: u64 = 512 * 1024 * 1024;
 /// decompressed byte count are both untrusted data from inside the fetched archive — a crafted
 /// header declaring e.g. 4 GiB would make a naive `Vec::with_capacity` reserve that much from a
 /// few kilobytes of compressed input, and reading with no cap permits a decompression-bomb-shaped
-/// gzip stream to actually produce that much. UT1's largest `domains`/`urls` member measures a few
-/// MB (assumption audit, run 2026-08-15); 64 MiB is generous headroom that still refuses either
-/// attack from a tiny compressed payload.
-pub const MAX_MEMBER_BYTES: u64 = 64 * 1024 * 1024;
+/// gzip stream to actually produce that much.
+///
+/// **Measured wrong 2026-08-16**: the doc comment this replaces claimed "UT1's largest
+/// `domains`/`urls` member measures a few MB" from the 2026-08-15 assumption audit, and set the
+/// ceiling to 64 MiB on that basis. A real fetch against `adult.tar.gz` hit the ceiling —
+/// `adult/domains` is **124,529,768 bytes** (4,599,280 lines), not "a few MB". 256 MiB restores
+/// ~2x headroom over the measured real file while still bounding a decompression-bomb-shaped
+/// gzip stream from a tiny compressed payload (the compressed `adult.tar.gz` itself is ~18 MB,
+/// so the real file's own compression ratio is nowhere near what a crafted bomb would need to
+/// exceed this).
+pub const MAX_MEMBER_BYTES: u64 = 256 * 1024 * 1024;
 
 /// A UT1 category the fetcher can target, as a type so two fetchers for different categories
 /// are distinct types and a `source: SourceId::Ut1` `SourceConfig` can't be silently fetched

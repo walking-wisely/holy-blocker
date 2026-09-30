@@ -1,0 +1,45 @@
+# Thin step ledger for video-watchdog. Source of truth for whether each build step exists.
+#
+#   python -m tools.plan.ledger validate docs/components/video-watchdog
+#   python -m tools.plan.ledger render   docs/components/video-watchdog
+#
+# `done` means the step's implementation exists on master. It does NOT mean the
+# route is covered: live and observational verification lives in
+# docs/engineering/coverage.md, never here.
+#
+# Do not put narrative here. Gotchas, wrong-constant war stories, and "measured
+# wrong in module N" notes live in plan.md. `evidence` is one line pointing at
+# where the step landed (commit, PR, or the plan's own wording), not an argument.
+#
+# Steps are the plan's `## Implementation order` items, in its own order. The
+# package does not exist on master, so every step is pending.
+
+[[step]]
+id = "video-watchdog.tee"
+title = "tee — stream tee with backpressure"
+status = "pending"
+evidence = ""
+
+[[step]]
+id = "video-watchdog.segment"
+title = "segment — segment type detection"
+status = "pending"
+evidence = ""
+
+[[step]]
+id = "video-watchdog.extractor"
+title = "extractor — frame extraction stub"
+status = "pending"
+evidence = ""
+
+[[step]]
+id = "video-watchdog.watchdog"
+title = "watchdog — async worker"
+status = "pending"
+evidence = ""
+
+[[step]]
+id = "video-watchdog.mitm-proxy-wire"
+title = "wire VideoWatchdog into mitm-proxy"
+status = "pending"
+evidence = ""

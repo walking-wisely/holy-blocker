@@ -1,0 +1,144 @@
+# Thin step ledger for mac-daemon. Source of truth for whether each build step exists.
+#
+#   python -m tools.plan.ledger validate docs/components/mac-daemon
+#   python -m tools.plan.ledger render   docs/components/mac-daemon
+#
+# `done` means the step's implementation exists on master. It does NOT mean the
+# route is covered: live and observational verification lives in
+# docs/engineering/coverage.md, never here. Module 7/8/10 are `done` as code with
+# their live observations still outstanding; coverage.md tracks the difference.
+#
+# Do not put narrative here. Gotchas, wrong-constant war stories, and "measured
+# wrong in module N" notes live in plan.md. `evidence` is one line pointing at
+# where the step landed (commit, PR, or the plan's own wording), not an argument.
+#
+# Steps are the plan's numbered module headings, in the plan's own order: Layer 1
+# modules 1-6, then Layer 2 module 0 and modules 7-16. The Layer 1 package
+# scaffold and the last three sessions of the first live e2e pass are included
+# because they are plan steps with no module heading of their own.
+
+[[step]]
+id = "mac-daemon.package-scaffold"
+title = "SwiftPM package scaffold"
+status = "done"
+evidence = "Layer 1 implementation order 1 **Done.**; Package.swift on master"
+
+[[step]]
+id = "mac-daemon.privileged-command"
+title = "PrivilegedCommand — the process-execution edge (module 1)"
+status = "done"
+evidence = "Layer 1 implementation order 2 **Done.**; Sources/MacDaemon/PrivilegedCommand.swift on master"
+
+[[step]]
+id = "mac-daemon.catrust"
+title = "CATrust — root CA in the System keychain (module 2)"
+status = "done"
+evidence = "Layer 1 implementation order 4 **Done.**, verified live; Sources/MacDaemon/CATrust.swift on master"
+
+[[step]]
+id = "mac-daemon.network-services"
+title = "NetworkServices — service and proxy-setting parsers (module 3)"
+status = "done"
+evidence = "Layer 1 implementation order 3 **Done.**; Sources/MacDaemon/NetworkServices.swift on master"
+
+[[step]]
+id = "mac-daemon.proxy-configuration"
+title = "ProxyConfiguration — apply and restore system proxy (module 4)"
+status = "done"
+evidence = "Layer 1 implementation order 5 **Done**; Sources/MacDaemon/ProxyConfiguration.swift on master"
+
+[[step]]
+id = "mac-daemon.proxy-supervisor"
+title = "ProxySupervisor — run and monitor the Rust proxy (module 5)"
+status = "done"
+evidence = "Layer 1 implementation order 6 **Done.**; Sources/MacDaemon/ProxySupervisor.swift on master"
+
+[[step]]
+id = "mac-daemon.firefox-trust"
+title = "Firefox NSS trust — FirefoxTrust.swift (module 6)"
+status = "done"
+evidence = "Layer 1 implementation order 7 **Retired as a coverage step**; Sources/MacDaemon/FirefoxTrust.swift on master"
+
+[[step]]
+id = "mac-daemon.signed-bundle"
+title = "signed bundle and launchd split (module 0)"
+status = "done"
+evidence = "Module 0 **Done**; AppBundle/LaunchdJob/CodeSigning on master (commit cada2c3)"
+
+[[step]]
+id = "mac-daemon.permission-gate"
+title = "PermissionGate — TCC state and the account model (module 7)"
+status = "done"
+evidence = "Module 7 built, 38 tests; Sources/MacDaemon/PermissionGate.swift on master (commit cada2c3); real grant/revocation still unobserved (coverage.md)"
+
+[[step]]
+id = "mac-daemon.screen-capture"
+title = "ScreenCapture — ScreenCaptureKit frame source (module 8)"
+status = "done"
+evidence = "Module 8 built, 20 tests; Sources/MacDaemon/ScreenCapture.swift on master (commit 5a5a145); live PNG check still unobserved"
+
+[[step]]
+id = "mac-daemon.scanner-scan-loop"
+title = "Scanner and ScanLoop — interface and scheduler (module 9)"
+status = "done"
+evidence = "Layer 2 implementation order 3 **Done.**, 62 tests; Scanner.swift/ScanLoop.swift on master (commit 0523a74)"
+
+[[step]]
+id = "mac-daemon.overlay"
+title = "Overlay — borderless NSWindow cover (module 10)"
+status = "done"
+evidence = "Module 10 **Done**, both halves, 27 tests; Overlay.swift/OverlayWindow.swift on master (commit 780c0d3); the visual is still unverified"
+
+[[step]]
+id = "mac-daemon.event-hooks"
+title = "EventHooks — window lifecycle and scroll (module 11)"
+status = "pending"
+evidence = ""
+
+[[step]]
+id = "mac-daemon.accessibility-text"
+title = "AccessibilityText — AX text extraction (module 12)"
+status = "done"
+evidence = "Module 12 **Done**, 22 tests; Sources/MacDaemon/AccessibilityText.swift on master (commit edc2e20)"
+
+[[step]]
+id = "mac-daemon.fullscreen-control"
+title = "FullscreenControl — AX AXFullScreen (module 13)"
+status = "pending"
+evidence = ""
+
+[[step]]
+id = "mac-daemon.daemon-ipc"
+title = "DaemonIPC — framing and verdict types (module 14)"
+status = "pending"
+evidence = "pure half on master (commit 0523a74, 34 tests); the Unix domain socket transport is unbuilt"
+
+[[step]]
+id = "mac-daemon.settings-guard"
+title = "SettingsGuard — notice the settings pane (module 15)"
+status = "pending"
+evidence = ""
+
+[[step]]
+id = "mac-daemon.text-policy-ffi"
+title = "TextPolicyFFI — the Rust policy engine over UniFFI (module 16)"
+status = "done"
+evidence = "Module 16 **Done**, verified live; commit 6691a6d (PR #95)"
+
+[[step]]
+id = "mac-daemon.accessibility-scanner"
+title = "AccessibilityScanner — first real Scanner (e2e session 4)"
+status = "done"
+evidence = "e2e session 4 **Done**, 25 tests; Sources/MacDaemon/AccessibilityScanner.swift on master (commit d9dd92b, PR #99)"
+
+[[step]]
+id = "mac-daemon.agent-render-loop"
+title = "agent render loop — real NSApplication run loop (e2e session 5)"
+status = "done"
+evidence = "e2e session 5 **Done**, 313 tests; Sources/MacDaemon/AgentRenderLoop.swift on master (commit 7355a19, PR #100)"
+
+[[step]]
+id = "mac-daemon.live-e2e"
+title = "live e2e verification (e2e session 6)"
+status = "pending"
+evidence = "not on master; the live pass evidence lives on branch feat/mac-daemon-live-e2e-pass (coverage.md)"

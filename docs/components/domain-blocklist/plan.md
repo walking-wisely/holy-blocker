@@ -764,14 +764,36 @@ decision doc's [Distribution](../../decisions/domain-blocklist-sourcing.md#distr
    and post-conversion length limits; `classify_scope` against public suffixes, provider suffixes,
    the shared-hosting denylist, and deep hostnames. Every apex-widening bug this design fears is
    caught here or nowhere.~~ **Done.** `normalize()` uses the `idna` crate's UTS46 pass
-   (`AsciiDenyList::STD3`, `Hyphens::Allow`, `DnsLength::Ignore`, with label/name length validated
+   (`AsciiDenyList::URL`, `Hyphens::Allow`, `DnsLength::Ignore`, with label/name length validated
    explicitly afterward per RFC 1035 §2.3.4/RFC 5891 §4.4) and `classify_scope()` uses the `psl`
    crate (compiled-in Public Suffix List data — no I/O, no network fetch) plus a caller-supplied
-   shared-hosting denylist slice. 22 tests, including every named case from this plan (`com`,
+   shared-hosting denylist slice. **`classify_scope` now downgrades to `ExactHost` rather than
+   dropping the entry entirely when the normalized domain is itself a public suffix** (`com`,
+   `co.uk`, or a wildcard-PSL tenant boundary like `pornslut.cn.st` — structurally the same as
+   `someone.blogspot.com`, just one PSL level lower, since the boundary rule that matched was a
+   wildcard rather than a plain suffix) — `Apex` is still refused (claiming the whole shared suffix
+   would blackhole every other tenant), but the literal string itself can never match anything but
+   that one exact query, so there's no scope-widening reason to drop it. A live run against the
+   same ~4.78M real merged domains found ~20 entries being dropped this way (`ec2-*.compute-1.
+   amazonaws.com`, `pornslut.cn.st`-style wildcard-tenant hosts, bare gTLDs like `xxx`/`adult`);
+   after the fix, only an actual `shared_hosting_denylist` match still drops an entry outright
+   (renamed `dropped_public_suffix_or_denylisted` → `dropped_shared_hosting_denylisted` to match),
+   and the same real merge: `dropped_shared_hosting_denylisted` 20 → 0, entries 4,721,732 →
+   4,721,752. 25 tests, including every named case from this plan (`com`,
    `co.uk`, `blogspot.com`, `s3.amazonaws.com` never `Apex`; `someone.blogspot.com` is `Apex`;
    `www.example.com` normalizes to itself and scopes `ExactHost`, distinct from the `example.com`
-   `Apex` key). Not yet consumed by `domain-blocklist` (module 1+, unbuilt) or `net-shield` (module
-   6, unbuilt) — this is the shared crate only.
+   `Apex` key). **`AsciiDenyList::STD3` (the initial choice) was replaced with `AsciiDenyList::URL`
+   after a live run against ~4.78M real merged domains found ~1,029 entries silently dropped for
+   containing an underscore** — DNS-wire-legal (RFC 1035 §2.3.1: labels are arbitrary octets, not
+   LDH-restricted; `_dmarc.google.com` is a ubiquitous real example) and, confirmed against the
+   WHATWG URL Standard (`beStrict = false` on the URL host parser, "due to web compatibility"), a
+   hostname a real browser's address bar actually resolves and navigates to. `AsciiDenyList::URL`
+   is the same deny list the URL Standard's own domain-to-ASCII step applies — denies glyphless/
+   control characters and URL-structural punctuation (`%#/:<>?@[\]^|`, which is also how an IPv6
+   literal's `:`/`[`/`]` stay rejected, unchanged from before) but not underscore. Rerunning the
+   same ~4.78M-domain merge afterward: `dropped_normalization_failed` 1029 → 0, all 1,027 distinct
+   previously-rejected domains now present in the merged set. Consumed by `domain-blocklist`
+   (module 1+, done — see that row) and `net-shield` (module 6, done — see that row). <!-- step: domain-blocklist.domain-normalize -->
 2. ~~`merge.rs` — pure functions (the union/provenance merge, scope resolution, category filtering,
    `flag_personal_name`) with no I/O. Test against hand-built `RawEntry` fixtures.~~ **Done.**
    `packages/domain-blocklist` created — `types.rs` defines `SourceId`, `Category` (`Adult`,
@@ -814,7 +836,7 @@ decision doc's [Distribution](../../decisions/domain-blocklist-sourcing.md#distr
    domain flagged `adult` by one source and `gambling` by another keeps both categories; the bare
    `example.com`/`www.example.com` pair stays two distinct entries with distinct scopes) and the
    review-driven regression tests above. Not yet consumed by `sources`, `gates`, or `fst_build`
-   (modules 1, 3, 4 — all still unbuilt).
+   (modules 1, 3, 4 — all still unbuilt). <!-- step: domain-blocklist.merge -->
 3. ~~`gates.rs` — pure functions against synthetic counts and key sets. Built early precisely because
    they are cheap, pure, and are what stops every category of bad build; leaving them for last means
    the first real run has no guardrail.~~ **Done, including an adversarial (Opus) review's fixes.**
@@ -874,7 +896,7 @@ decision doc's [Distribution](../../decisions/domain-blocklist-sourcing.md#distr
    percentage against the limit, capped at 20 named hits with a count of the remainder) rather than
    a bare boolean, per the plan's "refuses publication and requires explicit human sign-off"
    framing. 80 tests. Not yet consumed by `cli` (module 7, unbuilt) — the pipeline that would call
-   these gates in sequence and act on a `Fail` doesn't exist yet.
+   these gates in sequence and act on a `Fail` doesn't exist yet. <!-- step: domain-blocklist.gates -->
 4. ~~`sources/` — one parser per source against small fixture files first (a few lines of each
    source's real format, not a live fetch), covering every row of the input-shape table above, then
    wire in the real pinned `SourceFetcher` HTTP path last.~~ **Done, minus the real HTTP client.**
@@ -903,7 +925,7 @@ decision doc's [Distribution](../../decisions/domain-blocklist-sourcing.md#distr
    category `SourceConfig` list, are left to `cli` (module 7, unbuilt) per this module's own text
    ("the pipeline binary wires in a real HTTP client") — nothing here needs live network access to
    test. Not yet consumed by `liveness`, `fst_build`, or `cli` (modules 3, 4, 7 — all still
-   unbuilt).
+   unbuilt). <!-- step: domain-blocklist.sources -->
 5. ~~`liveness.rs` — `due_for_check` first as a pure function against a fake clock and fake cache
    entries with cadence ≠ TTL (this is the part with the trickiest edge cases: reappeared-stale vs.
    genuinely-revived entries). Then `canary_check` against a fake resolver that simulates a
@@ -959,7 +981,7 @@ decision doc's [Distribution](../../decisions/domain-blocklist-sourcing.md#distr
    NXDOMAIN at `example.com` implies every `*.example.com` entry is also dead, with zero extra
    queries — is deferred because nothing in this module's shape expresses shared context between
    per-domain `check()` calls, which a real optimization lever for module 7's per-domain sweep
-   would need.
+   would need. <!-- step: domain-blocklist.liveness -->
 6. ~~`fst_build.rs` — pin against a small hand-built key set first (a handful of domains sharing
    prefixes and suffixes, mixed `Apex` and `ExactHost`) and assert exact-match, label-boundary
    scoping, and **anchored** prefix-streaming behavior before building the real list.~~ **Done.**
@@ -985,7 +1007,7 @@ decision doc's [Distribution](../../decisions/domain-blocklist-sourcing.md#distr
    combination, manifest bincode round-trip, a two-signature rotation manifest verifying against
    old-key-only/new-key-only/both clients, and tampering with `fst_digest` after signing
    invalidating every signature entry. Not yet consumed by `cli` (module 7, unbuilt) — the
-   pipeline that would call `build` and act on the manifest doesn't exist yet.
+   pipeline that would call `build` and act on the manifest doesn't exist yet. <!-- step: domain-blocklist.fst-build -->
 7. ~~`cli` — wire the whole pipeline together; the first real run is a dry run against the three
    fixture sources, not a live fetch.~~ **Done, with the real qps-paced sweep's production hardening
    (24h pacing at real scale, a genuinely random per-run nonce, a vetted in-category canary control)
@@ -1083,7 +1105,7 @@ decision doc's [Distribution](../../decisions/domain-blocklist-sourcing.md#distr
    allowlist a real run needs (`--allow-license`) defaults, with a loud warning, to an unratified
    starting set (MIT, CC0-1.0, GPL-3.0, CC-BY-SA-4.0) — ratifying that list, including whether
    copyleft (GPL-3.0) inputs are acceptable for this project, is a human licensing decision this
-   code deliberately does not make silently.
+   code deliberately does not make silently. <!-- step: domain-blocklist.cli -->
  8. ~~`net-shield` integration — the precedence table and the shared `normalize()`, per module 6.~~
     **Done.** `packages/net-shield/src/blocklist.rs` — `BlocklistArtifact` (a `fst::Map<Mmap>` that
     owns the mapping, avoiding the plan's `Arc<Mmap>`-plus-`Map` self-reference while keeping the
@@ -1127,12 +1149,12 @@ decision doc's [Distribution](../../decisions/domain-blocklist-sourcing.md#distr
     unbuilt), now called out in `radix.rs`'s own doc comment rather than left implicit. One test-
     coverage gap was closed: `rule_for` returning `None` at a branch node that has children but no
     action of its own (the shape the precedence table's `Some(Proxy)`-vs-miss distinction depends on)
-    had no direct test; one was added. Net-shield total now 92.
-9. **The mmap benchmark** (below) — after there is a real artifact to map.
+    had no direct test; one was added. Net-shield total now 92. <!-- step: domain-blocklist.net-shield-integration -->
+9. **The mmap benchmark** (below) — after there is a real artifact to map. <!-- step: domain-blocklist.mmap-benchmark -->
 10. `overlay.rs` — after `fst_build` and `net-shield` integration both exist, since it reuses
     module 4's manifest/signing contract wholesale and slots into module 6's precedence table rather
     than defining either from scratch. Pin the size and publish-size gates against synthetic entry
-    sets first, the same way `gates.rs` was built ahead of a real artifact to test against.
+    sets first, the same way `gates.rs` was built ahead of a real artifact to test against. <!-- step: domain-blocklist.overlay -->
 
 ## Benchmarking plan — the mmap major-fault tail
 
