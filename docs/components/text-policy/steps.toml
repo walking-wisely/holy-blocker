@@ -1,0 +1,42 @@
+# Thin step ledger for text-policy. Source of truth for whether each build step exists.
+#
+#   python -m tools.plan.ledger validate docs/components/text-policy
+#   python -m tools.plan.ledger render   docs/components/text-policy
+#
+# `done` means the step's implementation exists on master. It does NOT mean the
+# route is covered: live and observational verification lives in
+# docs/engineering/coverage.md, never here.
+#
+# Do not put narrative here. Gotchas, wrong-constant war stories, and "measured
+# wrong in module N" notes live in plan.md. `evidence` is one line pointing at
+# where the step landed (commit, PR, or the plan's own wording), not an argument.
+
+[[step]]
+id = "text-policy.verdict"
+title = "verdict — action, verdict, and evidence types"
+status = "done"
+evidence = "types only, no logic; module 1"
+
+[[step]]
+id = "text-policy.scorer"
+title = "scorer — match to score"
+status = "done"
+evidence = "pure fn, fully tested; implementation order 2"
+
+[[step]]
+id = "text-policy.evaluator"
+title = "evaluator — score to verdict"
+status = "done"
+evidence = "pure fn, all bands tested; implementation order 3"
+
+[[step]]
+id = "text-policy.policy"
+title = "policy — top-level entry point"
+status = "done"
+evidence = "end-to-end raw text to Verdict; implementation order 4"
+
+[[step]]
+id = "text-policy.ffi"
+title = "FFI surface — UniFFI wrapper (sibling crate packages/text-policy-ffi)"
+status = "done"
+evidence = "packages/text-policy-ffi; Kotlin + Swift bindings generated; implementation order 5"

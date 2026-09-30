@@ -186,13 +186,29 @@ public final class SCShareableContentCapture: NSObject, ScreenCapturing, SCStrea
             display: display, excludingApplications: excludedApplications, exceptingWindows: [])
 
         let configuration = SCStreamConfiguration()
+        // Not a default worth trusting: on macOS 26.5 an unset `pixelFormat` delivers biplanar
+        // 420v (YCbCr, 2 planes), not packed BGRA. `PixelBufferCopy.depad` assumes 4 bytes per
+        // pixel and correctly rejected every frame — a silent, permanent empty-frame stall that
+        // looks exactly like a missing permission. Ask for BGRA explicitly.
+        // See https://developer.apple.com/documentation/screencapturekit/scstreamconfiguration/pixelformat.
+        configuration.pixelFormat = kCVPixelFormatType_32BGRA
         // Pixel dimensions, not points: SCStreamConfiguration defaults to point dimensions, which
         // on a Retina display is half the real resolution and yields a blurry downscale. A wrong
         // aspect ratio here also silently changes what packages/image-sandbox's
         // resize-then-centre-crop sees — the same class of error its parity fixture caught on the
         // Rust side. See SCStreamConfiguration docs.
-        configuration.width = display.width
-        configuration.height = display.height
+        // `SCDisplay.width`/`.height` are themselves **points**, so setting them here does not
+        // avoid the point-vs-pixel trap — it just moves it. On a 2x Retina display that captures
+        // at half resolution. `CGDisplayMode.pixelWidth`/`.pixelHeight` are the backing store's
+        // real pixel dimensions; fall back to points only if the mode is unavailable.
+        // See https://developer.apple.com/documentation/coregraphics/cgdisplaymode/pixelwidth.
+        if let mode = CGDisplayCopyDisplayMode(display.displayID) {
+            configuration.width = mode.pixelWidth
+            configuration.height = mode.pixelHeight
+        } else {
+            configuration.width = display.width
+            configuration.height = display.height
+        }
         configuration.scalesToFit = false
 
         let stream = SCStream(filter: filter, configuration: configuration, delegate: nil)
@@ -212,18 +228,53 @@ public final class SCShareableContentCapture: NSObject, ScreenCapturing, SCStrea
         return cache.lastComplete ?? CapturedFrame.empty(captured: Date())
     }
 
+    /// Delivery tallies for the live pass's diagnostic line. `currentFrame()` returning empty has
+    /// three very different causes — the stream never called us, it called us but never with a
+    /// `.complete` frame (a screen with nothing changing on it), or it did and the pixel copy
+    /// produced nothing — and they are indistinguishable from the outside.
+    public struct CaptureDiagnostics: Sendable, Equatable {
+        public var deliveries = 0
+        public var complete = 0
+        public var retained = 0
+        /// Which of the three early returns between a `.complete` delivery and a retained frame
+        /// swallowed it.
+        public var noImageBuffer = 0
+        public var noBaseAddress = 0
+        public var emptyAfterDepad = 0
+        /// The last dimensions seen, whether or not the copy succeeded.
+        public var lastGeometry = ""
+    }
+
+    private var _diagnostics = CaptureDiagnostics()
+
+    public var diagnostics: CaptureDiagnostics {
+        lock.lock()
+        defer { lock.unlock() }
+        return _diagnostics
+    }
+
     public func stream(
         _ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer,
         of type: SCStreamOutputType
     ) {
         guard type == .screen, let status = Self.frameStatus(of: sampleBuffer) else { return }
 
+        lock.lock()
+        _diagnostics.deliveries += 1
+        if status == .complete { _diagnostics.complete += 1 }
+        lock.unlock()
+
         guard status == .complete else {
             // Nothing new to retain — FrameCache.receive drops non-complete deliveries itself, but
             // skip the CVPixelBuffer work entirely since there is nothing there to read.
             return
         }
-        guard let imageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+        guard let imageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else {
+            lock.lock()
+            _diagnostics.noImageBuffer += 1
+            lock.unlock()
+            return
+        }
 
         CVPixelBufferLockBaseAddress(imageBuffer, .readOnly)
         defer { CVPixelBufferUnlockBaseAddress(imageBuffer, .readOnly) }
@@ -231,17 +282,33 @@ public final class SCShareableContentCapture: NSObject, ScreenCapturing, SCStrea
         let width = CVPixelBufferGetWidth(imageBuffer)
         let height = CVPixelBufferGetHeight(imageBuffer)
         let bytesPerRow = CVPixelBufferGetBytesPerRow(imageBuffer)
-        guard let base = CVPixelBufferGetBaseAddress(imageBuffer) else { return }
+        let format = CVPixelBufferGetPixelFormatType(imageBuffer)
+        lock.lock()
+        _diagnostics.lastGeometry =
+            "\(width)x\(height) stride \(bytesPerRow) planes \(CVPixelBufferGetPlaneCount(imageBuffer)) format \(format)"
+        lock.unlock()
+        guard let base = CVPixelBufferGetBaseAddress(imageBuffer) else {
+            lock.lock()
+            _diagnostics.noBaseAddress += 1
+            lock.unlock()
+            return
+        }
 
         let raw = [UInt8](
             UnsafeBufferPointer(
                 start: base.assumingMemoryBound(to: UInt8.self), count: bytesPerRow * height))
         let tight = PixelBufferCopy.depad(raw, bytesPerRow: bytesPerRow, width: width, height: height)
-        guard !tight.isEmpty else { return }
+        guard !tight.isEmpty else {
+            lock.lock()
+            _diagnostics.emptyAfterDepad += 1
+            lock.unlock()
+            return
+        }
 
         let frame = CapturedFrame(pixels: tight, width: width, height: height, captured: Date())
         lock.lock()
         cache.receive(frame, status: .complete)
+        _diagnostics.retained += 1
         lock.unlock()
     }
 

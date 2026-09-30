@@ -123,7 +123,12 @@ func applyProtectionMode(_ mode: ProtectionMode, to verdict: ScanVerdict) -> Sca
 /// current state, the injected `now`, and whatever `capture`/`scanner` return.
 public final class ScanLoop {
     private let capture: ScreenCapturing
-    private let scanner: Scanner
+    /// Driven by the image cadence. `ImageScanner` in production.
+    private let imageScanner: Scanner
+    /// Driven by the OCR cadence. `AccessibilityScanner` in production — the cadence is named for
+    /// OCR because that is what the Windows daemon runs there and what module 19 will add here, but
+    /// the AX walk shares it: both are the expensive, text-shaped tier.
+    private let textScanner: Scanner
     private let config: ScanLoopConfig
 
     private var mode: ProtectionMode
@@ -142,14 +147,30 @@ public final class ScanLoop {
     public private(set) var lastVerdict: ScanVerdict?
 
     public init(
-        capture: ScreenCapturing, scanner: Scanner, config: ScanLoopConfig = ScanLoopConfig(),
+        capture: ScreenCapturing, imageScanner: Scanner, textScanner: Scanner,
+        config: ScanLoopConfig = ScanLoopConfig(),
         mode: ProtectionMode = .full, eligibility: SurfaceEligibility = .eligible
     ) {
         self.capture = capture
-        self.scanner = scanner
+        self.imageScanner = imageScanner
+        self.textScanner = textScanner
         self.config = config
         self.mode = mode
         self.eligibility = eligibility
+    }
+
+    /// One scanner on both cadences.
+    ///
+    /// Kept because it is what every scheduling test wants — the cadence rules are about *when* a
+    /// scan happens, not which scanner runs — and because it is the honest description of the
+    /// daemon before module 18: a single `Scanner` called at two rates.
+    public convenience init(
+        capture: ScreenCapturing, scanner: Scanner, config: ScanLoopConfig = ScanLoopConfig(),
+        mode: ProtectionMode = .full, eligibility: SurfaceEligibility = .eligible
+    ) {
+        self.init(
+            capture: capture, imageScanner: scanner, textScanner: scanner, config: config,
+            mode: mode, eligibility: eligibility)
     }
 
     public func setMode(_ mode: ProtectionMode) {
@@ -190,7 +211,7 @@ public final class ScanLoop {
 
         if shouldRunImageClassifier(now: now) {
             lastImageScanAt = now
-            let verdict = scanner.scan(frame)
+            let verdict = imageScanner.scan(frame)
             verdicts.append(applyProtectionMode(mode, to: verdict))
         }
 
@@ -198,7 +219,7 @@ public final class ScanLoop {
         if shouldRunOCR(now: now, fingerprint: fingerprint, forcedByEvent: eventResolvedThisTick) {
             lastOCRScanAt = now
             lastOCRFingerprint = fingerprint
-            let verdict = scanner.scan(frame)
+            let verdict = textScanner.scan(frame)
             verdicts.append(applyProtectionMode(mode, to: verdict))
         }
 

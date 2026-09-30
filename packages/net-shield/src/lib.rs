@@ -1,3 +1,4 @@
+pub mod blocklist;
 pub mod dns;
 pub mod dns_shield;
 pub mod radix;
@@ -5,6 +6,7 @@ pub mod sni;
 pub mod tun;
 pub mod udp;
 
+pub use blocklist::{Allowlist, ArtifactError, BlocklistArtifact, BlocklistLookup, resolve_action};
 pub use dns_shield::{DnsShield, DnsVerdict};
 pub use radix::{DomainFilter, FilterAction, IpFilter};
 pub use sni::extract_sni;
@@ -48,6 +50,14 @@ impl NetShield {
     /// This is the platform-agnostic core of the filter loop.  It is called by
     /// the Windows Wintun loop and by unit tests that supply a fake sink.
     /// Returns `false` if the packet could not be parsed and was silently ignored.
+    ///
+    /// **Scope note (module 6 of the domain-blocklist plan):** this SNI/TCP path consults only
+    /// `self.domain_filter`/`self.ip_filter` — the explicit rule sets. It does **not** consult the
+    /// device-local `Allowlist` or the signed FST `BlocklistArtifact` (`blocklist.rs`); those are
+    /// wired into `DnsShield::inspect` (the Android DNS path) only. This mirrors the plan's own
+    /// scope for module 6, which is written entirely in terms of `dns_shield.rs`'s lookup — it is
+    /// not an accidental narrowing introduced here, but it does mean a blocklist artifact loaded
+    /// on Windows currently has no effect on this Wintun-driven SNI path.
     pub fn process_packet(&self, raw: &[u8], sink: &mut dyn PacketSink, proxy_port: u16) -> bool {
         use tun::{dispatch, parse_ipv4_packet, parse_ipv6_packet, PORT_HTTP, PORT_HTTPS, PROTO_TCP};
 

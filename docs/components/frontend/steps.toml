@@ -1,0 +1,54 @@
+# Thin step ledger for frontend. Source of truth for whether each build step exists.
+#
+#   python -m tools.plan.ledger validate docs/components/frontend
+#   python -m tools.plan.ledger render   docs/components/frontend
+#
+# `done` means the step's implementation exists on master. It does NOT mean the
+# route is covered: live and observational verification lives in
+# docs/engineering/coverage.md, never here.
+#
+# Do not put narrative here. Gotchas, wrong-constant war stories, and "measured
+# wrong in module N" notes live in plan.md. `evidence` is one line pointing at
+# where the step landed (commit, PR, or the plan's own wording), not an argument.
+
+[[step]]
+id = "frontend.scaffold"
+title = "Project scaffold — Vite, React Router, TanStack Query, base layout"
+status = "pending"
+evidence = ""
+
+[[step]]
+id = "frontend.api-client"
+title = "api/client.ts + api/invites.ts — typed wrappers for all partner endpoints"
+status = "pending"
+evidence = ""
+
+[[step]]
+id = "frontend.invite-landing"
+title = "InviteLanding.tsx — the page partners land on"
+status = "pending"
+evidence = ""
+
+[[step]]
+id = "frontend.invite-verify-unsubscribe"
+title = "InviteVerify.tsx and Unsubscribe.tsx — state-machine components"
+status = "pending"
+evidence = ""
+
+[[step]]
+id = "frontend.encouragement"
+title = "Encouragement.tsx"
+status = "pending"
+evidence = ""
+
+[[step]]
+id = "frontend.marketing"
+title = "Landing page (/) and Download.tsx"
+status = "pending"
+evidence = ""
+
+[[step]]
+id = "frontend.privacy"
+title = "Privacy.tsx"
+status = "pending"
+evidence = ""
