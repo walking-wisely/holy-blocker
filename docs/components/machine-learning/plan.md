@@ -1,16 +1,37 @@
 # Machine Learning Pipeline — Implementation Plan
 
-The classification strategy and model gating rationale live in [../content-classification.md](../../architecture/content-classification.md).
-This document is the build plan: what modules to add, in what order, and what each one is responsible for.
+The threshold-choosing *method* (miss-rate budget, not accuracy; ranking metrics for model
+comparison; a threshold is model-and-geometry-specific with no built-in default) is
+recorded in
+[decisions/classifier-operating-point.md](../../decisions/classifier-operating-point.md).
+That document no longer carries specific measured numbers or model/checkpoint names — they
+came from the same local, never-merged fine-tuning pipeline described (and removed) below,
+and were scrubbed for the same reason.
 
-**Note on the "Current state" section below (added on `feat/ml-nsfw-baseline-eval`,
-branched from `master`):** it describes a fine-tuning pipeline (`config.py`, `labels.py`,
-`train.py`, `export_tflite.py`, etc.) that does not exist in `machine-learning/` on this
-branch — only [results.md](results.md) and this plan file carry that history forward. What
-actually exists here is a much smaller, fresh **baseline evaluation harness**, described in
-[Baseline evaluation (v0)](#baseline-evaluation-v0) below. Treat the rest of "Current state"
-as historical/aspirational until the fine-tuning pipeline is rebuilt or merged in from
-elsewhere.
+The classification strategy and model gating rationale live in [../content-classification.md](../../architecture/content-classification.md).
+
+## Decided: no corpus of real explicit imagery, ever, in any form
+
+A prior local (never pushed) pipeline fine-tuned against a gated real-imagery corpus —
+downloaded via `HF_TOKEN`, decoded in memory, immediately reduced to cached feature
+vectors so raw images touched disk only inside one extraction pass. That was already
+more careful than "just keep a folder of images", and it still produced a real near-miss:
+a `.gitignore` anchoring bug once left 58 MB of feature vectors derived from that corpus
+sitting as ordinary untracked files, one `git add -A` away from being committed (full
+account in this repo's PR/commit history for context, not reproduced here).
+
+**As of 2026-08-07, this project holds no explicit corpus and will not acquire one again
+— not on disk, not gitignored, not as cached feature vectors, not transiently in memory.**
+Recall (does the classifier still catch explicit content) therefore cannot be
+self-measured against a held-out positive set the way `false-positive rate` is measured
+against `synthetic-ui`/`real-world-macbook` below. Whatever validates recall going
+forward has to work without this project ever taking custody of the material — see
+`docs/decisions/` for the follow-up decision once a no-custody approach is chosen; none is
+picked yet.
+
+This document is otherwise the build plan for what exists today: the baseline evaluation
+harness. It does not describe a fine-tuning pipeline — none is planned while the decision
+above holds.
 
 ## Baseline evaluation (v0)
 
@@ -19,14 +40,12 @@ elsewhere.
 (ViT-base, Apache-2.0, `id2label = {0: "normal", 1: "nsfw"}`), downloaded from Hugging Face
 on the first evaluation run rather than shipped as weights in this package, exactly as
 published — no fine-tuning — and measures its false-positive behavior on **rendered UI / text-heavy
-screenshots**, a distribution [classifier-operating-point.md](../../decisions/classifier-operating-point.md)
-never measures for any model or geometry this project has shipped. Per that decision's
+screenshots**, a distribution no model or geometry this project has shipped has been
+measured against. Per [classifier-operating-point.md](../../decisions/classifier-operating-point.md)'s
 "a threshold belongs to a model *and* a geometry" rule, **the numbers below describe a
 different model under a different geometry** — this classifier's own published
 whole-image resize, not `packages/image-sandbox`'s tile-max — and are not comparable to
-`image-sandbox`'s thresholds. Notably, two of the six thresholds swept below (0.20 and
-0.50) coincide with values `classifier-operating-point.md` records as *superseded* or
-*not a real threshold* for the deployed model; that coincidence is numeric only.
+`image-sandbox`'s configured threshold.
 
 - `model.py` — loads the pretrained classifier; resolves the NSFW class index from the
   model's own `id2label` rather than hardcoding it (a silent label-order flip would
@@ -58,6 +77,18 @@ first data point on an off-the-shelf model, under its own preprocessing, against
 synthetic corpus containing no photographic or illustrated content — the two biggest gaps
 to a production number, both listed below.
 
+**Real screenshots.** ~~a small batch of real local screenshots (never committed) would
+sanity-check the synthetic set against reality~~ **Done.** A manually captured 9-image
+batch (`data/eval/real-world-macbook/`, gitignored — Finder, 4 real Safari tabs,
+Calculator, TextEdit, System Settings, Maps) confirms the synthetic tail is real, not a
+generator artifact: `05_calculator.png` scores 0.71, in the same range as the synthetic
+corpus's `document`-scene tail (max 0.77). FPR 11.1% (1 of 9) at every threshold 0.10
+through 0.70, 0% at 0.90 — n=9 is too small to be a rate estimate, its job was only to
+confirm the synthetic signal isn't spurious. `scripts/run_baseline_eval.py` now evaluates
+both corpora in one run via `corpus.discover_corpora`, which finds whichever named
+corpora exist under `data/eval/` and skips the rest with a note rather than raising,
+since a real-screenshot batch (unlike the synthetic one) cannot be regenerated from code.
+
 **What this does not cover, deliberately deferred:**
 - **Geometry** — evaluated with the model's own published preprocessing (direct resize to
   224×224, mean/std 0.5), not `packages/image-sandbox`'s tile-max geometry. Building a
@@ -66,9 +97,16 @@ to a production number, both listed below.
 - **Recall** — only the benign/false-positive side is measured. Recall needs a held-out
   explicit corpus, which this pipeline deliberately does not source or store (see
   `corpus.py`'s docstring).
-- **Real screenshots** — the corpus is 100% synthetic; a small batch of real local
-  screenshots (never committed) would sanity-check the synthetic set against reality.
-- **Fine-tuning** — out of scope for this pass by request.
+- **Fine-tuning** — considered and deliberately not attempted, not merely deferred.
+  Fine-tuning against `synthetic-ui`/`real-world-macbook` would only have safe-labeled
+  examples to train on, and with no held-out explicit corpus to check afterward (see
+  Recall, above), a recall regression from that fine-tune would be silent — the one
+  failure mode a content blocker least affords. Separately, 300 images from one
+  procedural generator is a narrow enough style that fine-tuning the whole head against
+  it risks learning "not this synthetic look" rather than "UI is safe", with nothing to
+  catch that either. Per the decision above, this project does not hold an explicit
+  corpus to validate against and is not acquiring one — any future fine-tuning needs a
+  no-custody way to check recall first, not just "a validation split".
 
 See `machine-learning/README.md` for setup and how to re-run the eval.
 
@@ -379,5 +417,6 @@ needed before relying on the dynamo path.
   local-first rule in AGENTS.md.
 - Sourcing or curating training data. The `data/` directory is gitignored; data curation is a separate out-of-repo process.
 - Text NLP model training. Text classification is handled deterministically by `packages/text-policy`; see [../content-classification.md](../../architecture/content-classification.md) (§ When To Add ML) for the gating rationale.
-- iOS CoreML export — deferred until iOS platform work begins.
-- Int8 static quantization — requires a calibration dataset and is noted in `export_tflite.py` comments for a later pass.
+- Export/quantization tooling (ONNX, TFLite, int8) — belonged to the removed fine-tuning
+  pipeline above and is not part of the baseline evaluation harness this document now
+  describes.
