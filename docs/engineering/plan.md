@@ -238,6 +238,17 @@ Deliverables, in order:
 
 Acceptance: `code`. Verify: `python -m unittest discover -s tools/plan/tests -t .`.
 
+#### Assumption audit
+
+| Claim | Falsifier | Observed | Verdict |
+|---|---|---|---|
+| `render`'s current table shape (`\| Step \| Status \| Evidence \|`) is asserted only in `test_ledger.py`'s render test and defined only in `ledger.py:170` | `grep -rn "Step \| Status" tools/plan/` | matches only `test_ledger.py:64` and `ledger.py:170` | **HOLDS** — adding the `Kind` column updates exactly those two sites, no other consumer |
+| Baseline test suite is green on this substrate commit, so later failures are attributable to this change | `python -m unittest discover -s tools/plan/tests -t .` | 85 tests, OK | **HOLDS** (run with `python3`; this machine has no `python` binary — verify-string discrepancy, non-load-bearing) |
+| `ledger.Step(...)` is constructed with at most 4 positional args (id/title/status/evidence) plus keywords, so two trailing defaulted fields are backward compatible | `grep -n "Step(" tools/plan/tests` and `tools/plan/todos.py` | all constructions ≤ 4 positional args; `todos.py` uses keywords throughout | **HOLDS** |
+| `todos.Todo(...)` is constructed only in `test_todos.py`'s `_todo` helper with keyword args; appending a defaulted `kind` field breaks nothing | `grep -rn "Todo(" tools/plan/tests/*.py` | single construction site, keyword args only | **HOLDS** |
+| No existing `kind` or `regressed_step` key in any steps.toml or tool file, so the new optional keys cannot collide with or re-validate existing data | `grep -rn "regressed_step\|kind" docs/engineering/steps.toml tools/plan/*.py` | only the `engineering.bug-kind-ledger` step id/name match; no data keys | **HOLDS** |
+| `gh` can open a PR against `walking-wisely/holy-blocker` | `gh auth status` | active account `walking-wisely`, `repo` scope | **HOLDS** — the plan's earlier FALSE (old READ-only account) is obsolete; the account was re-authed |
+
 ### Step 6 — review triage policy
 
 <!-- step: engineering.review-triage-policy -->
@@ -338,6 +349,20 @@ Same reasoning as step 6: this skill defines what "privacy-sensitive" means for
 the product, which is a product-owner call, not a model call.
 
 Acceptance: `product`. The loop stops at the PR; a human closes it.
+
+### Assumption audit
+
+Run 2026-09-19 before writing the skill. All claims settle now; none deferred.
+
+| Claim | Falsifier | Observed | Verdict |
+|---|---|---|---|
+| `holy-blocker-security/SKILL.md` has the two-mode shape and a "nothing matches → say so and stop" rule | `rg -n "Authoring mode\|Audit mode\|nothing matches\|say so and stop" .claude/skills/holy-blocker-security/SKILL.md` | Two-mode header, route step "If nothing matches, say so and stop", audit findings to `security-backlog.md` | **TRUE** — settles-now |
+| CLAUDE.md carries a no-cloud-calls rule | `rg -n "no cloud calls\|cloud calls\|no-cloud\|telemetry" CLAUDE.md` | Line 7: "do not add cloud calls, telemetry, remote content analysis, or external dataset dependencies" | **TRUE** — settles-now |
+| The spec's named data classes exist at findable paths | `rg -n "FrameSink\|ScreenCaptureService\|TamperLog\|AccessibilityText\|ScanVerdict"` | `ScreenCaptureService.kt`, `TamperLog.kt`/`TamperLogStore.kt`, `AccessibilityText.swift`, `Scanner.swift` all exist. **But `FrameSink` exists only in `apps/mobile/.../FrameSink.kt`**, never in mac-daemon — mac-daemon's frame-holding type is `FrameCache` in `ScreenCapture.swift` | **PARTIAL** — `FrameSink` mis-attributed by the spec; recorded as a finding in `references/data-classes.md`, settles-now |
+| OCR text is a concrete copiable class today | `rg -n "Vision\|VNRecognize\|VNImageRequestHandler"` over daemon/mobile/image-sandbox sources | No OCR module anywhere; only the cadence plumbing (`ScanLoop`), `ScanSource.ocr`, `PolicySource.OCR_*`, and doc comments | OCR is planned-only; the inventory records the empty slot rather than the file, settles-now |
+| Tamper-log retention is finite and stated | `rg -n "MAX_ENTRIES\|COALESCE_MILLIS" apps/mobile/.../policy/TamperLog.kt` | `MAX_ENTRIES = 2_000` at ~60 B/entry (< 150 KB), `COALESCE_MILLIS = 10_000` | **TRUE** — settles-now |
+| No enumerated class transmits off-device | `rg` for URLSession/NWConnection/OkHttp/URLConnection across mac-daemon, mobile, desktop sources | None. Only a loopback probe socket and the mobile VPN's by-design DNS forwarding; desktop speaks to a local pipe. Proxy debug trace logs `method`/`host`/`port` per forwarded request (`forward.rs:36`) — device-local, but itself a shallow visited-domain record | **TRUE** on inspection; the debug-level host record is filed as a finding, settles-now |
+| Audit target path is fresh | `ls docs/engineering/privacy-backlog.md` | Does not exist yet | n/a — created by the first audit-mode run (this step ships the skill that writes it, not the file itself), settles-now |
 
 ### Step 8 — wire mandatory gates into step-loop
 

@@ -51,8 +51,8 @@ verify = "python -m unittest discover -s tools/plan/tests -t ."
 [[step]]
 id = "engineering.bug-kind-ledger"
 title = "bug kind and regression links in the ledger schema"
-status = "pending"
-evidence = ""
+status = "at-pr"
+evidence = "PR #66"
 acceptance = "code"
 depends_on = ["engineering.ledger-coverage"]
 verify = "python -m unittest discover -s tools/plan/tests -t ."
@@ -68,8 +68,8 @@ verify = "python -m unittest discover -s tools/plan/tests -t ."
 [[step]]
 id = "engineering.privacy-review-skill"
 title = "privacy-review skill — data-class inventory gate"
-status = "pending"
-evidence = ""
+status = "at-pr"
+evidence = "PR #65"
 acceptance = "product"
 verify = "python -m unittest discover -s tools/plan/tests -t ."
 

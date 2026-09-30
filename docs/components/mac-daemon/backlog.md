@@ -10,16 +10,21 @@ therefore **no bypass route that is both easy and silent**, not prevention.
 
 ## Open
 
-### 1. `PermissionGate` has never seen a real grant or a real revocation
+### 1. `PermissionGate` has never seen a real *revocation*
 
-**Half-unblocked by module 0.** The pure half is built and tested, the four environment signals are
-confirmed live, and the bundle and LaunchAgent now exist — the agent bootstraps into `gui/501`,
-runs, and takes a permission baseline under launchd rather than under a terminal, which removes the
-responsible-process problem. What remains untested is the part that matters most: `poll()` reporting
-`permissionLost` when a held capability is actually taken away. It has only ever run against a fake
-probe, because nothing has ever *held* a real grant.
+**The grant half is closed.** In the first live e2e pass the agent held real Screen Recording and
+Accessibility grants under `launchd`, keyed to the `Holy Blocker Dev` certificate, and reported them
+itself (`ax grant: granted`, `assess()` → `weakened`, the remaining weakness being
+`protectedUserIsAdministrator` — this machine's known configuration). The grants survived four
+bundle replacements, which is exactly what the stable identity exists for.
 
-One thing stood between here and that, and it's now closed:
+What remains untested is the part that matters most: `poll()` reporting `permissionLost` when a held
+capability is actually taken away. It has still only ever run against a fake probe. Now that a real
+grant exists this is minutes of work and needs no new code — `tccutil reset ScreenCapture
+com.holyblocker.daemon` was confirmed during the pass to resolve and run unprivileged, so both
+revocation routes can be exercised against a live agent and the log line will show the transition.
+
+One thing stood between here and the grant half, and it is closed:
 
 - ~~**A stable signing identity.** The bundle signs ad-hoc by default, and an ad-hoc identity is
   derived from the `cdhash`, so a grant made against it dies on the next `swift build`. This is a
@@ -30,17 +35,94 @@ One thing stood between here and that, and it's now closed:
   `scripts/create-dev-signing-identity.sh` recreates or rotates it. See
   [signing-identity.md](signing-identity.md).
 
-What's left:
+**What closes it:** with the agent running and granted, revoke through *both* System Settings and
+`tccutil reset ScreenCapture com.holyblocker.daemon`, and confirm each is reported. The whole claim
+of watching outcomes rather than routes is that one poll catches both, and that claim is still
+untested.
 
-- **A human.** A Screen Recording grant requires clicking the prompt or the System Settings
-  toggle. No amount of daemon code can produce one.
+### 2. Mission Control composites live window previews above the overlay
 
-**What closes it:** sign with a stable identity, install the agent, grant Screen Recording, then
-revoke it through *both* System Settings and `tccutil reset ScreenCapture com.holyblocker.daemon`.
-The whole claim of watching outcomes rather than routes is that one poll catches both, and that
-claim is still untested.
+**Found in the first live e2e pass; filed rather than fixed, by decision.** A four-finger swipe up
+puts Mission Control in front, and it is composited by the Dock above ordinary window levels —
+including `.screenSaver`, which is the highest level `OverlayPlan` has. Its previews are live, so
+the content is legible in the thumbnails with the interstitial pushed underneath. App Exposé, the
+Command-Tab switcher's window previews, and Stage Manager's strip are the same family.
 
-### 2. Can a *standard* user reset a Screen Recording grant?
+Nothing in the daemon knows the gesture exists: `EventHooks` (module 11) is not built, so there is
+no monitor to notice it either.
+
+Partly mitigated as of the live pass: a block now hides the offending application
+(`WindowSuppression`), and a hidden application has no windows for Mission Control to preview. That
+covers content the daemon has *seen* — it does nothing for content it never scanned, which is
+backlog item 3 below.
+
+Two directions when this is picked up, both explicitly not chosen yet:
+
+- **Detect and report**, treating an activation while blocking content is on screen as a tamper
+  event, consistent with the "watch outcomes, not routes" rule the permission gate already follows.
+  Needs a measurement first: whether `NSWorkspace.activeSpaceDidChangeNotification` or a
+  `CGWindowList` level scan actually fires for Mission Control, neither of which is documented for
+  this purpose.
+- **Disable the gesture**, via the `mcx-expose-disabled` managed preference in `com.apple.dock`.
+  Prevention rather than detection, but it is a system-wide change to someone's machine and would
+  need the same snapshot/restore discipline as `ProxyConfiguration`.
+
+**What closes it:** re-measure what Mission Control still exposes *after* per-window scanning and
+suppression are in place, then decide. It may turn out there is nothing left to reveal.
+
+### 3. Only the focused window is ever scanned, so on-screen content escapes by losing focus
+
+**Found in the first live e2e pass, and it is the largest coverage gap on this platform.**
+Confirmed on macOS 26.5: with blocking text in a TextEdit window the interstitial goes up; click
+another application — or just click the desktop, which unfocuses everything at once — and the
+verdict flips to `allow` and **the overlay tears down while the text is still fully visible on
+screen**. That is worse than a miss — it reads to the user as "cleared".
+
+**Partly mitigated, and the remaining half is the dangerous one.** A block now hides the offending
+application rather than only covering it (`WindowSuppression`), so content that has been *seen*
+cannot be revealed by unfocusing, by clicking the desktop, or through Mission Control — there is no
+window left. What is untouched is content that is never scanned in the first place: a second window
+beside the focused one, a video playing next to a chat, anything on a second display. That content
+never produces a verdict at all, so nothing is ever covered *or* hidden.
+
+The cause is structural rather than a bug. `SystemAXProbe.focusedRoot()` reads
+`NSWorkspace.frontmostApplication` and then that application's `kAXFocusedWindowAttribute`; nothing
+else on screen is walked. Side-by-side windows, a video beside a chat, and anything on a second
+display are all invisible to the text path. Note the exact mirror of the Android split-screen
+finding in the root `AGENTS.md`: there, *every* watched window is evaluated, precisely because an
+unfocused pane emits no accessibility events at all.
+
+Two directions, and they are not alternatives:
+
+- **Walk every on-screen window, not just the focused one.** `AXWindows` on each
+  `NSWorkspace.runningApplications` entry with `.regular` activation policy, worst-verdict-wins.
+  Cost is the open question: `SystemAXProbe` budgets 0.5s per walk and that budget is per
+  *application*, so the 1s scan cadence cannot absorb a dozen of them. Needs a shared per-tick
+  budget, skipping hidden/minimised applications, and probably a cheap change check before
+  re-walking an application whose windows have not moved.
+- **OCR the captured frame**, which is focus-independent by construction and already has a cadence
+  slot in `ScanLoop` reserved for it. **There is no OCR module in this plan at all** — the Layer 2
+  module list goes capture → scanner → overlay with nothing between, even though `ScanLoop` splits
+  an image cadence from an "OCR" one and the Windows daemon plan has the module. That is the real
+  long-term answer for unfocused *text* and it is currently unplanned work.
+
+**Narrowed by module 18, on the half that had nothing at all.** The image classifier
+(`ImageScanner`) reads the captured frame rather than the AX tree, so it is focus-independent by
+construction: a video beside a chat, a second window, anything on a captured display now produces a
+verdict without being frontmost. What it does *not* cover is **text** in an unfocused window, which
+the AX walk still only reads for the frontmost one and which no OCR module exists to catch. So the
+gap has gone from "unfocused content is invisible" to "unfocused *text* is invisible" — smaller, and
+differently shaped.
+
+Two limits on that narrowing, both real: the classifier only sees displays the daemon is capturing,
+and its operating point was measured on images rather than screen frames (see
+[classifier-operating-point.md](../../decisions/classifier-operating-point.md)).
+
+**What closes it:** the AX half is still a bounded change worth doing — it needs no new module and no
+model. Closing it *fully* needs the OCR module, which is now the only unbuilt piece of the
+focus-independence story rather than one of two.
+
+### 4. Can a *standard* user reset a Screen Recording grant?
 
 **This blocks any tamper-resistance claim, and it is minutes of work on the right machine.**
 
@@ -54,7 +136,7 @@ TCC store rather than the per-user one, so it plausibly fails for a standard use
 standard user *can* run it, the standard-user configuration is worth much less than the model
 assumes and the plan needs revisiting rather than patching.
 
-### 3. Safari's page body has not been confirmed through `AccessibilityText`
+### 5. Safari's page body has not been confirmed through `AccessibilityText`
 
 Module 12 is verified against Chrome 151 — the full page content of a local test page came back,
 including image `alt` text. Safari's *window* reads fine too (45 nodes of real content), but its
@@ -69,7 +151,7 @@ Safari needs no opt-in of any kind.
 `holy-blocker-macd ax-text 5` from a shell. Confirm the page's body text appears, not just the
 title and toolbar. Minutes of work, and it needs a human only because focus does.
 
-### 4. A lexicon phrase can match across two unrelated AX elements
+### 6. A lexicon phrase can match across two unrelated AX elements
 
 `AccessibilityText` joins elements with a newline, and that separator is not a boundary — no
 character could be. `packages/text-policy`'s `collapse_whitespace` rewrites a newline to a space and
@@ -88,7 +170,7 @@ applications actually split their text, and nothing in this repo measures that.
 ways, showing which direction costs more. Until then the per-element split is a guess with a
 plausible story, which is exactly what the joined blob already is.
 
-### 5. `ProxyConfiguration.restore()` is not atomic per service
+### 7. `ProxyConfiguration.restore()` is not atomic per service
 
 Carried over from Layer 1. Each service is restored with two `networksetup` calls, so an
 interruption between them can leave a proxy enabled with an empty server — a state that breaks
