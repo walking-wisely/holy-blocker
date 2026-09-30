@@ -666,7 +666,12 @@ async fn run_liveness(
         let snapshot = match &cli.cache {
             Some(path) => cache_store::read_snapshot(path)
                 .context("failed to read --cache for the dry-run preview")?,
-            None => HashMap::new(),
+            None => {
+                tracing::warn!(
+                    "no --cache given: the liveness sweep runs with no prior state and its results are not persisted"
+                );
+                HashMap::new()
+            }
         };
         LivenessCache::Memory(snapshot)
     } else {
@@ -815,11 +820,9 @@ async fn run_liveness(
 /// `Unknown` rate alone hides which failure mode (`Timeout` vs. cross-resolver
 /// `UncorroboratedDead` vs. resolver-side `ServFail`/`NoData`) is actually driving degradation
 /// (see `docs/decisions/domain-blocklist-sourcing.md`'s "Measured 2026-08-15/16" section).
-#[cfg(feature = "net")]
-/// Generic over [`cache_store::CacheBackend`] — `for_each` (rather than `.values()`) is what lets
-/// this walk a [`cache_store::CacheStore`]'s redb table as a sequential, page-at-a-time scan
-/// instead of requiring the cache to already be a resident `HashMap`, the whole point of this
-/// module's redb follow-up.
+///
+/// Generic over [`cache_store::CacheBackend`] so it can walk a redb table page by page instead of
+/// requiring a resident `HashMap`.
 #[cfg(feature = "net")]
 fn log_verdict_breakdown(cache: &mut impl cache_store::CacheBackend) -> Result<()> {
     use domain_blocklist::{UnknownReason, Verdict};
