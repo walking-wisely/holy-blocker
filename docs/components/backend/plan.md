@@ -619,19 +619,26 @@ A `backend/.env.example` with the same keys but empty secrets is committed to th
 1. **`internal/invite/model.go` + `store.go`** — SQLite schema (migrations via
    `golang-migrate/migrate`), CRUD helpers for `invites`, `gate_events`, `encouragements`,
    `weekly_summary_log`
+<!-- step: backend.invite-model-store -->
 2. **`internal/notify/email.go`** — SMTP client wrapper + template rendering; write a
    test that renders each template against a fixture struct and checks for key strings
+<!-- step: backend.notify-email -->
 3. **`internal/invite/service.go`** — business logic for generate, confirm, cancel,
    remove-partner, poll; unit-tested with an in-memory SQLite database
+<!-- step: backend.invite-service -->
 4. **`internal/encouragement/store.go`** — queue helpers (enqueue, list-pending, ack)
+<!-- step: backend.encouragement-store -->
 5. **`api/handlers.go`** + **`api/middleware.go`** — HTTP handlers, bearer-token auth
    middleware, request-id, structured logging (zerolog), rate limiting (in-memory token
    bucket per invite token for encouragement endpoint)
+<!-- step: backend.api-handlers -->
 6. **`cmd/server/main.go`** — wire everything; config loading; graceful shutdown
+<!-- step: backend.server-main -->
 7. **Weekly summary dispatch** — a goroutine that wakes on a timer; walks `invites` where
    `status = active` and triggers the weekly summary IPC for each. In v1, this is driven
    by desktop calls (section 4.3), so the server-side cron is a fallback / future
    enhancement; not required for v1 launch.
+<!-- step: backend.weekly-summary-dispatch -->
 
 ---
 

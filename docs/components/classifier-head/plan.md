@@ -550,18 +550,25 @@ Note the trap the tile-parity fixture already taught: build the fixture so a *po
 
 1. `head` + `weights` + `verdict` with unit tests, no FFI. Pure Rust, no artifact needed —
    this is the whole reason to start here rather than at the runtime.
+   <!-- step: classifier-head.head-weights-verdict -->
 2. The parity fixture and its generator. Needs Python, but no corpus and no checkpoint.
+   <!-- step: classifier-head.parity-fixture -->
 3. **The export side (module 6)** — the embedding-only backbone export, the sidecar
    identity, and `holy-blocker-export-head`. This is what turns "fails open correctly" into
    "scores".
+   <!-- step: classifier-head.export -->
 4. `classifier-head-ffi` and the Kotlin bindings; add the crate to `build-ffi.sh`'s array.
+   <!-- step: classifier-head.ffi -->
 5. Wire `apps/mobile`'s `FrameSink` to it behind the LiteRT interpreter — see
    [mobile/plan.md](../mobile/plan.md) §9 and step 13. Model provisioning from `filesDir`
    comes with it.
+   <!-- step: classifier-head.mobile-frame-sink -->
 6. Wire the Windows path to the same crate, replacing the head half of `image-sandbox`'s
    ONNX graph **if and when** that export also terminates at the embedding. It does not
    today, and there is no reason to force it before the mobile path proves the seam.
+   <!-- step: classifier-head.windows-path -->
 7. `train`, when there is a feedback channel to train from.
+   <!-- step: classifier-head.train -->
 
 Steps 1 and 2 are unblocked right now. Step 3 needs a checkpoint (several exist under
 `machine-learning/artifacts/`, gitignored). Step 5 is blocked on an exported artifact for

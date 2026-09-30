@@ -1,0 +1,74 @@
+# Thin step ledger for desktop. Source of truth for whether each build step exists.
+#
+#   python -m tools.plan.ledger validate docs/components/desktop
+#   python -m tools.plan.ledger render   docs/components/desktop
+#
+# `done` means the step's implementation exists on master. It does NOT mean the
+# route is covered: live and observational verification lives in
+# docs/engineering/coverage.md, never here.
+#
+# Do not put narrative here. Gotchas, wrong-constant war stories, and "measured
+# wrong in module N" notes live in plan.md. `evidence` is one line pointing at
+# where the step landed (commit, PR, or the plan's own wording), not an argument.
+#
+# Steps are the numbered `## Implementation order` list, in the plan's own order.
+
+[[step]]
+id = "desktop.ipc-handlers"
+title = "ipc-handlers — extract handlers and add daemon:get-events with an empty ring buffer"
+status = "done"
+evidence = "apps/desktop/src/main/ipc-handlers.ts on master (commit 606b9b3, PR #40)"
+
+[[step]]
+id = "desktop.daemon-ipc"
+title = "daemon-ipc — named pipe client with the reconnect loop"
+status = "done"
+evidence = "apps/desktop/src/main/daemon-ipc.ts + __tests__/daemon-ipc.test.ts on master (commit 606b9b3, PR #40)"
+
+[[step]]
+id = "desktop.wire-daemon-ipc"
+title = "wire DaemonIpc into ipc-handlers for live status and events"
+status = "done"
+evidence = "main.ts constructs DaemonIpc and calls registerIpcHandlers(daemonIpc) on master (commit 606b9b3, PR #40)"
+
+[[step]]
+id = "desktop.stats-store"
+title = "stats-store — event persistence and install timestamp, plus stats:get-summary"
+status = "pending"
+evidence = ""
+
+[[step]]
+id = "desktop.preload-bridge"
+title = "extend preload.ts bridge methods and renderer types.ts"
+status = "pending"
+evidence = ""
+
+[[step]]
+id = "desktop.monitor-view"
+title = "MonitorView — sobriety counter, weekly summary, histogram, top windows, live events"
+status = "pending"
+evidence = ""
+
+[[step]]
+id = "desktop.policy-view"
+title = "PolicyView — protection mode, thresholds, and accountability partner config"
+status = "pending"
+evidence = ""
+
+[[step]]
+id = "desktop.voice-adapter"
+title = "voice-adapter-electron — VoiceAdapter over IPC and override:attempt wiring"
+status = "pending"
+evidence = ""
+
+[[step]]
+id = "desktop.override-gate-view"
+title = "OverrideGateView — full-screen verse-reading overlay"
+status = "pending"
+evidence = ""
+
+[[step]]
+id = "desktop.tray"
+title = "system tray icon and right-click menu"
+status = "pending"
+evidence = ""

@@ -1,0 +1,57 @@
+# Thin step ledger for win-daemon. Source of truth for whether each build step exists.
+#
+#   python -m tools.plan.ledger validate docs/components/win-daemon
+#   python -m tools.plan.ledger render   docs/components/win-daemon
+#
+# `done` means the step's implementation exists on master. It does NOT mean the
+# route is covered: live and observational verification lives in
+# docs/engineering/coverage.md, never here.
+#
+# Do not put narrative here. Gotchas, wrong-constant war stories, and "measured
+# wrong in module N" notes live in plan.md. `evidence` is one line pointing at
+# where the step landed (commit, PR, or the plan's own wording), not an argument.
+#
+# Steps are the plan's `## Implementation order` items, in its own order. The
+# package's existing main.cpp hooks are the starting point, not a step.
+
+[[step]]
+id = "win-daemon.capture"
+title = "capture — GDI window capture"
+status = "pending"
+evidence = ""
+
+[[step]]
+id = "win-daemon.scanner"
+title = "scanner — scan interface and NullScanner stub"
+status = "pending"
+evidence = ""
+
+[[step]]
+id = "win-daemon.scan-loop"
+title = "scan_loop — debounce and state machine"
+status = "pending"
+evidence = ""
+
+[[step]]
+id = "win-daemon.ipc"
+title = "ipc — named pipe server"
+status = "pending"
+evidence = ""
+
+[[step]]
+id = "win-daemon.wire-scan-loop"
+title = "wire scan loop into main.cpp"
+status = "pending"
+evidence = ""
+
+[[step]]
+id = "win-daemon.wire-ipc-heartbeats"
+title = "wire IPC heartbeats"
+status = "pending"
+evidence = ""
+
+[[step]]
+id = "win-daemon.cmake-tests"
+title = "CMakeLists GoogleTest and tests target"
+status = "pending"
+evidence = ""
