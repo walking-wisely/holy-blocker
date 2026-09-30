@@ -58,9 +58,14 @@ load-bearing conclusions first.
 Temptation cannot produce "you should have blocked this" flags. So:
 
 - **The recall / "block-more" side is sourced entirely from labeler-independent
-  data** (developer-curated explicit corpora, public NSFW benchmarks). Users
-  have no path into it, so there is nothing to poison. This direction is
-  **structurally clean by construction.**
+  data** — a theoretical framing, not a claim that such data exists here: per
+  the 2026-09-19 revision under Evaluation below, this project holds no
+  developer-curated explicit corpus and no public NSFW benchmark, so this
+  channel is currently empty rather than merely uncorruptible. The framing
+  still matters for *whatever* labeler-independent recall signal is eventually
+  used (see the revised Evaluation section) — none of it is user-supplied, so
+  none of it is poisonable. This direction is **structurally clean by
+  construction**, whatever fills it.
 - **The precision / "allow" side is treated as positive-unlabeled**: a user
   "not a violation" flag is *unlabeled evidence that shifts a prior*, never a
   trusted "this is clean" label. This maps to the one-sided-label-noise / PU
@@ -132,6 +137,54 @@ flags are gated.
   and even centralized far more freely than the explicit side. The two channels
   should be structurally separated by content type.
 
+### A personal/jurisdictional constraint tightens custody further (Decided 2026-09-19)
+
+The maintainer's jurisdiction (Ukraine) treats holding or buffering NSFW-adjacent
+image data as illegal even transiently, including for the purpose of running it
+through a CSAM-detection/hash-matching screen (Thorn Safer, PhotoDNA) before use.
+This removes an option some teams reach for — "screen the candidate corpus first,
+then hold whatever passes" — because the screening step itself already requires a
+custody window this jurisdiction does not permit. More generally, legally holding
+such material for detection purposes requires registered-ESP-type status (e.g. 18
+U.S.C. §2258A) this project does not have, so there is no favorable jurisdiction to
+route around it by relocating infrastructure.
+
+**Consequence: no self-assembled or hash-screened corpus of explicit imagery is
+achievable in-house, ever — not on disk, not gitignored, not as cached feature
+vectors, not transiently in memory, not for screening purposes.** This is stricter
+than "never in developer custody" above: it forecloses even a bounded custody
+window, which the wording above did not previously rule out on its own. As with
+every legal statement in this document, this is not legal advice — qualified
+counsel should confirm it before anything here is relied on.
+
+Two corollaries worth stating explicitly, because both look like workarounds and
+neither is one:
+
+- **Perceptual hashes and embeddings are not a lower-risk substitute for raw
+  images.** Both are similarity-preserving by design — that is their entire
+  purpose, matching near-duplicates — which is the opposite of
+  privacy-preserving, and both are documented as invertible to a meaningful
+  degree: the 2021 community reversal of Apple's NeuralHash, and the
+  model-inversion-attack literature against face/image embeddings generally. An
+  encoding useful enough to train or match on is discriminative enough to
+  reconstruct from; there is no encoding of explicit imagery that is
+  simultaneously useful here and safely non-identifiable. This is the same
+  utility–privacy tradeoff the Secure Aggregation / DP bullet above already
+  names for gradients, not a new one.
+- **Centralizing anything — full images, hashes, embeddings, or an individual
+  (non-aggregated) gradient — to project-run infrastructure is a regression,
+  not a mitigation.** It does not remove the custody question; it moves it from
+  one person's own device (bounded exposure, one person's own traffic) to a
+  server aggregating many devices' screens, at higher expected volume of
+  anything illegal and a plausible step toward the same ESP-like
+  mandatory-reporting obligations this project does not currently carry. If a
+  federated design is ever built here, the flat parameter vector must be the
+  only thing that ever crosses the device boundary, and only after Secure
+  Aggregation and DP as already specified above — a bare individual gradient is
+  subject to the same reconstruction-attack literature ("Deep Leakage from
+  Gradients", Zhu et al., NeurIPS 2019) that motivates SecAgg+DP in the first
+  place.
+
 ## On-device runtime and where the head lives (Decided 2026-07-18)
 
 `docs/components/machine-learning/plan.md` cross-references this section for the
@@ -191,24 +244,95 @@ hand-written gradients, **Burn** is the in-language upgrade — not a day-one de
 
 ## Evaluation (Decided strategy)
 
-The asymmetry works in our favor: **the quantity users can corrupt
-(over-blocking) is exactly the quantity we can measure safely and abundantly on
-a benign corpus, with zero exposure to explicit material; the quantity they
-cannot corrupt (recall) is the one needing guarded, independent test data.**
+The asymmetry works in our favor for the corruptibility question: **the
+quantity users can corrupt (over-blocking) is exactly the quantity we can
+measure safely and abundantly on a benign corpus, with zero exposure to
+explicit material.** The quantity they cannot corrupt (recall) was originally
+scoped as "the one needing guarded, independent test data" — **that scoping is
+superseded by the 2026-09-19 revision below: this project holds no such test
+data, guarded or otherwise, so recall is not measured against held data at
+all**, only estimated (CBPE) or gated indirectly (the specificity-suite release
+gate). The asymmetry in corruptibility still holds; the asymmetry in "which
+side has a held dataset" no longer does.
 
 - **False-positive rate** — measured on a curated benign corpus (medical,
   sex-ed, biology, news, ordinary browsing; plus, on-device and private, the
   user's own real clean traffic). Every item is clean by construction, safe to
   view and to publish. This is the first buildable harness.
-- **Recall** — measured only on held-out independent public NSFW benchmarks,
-  kept out of the training/feedback loop and out of the public repo.
-- **Gate every update on a recall guardrail**: recall on the held-out benchmark
-  must not regress (auto-rollback = CRITICAL); FPR improvement on the benign
-  corpus is the secondary metric (WARNING if it fails to improve). Staged canary
-  rollout.
+- **Recall — revised 2026-09-19, tightened from the original design.** This
+  bullet originally proposed measuring recall against held-out independent
+  public NSFW benchmarks, kept private and out of the repo. That still assumes
+  somewhere legal to hold such a benchmark; per the jurisdictional constraint
+  above, this project's maintainer has none, so **no recall benchmark of any
+  kind is held in-house, private or otherwise.** What remains achievable
+  without holding any explicit imagery:
+  - **Confidence-Based Performance Estimation (CBPE)**, computed entirely from
+    the deployed model's own score stream — no images, no labels — under the
+    assumption that the model stays calibrated. This is complementary to, not
+    a replacement for, the SSME/AutoEval label-free methods already cited
+    below; it is the more directly applicable one here because it needs only a
+    score stream this project already produces. Its ceiling is exactly the
+    assumption it cannot check: a silent calibration drift is invisible to
+    CBPE because there is no real-positive stream to check it against.
+  - **Third-party, vendor-published benchmarks** (Hive, Sightengine
+    self-report ~95–98% accuracy) as an external reference point only —
+    self-reported, unaudited, and measured on their own distribution rather
+    than this project's screen-capture path, so never a substitute for an
+    in-house number.
+  - **This exact gap is field-wide, not particular to this project**:
+    CSAM-hash-algorithm researchers face the identical custody restriction and
+    validate only against benign data (see the analysis of PhotoDNA's own
+    evaluation practice, ACM 2023, in References).
+  - See "Release gating without a recall benchmark" immediately below for how
+    a release is still gated without an absolute recall number.
+- **Gate every update on a recall guardrail** remains the intent, but with no
+  held recall benchmark to regress against, the guardrail is now the release
+  gate below rather than a benchmark comparison; FPR improvement on the benign
+  corpus stays the secondary, WARNING-only metric. Staged canary rollout.
 - For federated data the developer cannot inspect, use **label-free evaluation**
-  (semi-supervised model evaluation, AutoEval, approximate-ground-truth bounds);
-  devices DP-aggregate scalar metrics, never content.
+  (semi-supervised model evaluation, AutoEval, approximate-ground-truth bounds,
+  CBPE above); devices DP-aggregate scalar metrics, never content.
+
+### Release gating without a recall benchmark (Decided methodology, 2026-09-19)
+
+Given no recall benchmark is held, a release still needs a promote/hold
+decision. The gate is built entirely from what is legally holdable and what
+normal operation already produces:
+
+1. **A cross-style specificity regression suite** — legally clean imagery
+   chosen to probe known failure modes, run old-vs-candidate on every release:
+   - classical/fine-art nudity (public domain — a well-documented
+     false-positive class for NSFW classifiers generally, not specific to this
+     project)
+   - licensed swimwear/lingerie stock photography (probes the boundary a
+     future "suggestive" tier would sit at)
+   - safe-for-work anime/cartoon imagery — checks that the style-domain
+     false-positive gap [classifier-operating-point.md](classifier-operating-point.md)
+     already documents (over-blocking "concentrated in illustrated artwork")
+     does not get worse, without claiming to measure whether explicit-anime
+     recall improves
+   - breastfeeding/medical imagery (another documented real-world
+     false-positive class)
+   - the bed-photo false positive and anime false negative from operator
+     dogfooding of `Falconsai/nsfw_image_detection` on the macOS daemon
+     (2026-08-07) — an observation from live use, not yet written up as its
+     own repo doc; worth turning into one so a future regression suite has a
+     citable source instead of this parenthetical
+   A candidate that blocks meaningfully more of this suite than the current
+   model is a real regression signal, obtained without holding anything
+   illegal to hold.
+2. **Shadow-mode comparison, dogfood-only or a small consenting opt-in beta —
+   never shipped as permanent dual-inference to the general fleet.** The
+   current model acts; the candidate scores the same live input in parallel;
+   only score-deltas and a disagreement rate are logged, never images. This
+   runs only in a bounded pre-release window on the maintainer's own device(s)
+   (or a small opted-in cohort later), sampled (1-in-N frames, not every
+   frame) rather than at full rate — the always-on Android AccessibilityService
+   path in particular cannot absorb permanent double inference. Promote only
+   when disagreement is low and the specificity suite above is clean.
+3. There is still no absolute recall number produced by this gate, by design
+   — see the revised Recall bullet above. This is a trend/regression check,
+   not an accuracy certification, and should not be described as one.
 
 ## Open problems (be clear-eyed with contributors)
 
@@ -223,6 +347,24 @@ cannot corrupt (recall) is the one needing guarded, independent test data.**
 - **Corpus representativeness** — a public benign corpus is not representative of
   a given user's browsing; the on-device real-traffic corpus closes that gap
   per-user but stays local.
+- **Domain-blocklist coverage (`packages/net-shield`) changes what this
+  classifier actually has to catch, and by extension how slowly any live
+  signal converges (noted 2026-09-19).** Once traditional NSFW domains are
+  blocked, the residual distribution reaching the image classifier is narrower
+  and rarer — messenger-shared images, non-blocklisted/non-traditional
+  sources, suggestive anime on platforms typical blocklists miss. Passive,
+  organic-usage signal (CBPE trend lines, override-based calibration,
+  shadow-mode disagreement) converges slowly by construction, in proportion to
+  how effectively the domain layer already did its job — a structural property
+  of a layered filter, not a flaw in the evaluation methodology, and no amount
+  of tooling makes a rare event observed sooner. Two mitigations, neither of
+  which changes the underlying rate: (a) deliberately dogfood the specific
+  residual channels (messaging apps, fan-art platforms) instead of waiting for
+  organic incidence; (b) separate **coverage** ("does the scan pipeline even
+  trigger for this app/surface") from **accuracy** ("does the model score it
+  correctly") — coverage is fast, fully legal to test with arbitrary imagery,
+  and testable immediately, and is plausibly now the higher-leverage
+  investment given how much volume the domain layer already absorbs.
 
 ## Proposed experiments (Open — all on public/benign proxy data only)
 
@@ -263,8 +405,23 @@ Established frameworks to adopt by name:
 - **Robust-aggregation limits ("A Little Is Enough"):** see Byzantine-FL
   literature; do not rely on it for this threat.
 - **Label-free evaluation:** SSME (arXiv:2501.11866); AutoEval
-  (arXiv:2007.02915); Approximate Ground Truth Refinement.
-- **Public NSFW evaluation references:** NudeNet; Pornography-2k; I2P.
+  (arXiv:2007.02915); Approximate Ground Truth Refinement; Confidence-Based
+  Performance Estimation (CBPE) — NannyML,
+  nannyml.com/blog/model-monitoring-without-ground-truth; label-free
+  confusion-matrix estimation under distribution shift, arXiv:2507.22776 and
+  arXiv:2505.05295; stratified-sampling accuracy estimation for content
+  moderation under the EU DSA, arXiv:2305.09601.
+- **Public NSFW evaluation references:** NudeNet; Pornography-2k; I2P. (Named
+  here as the class of thing that exists in the literature; per the
+  2026-09-19 revision above, this project does not itself hold any of them.)
+- **CSAM-detection evaluation under custody restrictions:** analysis of
+  PhotoDNA's own evaluation practice, ACM 2023,
+  dl.acm.org/doi/fullHtml/10.1145/3600160.3605048.
+- **Perceptual-hash / embedding invertibility:** the 2021 community reversal
+  of Apple's NeuralHash; model-inversion-attack literature against face/image
+  embeddings generally.
+- **Vendor self-reported NSFW benchmarks (reference only, unaudited):** Hive,
+  thehive.ai/blog/best-in-class-hive-model-benchmarks; Sightengine.
 - **Incentive-compatible ML:** strategic-classification line (Hardt et al.,
   ITCS 2016) and incentive-aware ML surveys.
 
