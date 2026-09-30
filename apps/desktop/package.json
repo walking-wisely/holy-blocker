@@ -13,7 +13,7 @@
   },
   "dependencies": {
     "@vitejs/plugin-react": "^6.1.1",
-    "electron": "^43.3.0",
+    "electron": "^44.4.2",
     "lucide-react": "^1.44.0",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
@@ -26,7 +26,7 @@
     "@types/react-dom": "^19.3.0",
     "concurrently": "^10.0.5",
     "cross-env": "^10.1.0",
-    "vitest": "^4.1.10",
+    "vitest": "^5.0.1",
     "wait-on": "^9.1.0"
   }
 }

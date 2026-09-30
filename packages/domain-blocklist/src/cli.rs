@@ -115,6 +115,14 @@ pub struct Cli {
     #[arg(long, default_value_t = 2000)]
     pub canary_every: usize,
 
+    /// Persist the liveness cache to `--cache` after roughly this many newly-checked domains, so a
+    /// crash mid-sweep loses at most one checkpoint interval instead of the whole run. Rounds up
+    /// to the next multiple of `--canary-every`, since a checkpoint only fires once that chunk's
+    /// canary re-check has passed. `0` disables checkpointing. No-op under `--dry-run` or without
+    /// `--cache`.
+    #[arg(long, default_value_t = 10_000)]
+    pub checkpoint_every: usize,
+
     /// Liveness cache TTL, seconds. Plan default: 3x the run cadence (~monthly), so ~90 days.
     #[arg(long, default_value_t = 90 * 24 * 60 * 60)]
     pub ttl_seconds: u64,
@@ -185,7 +193,8 @@ impl Cli {
                  domain's Dead verdict can be pruned before the next sweep ever gets a chance to \
                  re-check and confirm it, defeating the quarantine window's whole purpose (see \
                  liveness/cache.rs's hysteresis doc comment)",
-                self.quarantine_seconds, self.ttl_seconds
+                self.quarantine_seconds,
+                self.ttl_seconds
             );
         }
         Ok(())
@@ -249,7 +258,9 @@ mod tests {
     fn final_shipped_defaults_satisfy_validate() {
         // Post-fix shipped defaults: ttl 90d, quarantine 180d (== 2 * ttl), so a fresh,
         // un-overridden run passes its own new invariant.
-        default_cli().validate().expect("shipped defaults must satisfy validate");
+        default_cli()
+            .validate()
+            .expect("shipped defaults must satisfy validate");
     }
 
     #[test]
