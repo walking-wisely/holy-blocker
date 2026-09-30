@@ -174,6 +174,194 @@ Deliverables:
 Acceptance: `code`. Verify: a test asserting `AGENTS.md` contains no "planned but not
 yet created" list that contradicts a manifest, and that it names `CLAUDE.md`.
 
+## Steps 5–8 — bug tracking and mandatory review gates
+
+These four steps close a gap surfaced in conversation, not in code: `steps.toml`
+today only models forward-looking feature work (no way to file a bug distinct from
+a planned step), and the two review skills that exist (`holy-blocker-security`,
+and the not-yet-created `privacy-review`) are opt-in — triggered by keyword or path
+match, never guaranteed to run. For a project whose entire surface *is* trust
+boundaries (MITM proxy + local CA, VPN/TUN, tamper guards, OS permission grants,
+screen/AX capture), a gate that only fires when a diff happens to match a trigger
+phrase will miss exactly the boundary nobody thought to name.
+
+**Execution note.** Steps 6 and 7 have no dependency on each other and can run in
+parallel worktrees/subagents. Step 5 is independent of both. Step 8 depends on all
+three and must run last — it wires the other three together and cannot itself be
+started until they exist. Run `python -m tools.plan.ledger next docs/engineering`
+to find the next unblocked step; do not start a step whose `depends_on` has not
+landed.
+
+### Step 5 — bug kind and regression links in the ledger schema
+
+<!-- step: engineering.bug-kind-ledger -->
+
+`tools/plan/ledger.py`'s `Step` has no way to represent "a bug was found" as
+distinct from "a feature is planned." This step adds that, test-first.
+
+Deliverables, in order:
+
+1. **Tests first**, in `tools/plan/tests/test_ledger.py`:
+   - a `Step` built with no `kind` argument defaults to `kind == "feature"`.
+   - `ledger.validate` accepts a step with `kind = "bug"`.
+   - `ledger.validate` rejects `kind = "vulnerability"` (or any value outside
+     `{"feature", "bug"}`) with a problem string containing `"invalid kind"`.
+   - a step with `regressed_step = "p.a"` where `"p.a"` exists in the same manifest
+     passes validation.
+   - a step with `regressed_step = "p.ghost"` where no such id exists in the
+     manifest fails validation with a problem string containing
+     `"unknown regressed_step"`.
+   - a step with `kind = "bug"` and no `regressed_step` is valid — a bug found
+     during manual or exploratory testing is not always tied to one prior step.
+   - `render()`'s output contains a `Kind` column, and a `kind = "bug"` row is
+     visually distinguishable from a `kind = "feature"` row in the rendered text
+     (e.g. the literal string `"bug"` appears in that row).
+
+2. **Implementation** in `tools/plan/ledger.py`:
+   - Add `VALID_KIND = ("feature", "bug")` and `DEFAULT_KIND = "feature"` next to
+     the existing `VALID_STATUS` / `VALID_ACCEPTANCE` constants, with the same
+     one-line-per-value doc-comment style already used there.
+   - Add `kind: str = DEFAULT_KIND` and `regressed_step: str = ""` fields to the
+     `Step` dataclass.
+   - `load_manifest`: read `raw.get("kind", DEFAULT_KIND)` and
+     `raw.get("regressed_step", "")`.
+   - `validate`: append a check that `step.kind in VALID_KIND` (same shape as the
+     existing status/acceptance checks), and — mirroring the existing "unknown
+     dependency" check for `depends_on` — a check that `step.regressed_step`, if
+     non-empty, is one of `ids`.
+   - `render`: add a `Kind` column to the table header and one cell per row.
+
+3. **`tools/plan/todos.py`**: read the file before editing it — its current output
+   shape is not specified here. Add a count or a distinct marker for `kind = "bug"`
+   steps in its report, with a matching test, so a fleet-wide scan surfaces open
+   bugs alongside pending feature steps rather than mixing them silently.
+
+Acceptance: `code`. Verify: `python -m unittest discover -s tools/plan/tests -t .`.
+
+### Step 6 — review triage policy
+
+<!-- step: engineering.review-triage-policy -->
+
+Create `docs/engineering/review-triage.md`. This document answers the question
+"after a review finds something, what happens?" — today `step-loop` gate 5 only
+says "if the review finds a load-bearing gap, go back to gate 1," which leaves
+every non-blocking finding and every judgment call unspecified.
+
+Required sections, in this order:
+
+1. **Severity tiers**, mapped onto `adversarial-review`'s existing consequence
+   axis ("a guard that fails open silently outranks a crash"), with one concrete
+   example from this repo per tier:
+   - **Blocking** — the module's stated purpose is not actually true, a trust
+     boundary breaks, a guard fails open. Example: a DNS shield that answers a
+     blocked domain with the real address under some code path.
+   - **Non-blocking** — a real bug, off the current diff's critical path.
+     Example: an off-by-one in a log formatter that doesn't affect a decision.
+   - **Judgment call** — the right answer depends on risk tolerance or product
+     taste, not on what is true. Example: should a permission-check timeout fail
+     open or fail closed.
+2. **Fix-attempt cap.** Exactly one fix attempt is made per blocking finding after
+   it is first reported, re-verified against the review's own reproduction
+   command. If it does not clear on that second attempt, stop — do not attempt a
+   third time. State this as a hard number, not a guideline: `MAX_FIX_ATTEMPTS = 1`.
+3. **Routing table**: blocking → fix within the cap, then re-review; non-blocking
+   → filed as a `kind = "bug"` step in the package's `steps.toml` (set
+   `regressed_step` when the finding is a regression against an already-`done`
+   step), never fixed inline unless it is a same-file, same-test-suite change to
+   the current diff; judgment call → never resolved by the loop, always escalated.
+4. **Escalation packet format**, verbatim, for the loop to quote rather than
+   compose freehand:
+   > N findings. M auto-fixed and reverified. K stopped at the fix-attempt cap.
+   > J are judgment calls. [K and J are listed below, one line each: what's
+   > contested, and why it can't be resolved without your call.]
+   The packet never lists the M that were cleanly fixed and reverified.
+5. **A living log**, starting as an empty table with columns
+   `| date | finding | routed-as | should-have-been | why |`, appended to by every
+   step-loop run that escalates something. This is how the auto-fix/escalate
+   boundary tightens from observed outcomes instead of staying a fixed guess.
+
+This document decides what surfaces to the product owner and what doesn't — that
+is itself a contract-shaped product decision under step-loop's own gate 3.
+**Do not treat this step as done on a green diff.** It must go through gate 3
+(a one-page "these are the tiers, this is the cap, approve?") before merge.
+
+Acceptance: `product`. The loop stops at the PR; a human closes it.
+
+### Step 7 — privacy-review skill
+
+<!-- step: engineering.privacy-review-skill -->
+
+Create `.claude/skills/privacy-review/SKILL.md`, structured like
+`.claude/skills/holy-blocker-security/SKILL.md` (read that file first — same
+two-mode shape, same routing discipline):
+
+- **Authoring mode** (scope: a diff) and **Audit mode** (scope: a package,
+  findings written to `docs/engineering/privacy-backlog.md`, never fixed during
+  an audit — same rule as the security skill's audit mode).
+- An explicit scope-discipline paragraph up top: this skill is not legal advice
+  and does not certify GDPR compliance. It answers one narrower, mechanical
+  question — what personal or sensitive data does this diff create, store, or
+  transmit, for how long, and does it ever leave the device (cross-checked
+  against CLAUDE.md's no-cloud-calls rule).
+- A `references/data-classes.md` file (parallel to the security skill's
+  `references/review-triggers.md`) enumerating this project's actual sensitive
+  data classes and where they already live — e.g. captured screen frames
+  (`ScreenCapture`/`FrameSink` in mac-daemon, `ScreenCaptureService` in mobile),
+  extracted AX/OCR text, tamper-log entries (`TamperLog.kt`/`TamperLogStore.kt`),
+  classifier scores and verdicts, and which domains a device visited (implied by
+  blocklist hits). For each: whether it is special-category data under GDPR
+  Art. 9 (a sexual-content classification score about a specific person's screen
+  is — this product's core function produces exactly that), its current
+  retention (cite the file that sets it, or mark "unmeasured" as its own
+  finding), and whether any code path transmits it off-device.
+- **Step 1 (route)**: if a diff touches none of the enumerated data classes and
+  introduces no new one, say so and stop — same discipline as the security
+  skill's "nothing matches" rule.
+- **Step 2 (apply)**: for each touched data class, check retention is finite and
+  stated, check no new transmission path was added, and check any genuinely new
+  kind of stored/logged data was added to `references/data-classes.md` as part
+  of the same change, not left implicit.
+
+Same reasoning as step 6: this skill defines what "privacy-sensitive" means for
+the product, which is a product-owner call, not a model call.
+
+Acceptance: `product`. The loop stops at the PR; a human closes it.
+
+### Step 8 — wire mandatory gates into step-loop
+
+<!-- step: engineering.mandatory-review-gates -->
+
+Everything up to here is inert until `step-loop` actually calls it unconditionally.
+This step edits `.claude/skills/step-loop/SKILL.md` only; steps 5–7 must exist
+first, which is why they are listed as dependencies.
+
+1. In the gate covering adversarial review, add: after `adversarial-review` runs,
+   run `holy-blocker-security` in Authoring mode and `privacy-review` in
+   Authoring mode, both against the branch's full diff, both from a fresh-context
+   subagent — **unconditionally, every time this gate runs**, not gated on
+   whether the diff happens to match a trigger phrase in
+   `references/review-triggers.md`. Trigger-word matching stays as the *routing*
+   mechanism inside each skill (which boundary sections to load), never as the
+   decision of whether the skill runs at all.
+2. Replace "if the review finds a load-bearing gap, go back to gate 1" with the
+   routing table from `docs/engineering/review-triage.md` §3, and quote the
+   escalation packet format (§4) verbatim rather than re-describing it.
+3. Update the tier table from step 2.1 ("Full loop" row's trigger list) — the
+   "security triggers" entry becomes "every full-loop step, unconditionally,"
+   since this step removes the opt-in condition.
+4. **Test** (structural only — this step edits prose, not logic): add
+   `tools/plan/tests/test_step_loop_gates.py` asserting
+   `.claude/skills/step-loop/SKILL.md` contains the strings
+   `"holy-blocker-security"`, `"privacy-review"`, `"MAX_FIX_ATTEMPTS"`, and
+   `"review-triage.md"`; and that `.claude/skills/privacy-review/SKILL.md` and
+   `docs/engineering/review-triage.md` both exist on disk (this is what makes
+   step 8 mechanically unable to land before 6 and 7 do, independent of the
+   ledger's own `depends_on` check).
+
+Acceptance: `code`. Verify: `python -m unittest discover -s tools/plan/tests -t .`.
+The policy content itself was already approved in steps 6 and 7's own gate 3 — this
+step is pure wiring and needs no separate product verdict.
+
 ## What this does not cover
 
 - Automatic merge of `observation` steps. The loop never merges those.
@@ -183,3 +371,5 @@ yet created" list that contradicts a manifest, and that it names `CLAUDE.md`.
   not a step, and is deliberately left to a human.
 - Migrating narrative for the components whose status row is a single line (the
   planned ones). They have little to move.
+- A GDPR compliance audit against a lawyer's checklist. `privacy-review` (step 7)
+  is a mechanical data-inventory gate, not a certification.
