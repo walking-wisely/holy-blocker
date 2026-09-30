@@ -271,6 +271,34 @@ Responsibilities:
   Erring toward keeping an entry is the intended direction — false negatives are the budget, false
   positives are the price — which is why only an unambiguous NXDOMAIN prunes.
 
+**Done.** Built as `src/liveness/{mod,lookup,cache,canary,corroboration}.rs`, then hardened across
+three review rounds. The load-bearing correction from the third round: an earlier version of this
+module required DNSSEC authentication (the AD bit) on both address families before trusting an
+NXDOMAIN as `Dead`, and that requirement was measured live to be **the wrong design**, not a
+stricter-but-safer one — most large TLDs sign with NSEC3 opt-out (RFC 5155 §6), under which a
+validating resolver cannot construct authenticated denial-of-existence for an unsigned delegation
+at all, so the gate made `Dead` almost unreachable rather than safer to reach, and the module's own
+canary didn't catch it (`invalid.`/`test.` sit under the root zone, which uses plain NSEC rather
+than NSEC3 opt-out, so they authenticated cleanly while the real sweep quietly pruned nothing). The
+fix
+is `liveness::corroboration::corroborate`/`check_corroborated`: pruning now requires **two
+independently-configured resolvers** to each independently produce `Dead`, replacing the
+DNSSEC-authentication requirement as the actual defence against a lying or hijacking resolver;
+`authenticated` is kept as loggable evidence but no longer gates anything. `should_prune`/
+`should_prune_with_hysteresis` (`cache.rs`) now require the corroborated verdict, not a single
+resolver's own `check()` result. Also fixed in the same round: `is_filtering_ede` broadened to
+cover RFC 8914 codes 13 (Cached Error) and 18 (Prohibited) alongside 19 (Stale NXDOMAIN Answer);
+`nonce_dead_control`'s worked example and this file's own tests, which used the Cloudflare-hosted
+`example.com` — measured to answer a nonexistent subdomain with NODATA ("compact denial of
+existence") rather than NXDOMAIN, which broke the dead control and aborted every sweep
+permanently — renamed away from it, with the trap now documented explicitly; the apparent tension
+between `should_prune` (a `Dead` verdict on `.invalid`/`.test` proves nothing about registration)
+and `canary_check` (the same verdict on the same names proves the resolver is honest) resolved with
+cross-referencing doc comments explaining these are different questions about the same verdict, not
+a contradiction; and the `DnsLookup` trait's contract doc now states explicitly that an
+implementation must set the DNSSEC OK bit and read the AD/EDE evidence off the wire, ruling out a
+`getaddrinfo`-style high-level resolver API for module 7.
+
 (See [Reference documents](#reference-documents) below for the DNS response codes this matrix is
 built from.)
 
@@ -355,27 +383,57 @@ below refuses publication and requires explicit human sign-off to override — n
 publish.** They are pure and separately tested precisely because they are the last thing standing
 between a bad build and a signed one.
 
-- `shrinkage_gate(prev_count, new_count, max_drop_pct, absolute_floor) -> GateResult` — fails when
-  the entry count drops more than **10%** below the previous published build, or below an absolute
-  floor. Catches a bad liveness sweep the canary missed, a source that silently emptied, and parser
-  regressions.
-- `growth_gate(prev_keys, new_keys, max_add_pct) -> GateResult` — fails when *added* entries exceed
-  **10%** of the previous published build. Catches a compromised or mis-bumped upstream injecting
-  bulk entries. Shrinkage and growth are separate gates because they catch opposite failures.
-- `false_positive_gate(merged, control_set, exclusions, max_fp_rate) -> GateResult` — evaluates the
-  merged list against a **known-good negative control**: the [Tranco](https://tranco-list.eu/)
-  top-N list, pinned to a specific daily release like any other source, minus a small reviewed,
-  checked-in exclusion file of control entries that are legitimately adult. **Starting threshold:
-  0.5%.** Reports which control entries were hit and under which provenance ID, so a regression
-  names the source that caused it. This mirrors `machine-learning`'s `gate.py` release guardrail —
-  the project already refuses to ship a classifier with no measured quality signal, and a blocklist
-  with no measured FP rate is the same gap.
+- `shrinkage_gate(prev_count: PreviousBuild<u64>, new_count, max_drop_pct, absolute_floor) ->
+  GateResult` — fails when the entry count drops more than **10%** below the previous published
+  build, or below an absolute floor. Catches a bad liveness sweep the canary missed, a source that
+  silently emptied, and parser regressions. `PreviousBuild<T>` (`None` | `Existing(T)`) is
+  deliberate, not `u64`/`Option<u64>`: a caller that failed to load the previous manifest and a
+  caller correctly reporting a genuine first build must never be able to produce the same input, or
+  this gate (and `growth_gate` below) silently disables itself on the easiest-to-produce mistake —
+  see the decision doc's [Distribution](../../decisions/domain-blocklist-sourcing.md#distribution)
+  trust contract for what "the previous manifest" means.
+- `growth_gate(prev_keys: PreviousBuild<&BTreeSet<String>>, new_keys, max_add_pct) -> GateResult` —
+  fails when *added* entries exceed **10%** of the previous published build. Catches a compromised
+  or mis-bumped upstream injecting bulk entries. Shrinkage and growth are separate gates because
+  they catch opposite failures.
+- `false_positive_gate(merged, control_set, exclusions, max_fp_rate, min_control_size) ->
+  GateResult` — evaluates the merged list against a **known-good negative control**: the
+  [Tranco](https://tranco-list.eu/) top-N list, pinned to a specific daily release like any other
+  source. See the decision doc's ["A measured false-positive gate on every
+  build"](../../decisions/domain-blocklist-sourcing.md#3-a-measured-false-positive-gate-on-every-build)
+  for the full design; in short:
+  - `false_positive_hits(merged, control_set) -> Vec<FalsePositiveHit>` finds every control-set
+    domain the merged list blocks, normalizing `control_set` identically to `merged`'s own keys
+    first (an earlier version of this function compared unnormalized control entries against
+    normalized merged keys and silently matched nothing).
+  - `FalsePositiveHit::is_corroborated()` is true when **two or more** independent sources flagged
+    the domain — a corroborated hit never counts as a false positive, since it takes two separately
+    curated projects independently agreeing rather than one project's own file-level mistake.
+  - `review_queue(merged, control_set, exclusions) -> Vec<FalsePositiveHit>` is the bounded set that
+    actually needs a human: uncorroborated hits not already covered by a small, reviewed,
+    checked-in `exclusions` file. This is what replaces reviewing "every adult site Tranco ranks."
+  - The gate itself fails when `review_queue`'s rate against the checked control set exceeds
+    `max_fp_rate`, or when the checked control set falls below `min_control_size` (an empty or
+    truncated control-set fetch must never look identical to "measured, and clean"). **Starting
+    threshold: 0.5%.**
+  - Reports which control entries were hit and under which sources, so a regression names the
+    source that caused it. This mirrors `machine-learning`'s `gate.py` release guardrail — the
+    project already refuses to ship a classifier with no measured quality signal, and a blocklist
+    with no measured FP rate is the same gap.
 - `size_gate(artifact_bytes, ceiling) -> GateResult` — **ceiling 32 MB** for the `.fst` file. The
   precedent for stating a ceiling at all is `image-sandbox`'s 15 MB model budget. Since the merged
   entry count is a planning assumption rather than a measurement, this gate is what turns "the list
   is much bigger than we assumed" into a decision instead of a surprise on a user's device.
-- `license_gate(snapshots, allowlist) -> GateResult` — module 1 enforces this at fetch time; it is
-  re-checked here so the published artifact can never carry a snapshot the allowlist doesn't cover.
+- `license_gate(merged, snapshots, allowlist) -> GateResult` — module 1 enforces the
+  license-on-allowlist half of this at fetch time; it is re-checked here so the published artifact
+  can never carry a snapshot the allowlist doesn't cover. Also fails when a source that contributed
+  entries to `merged` has **no** snapshot at all (an omission, not a bad license — the cheaper
+  mistake to make and the one a license-only check misses entirely), or when `snapshots` carries
+  more than one entry for the same source (ambiguous license coverage). License comparison is
+  case/whitespace-insensitive, matching SPDX's own identifier rule. **Not yet checked here, and
+  tracked as a gap until module 1/4 exist to check it against:** a source's snapshot `license`
+  drifting from its `SourceConfig.expected_license` pin, and the manifest's own `output_license`
+  field being consistent with what was actually measured.
 
 Every threshold above is a **starting value to be re-derived from real builds**, not a defended
 constant.
@@ -386,6 +444,11 @@ constant.
 alongside its existing one — it does not grow I/O or mmap logic of its own. A new type owns the
 signed-artifact concerns and hands `DomainFilter` something it already knows how to consume:
 
+**Superseded by the assumption-audit table below**: the sketch originally here declared
+`map: Arc<memmap2::Mmap>` alongside a separate `fst::Map`, which is exactly the self-referential
+`Mmap`/`Map` pair the audit's first row rejects. The implementation (and the shape to read as
+current) owns a single `fst::Map<Mmap>`, which is `Send + Sync` on its own and needs no `Arc`:
+
 ```rust
 // packages/net-shield/src/radix.rs — unchanged:
 impl DomainFilter {
@@ -394,7 +457,7 @@ impl DomainFilter {
 
 // new: a thin wrapper that owns the artifact, not DomainFilter itself
 pub struct BlocklistArtifact {
-    map: Arc<memmap2::Mmap>,       // the mmap-backed .fst, per the decision doc
+    map: fst::Map<memmap2::Mmap>,  // owns the mmap-backed .fst directly — no Arc, no self-reference
     provenance: Vec<ProvenanceEntry>,
 }
 
@@ -426,11 +489,19 @@ the bottom, not on top:
 |---|---|---|
 | 1 (highest) | Device-local user allowlist | Always wins, unconditionally. The user's no-appeal remedy |
 | 2 | `net-shield`'s existing explicit rule set | `Allow` and `Proxy` entries, unchanged semantics, including a specific `Allow` beating a broader `Block` |
-| 3 | FST-sourced `Block` rules | Apply only to domains not covered by 1 or 2. Scope (`Apex` vs `ExactHost`) comes from the provenance table |
-| 4 (lowest) | `DomainFilter`'s existing default | `Proxy`, unchanged |
+| 3 | `OverlaySet`-sourced rules (module 8, unbuilt) | Additions/removals published since the last bulk `.fst` rebuild — see module 8. Checked before the bulk FST specifically because its whole purpose is to represent state the bulk artifact doesn't have yet |
+| 4 | FST-sourced `Block` rules | Apply only to domains not covered by 1–3. Scope (`Apex` vs `ExactHost`) comes from the provenance table |
+| 5 (lowest) | `DomainFilter`'s existing default | `Proxy`, unchanged |
 
-The FST is consulted only after levels 1 and 2 miss, so loading a multi-million-entry blocklist can
-never change the behavior of an existing explicit rule or an existing test.
+The FST is consulted only after levels 1–3 miss, so loading a multi-million-entry blocklist can
+never change the behavior of an existing explicit rule, an existing test, or an in-flight overlay
+entry. **A matching level-3 `OverlayAction::Remove` terminates lookup right there**: it resolves to
+`DomainFilter`'s default action (`Proxy`) at the matched `RuleScope`, and level 4 is never consulted
+for that domain — a `Remove` entry exists specifically to unblock a domain the bulk FST still blocks,
+so falling through to level 4 after matching one would silently keep the domain blocked. This is
+strictly lower priority than levels 1–2: an explicit `net-shield` `Block`/`Allow` or the device-local
+allowlist still wins over an overlay `Remove` the same way they win over the bulk FST. See module 8's
+"On-device precedence and lookup" for the full contract.
 
 **Normalization.** The query side must normalize **identically** to the build side. Both consume
 `packages/domain-normalize` (module 0); neither reimplements it. Reimplementing it in `net-shield`
@@ -465,6 +536,34 @@ contract:
   and without a warm cache entry), and two concurrent lookups for the same domain collapsing to one
   worker request.
 
+**The overlay (priority 3, module 8) does not share this budget or this worker.** It is bounded to a
+few thousand entries by module 8's own size cap, so it is held as a plain in-memory `HashMap` rather
+than mmap-backed — there is no page fault to bound a budget against, and consulting it costs an
+ordinary hash lookup on the calling thread before the bulk-FST worker is ever contacted. Module 8's
+own load/verify/swap path is what needs the async, off-thread treatment; the query-time lookup does
+not.
+
+#### Assumption audit
+
+Run 2026-08-10 before implementing this module. Claims verified against the shipped crate sources in
+`~/.cargo/registry`, not against docs.
+
+| Claim | Falsifier | Observed | Verdict |
+|---|---|---|---|
+| `fst::Map<D>` can own its backing bytes, so the artifact needs no self-referential `Mmap`/`Map` pair — `Map<Mmap>` owns the mapping and is `Send + Sync` | read `fst-0.4.7/src/raw/mod.rs` `struct Fst<D>` | `struct Fst<D> { meta: Meta, data: D }` — no raw pointer, no `PhantomData`; `Map::new(data: D)` takes ownership | **TRUE** — `Map<Mmap>` is `Send + Sync` iff `Mmap` is; this replaces the plan's `map: Arc<Mmap>` field with a single owned `fst::Map<Mmap>` inside the artifact (same reference-counting/reclaimability, no self-reference) |
+| `memmap2::Mmap` is an `AsRef<[u8]>`/`Deref<Target=[u8]>` and `Send + Sync` | read `memmap2-0.9.11/src/lib.rs` | `impl Deref for Mmap` (l.918), `impl AsRef<[u8]> for Mmap` (l.927), `MmapOptions::map_copy_read_only` (l.593); `Mmap` holds only `ptr`/`len` | **TRUE** |
+| `fst::Map::get(key) -> Option<u64>` is exact-match, usable for the decision doc's label-boundary lookups | read `fst-0.4.7/src/map.rs` | `pub fn get<K: AsRef<[u8]>>(&self, key: K) -> Option<u64>` (l.133) | **TRUE** — the hot path is `get` at each label boundary, not prefix streaming (which would need anchoring, per decision doc l.674) |
+| A `Manifest`/artifact produced by `fst_build::build` round-trips through bincode so a consumer can deserialize it | existing `fst_build` test `manifest_round_trips_through_bincode` | passes; `Manifest`/`ProvenanceEntry` carry serde derives | **TRUE** — net-shield deserializes the same `Manifest` type from `domain-blocklist` rather than redefining it (no drift) |
+| The on-device two-slot layout has a defined file format net-shield can load | search decision doc / plan for a filename or byte layout | decision doc specifies `current/` + `previous/` slots, each a `.fst` + manifest pair, and a high-water-mark record, but **names no file format and module 7 `cli` (which writes it) is unbuilt** | **UNVERIFIED — gap** — `load` must define the slot layout it reads; the constants are specified in `blocklist.rs` and module 7 must write the same layout, tracked here until module 7 exists |
+| Query-side normalization must not drift from build-side | `net-shield` calls `domain_normalize::normalize` directly (no reimplementation) | by construction, same function both sides | **TRUE** |
+
+The one load-bearing gap is the undefined on-disk slot layout. `BlocklistArtifact::load` defines it as
+a base directory with `current/artifact.fst` + `current/manifest.bin`, `previous/` with the same two
+files, and a `high_water_mark` file (a u64, absent ⇒ 0). Cold-start `load` verifies `current/` then
+`previous/` and fails closed to no artifact if both fail; the `version > high-water-mark` rollback
+check is the update/accept path's job (module 7 / distribution), not the cold-start loader's. Module 7
+must write exactly this layout for the two to interoperate.
+
 ### 7. `cli` — the pipeline entry point
 
 ```text
@@ -481,34 +580,581 @@ Responsibilities:
 - Every abort path — fetch failure, license gate, canary failure, any publish gate — exits non-zero
   with the specific reason. Nothing about a refused build should require reading a log to notice.
 
+#### Assumption audit
+
+Run 2026-08-15, against the live sources, before implementation. Local-account/version data
+trimmed to the decisive value per the skill's rule.
+
+| Claim | Falsifier | Observed | Verdict |
+|---|---|---|---|
+| `raw.githubusercontent.com` can be pinned to an exact commit SHA (not just a moving branch) and GitHub's REST API returns a clean SPDX license id for a repo | `curl -o /dev/null -w '%{http_code}' https://raw.githubusercontent.com/StevenBlack/hosts/<latest-sha>/hosts`; `curl https://api.github.com/repos/StevenBlack/hosts/license` | `200`; `{"license":{"spdx_id":"MIT"},"sha":"8745f246..."}`. Same shape for `hagezi/dns-blocklists` → `GPL-3.0` | **TRUE** — `SourceConfig.pinned_revision` should be a commit SHA in the URL path, not `master`/`main`; `expected_license`/served-license comparison for these two sources should come from the GitHub license API, not from parsing the fetched document (neither ships an in-band license string) |
+| Hagezi's list content lives in a plain-domain-per-line format compatible with `LineFormat::PlainDomain`, at the URL the plan implies (`domains/pro.txt` or similar) | `curl -o /dev/null -w '%{http_code}' https://raw.githubusercontent.com/hagezi/dns-blocklists/main/domains/pro.txt`; enumerate the repo tree | `404` — no `domains/` directory exists. The repo's actual top-level dirs are `adblock/`, `adguard/`, `controld/`, `dnsmasq/`, `ips/`, `rpz/`, `wildcard/`. `adblock/*.txt` is AdBlock filter syntax (`\|\|domain^`) — a third `LineFormat` this parser doesn't have. `wildcard/pro-onlydomains.txt` (200, comment-headed, one bare domain per line, no `*.` markers) is the format that actually matches `LineFormat::PlainDomain` | **PARTIALLY FALSE** — the plan's implied path is wrong; `SourceConfig` for every Hagezi list must point at the `wildcard/<name>-onlydomains.txt` variant specifically, never `adblock/`. Also note: this variant contains zero wildcard (`*.`) syntax in practice, so Hagezi will never emit `ScopeHint::Apex` through the extraction path — every Hagezi entry scopes through `classify_scope`'s own PSL/registrable-domain logic instead, not through wildcard hinting |
+| UT1 category downloads (`.tar.gz`) unpack into a `domains` file that is itself plain-domain-per-line text, matching `LineFormat::PlainDomain` and `fetch_source`'s `Vec<u8>` document contract | `curl -o adult.tar.gz https://dsi.ut-capitole.fr/blacklists/download/adult.tar.gz && tar tzf adult.tar.gz && tar xzOf adult.tar.gz adult/domains \| head` | Archive contains `adult/domains`, `adult/urls`, `adult/expressions`, `adult/usage`; `adult/domains` is plain domain-per-line (`0-12kids.com`, …), matching `PlainDomain` | **TRUE for the format, FALSE for the transport shape** — `fetch_source`/`parse_document` assume a fetch hands back one already-plain-text document, but UT1 actually serves a **tar.gz archive with four files**. The CLI's UT1 `SourceFetcher` must decompress and extract `<category>/domains` itself (a `tar`/`flate2` or equivalent dependency, not yet in `Cargo.toml`) before the shared parser ever sees bytes — handing the raw archive bytes to `parse_document` would silently parse to all-`dropped_malformed` garbage rather than erroring explicitly |
+| UT1 publishes a single, unambiguous, machine-checkable license for the fetched content | `curl https://dsi.ut-capitole.fr/blacklists/` and inspect the license section | The visible badge and link are CC BY-SA 4.0. The page's raw HTML *also* contains a second RDF block naming CC BY-NC-SA — but it sits inside an `<!-- -->` HTML comment (a stale leftover from the CC badge generator), not live content | **TRUE (BY-SA 4.0), with a fragility trap** — UT1 has no license API; a naive `grep`/regex-based license scraper for the CLI's UT1 fetcher must not match the commented-out NC-SA text, or it will misreport `LicenseChanged`/`LicenseNotAllowed` on every run against a page that hasn't actually changed. Strip HTML comments before matching, or match only the `rel="license"` anchor `href` |
+| `hickory-proto` (or an equivalent crate reachable from this environment) exposes message-level access to set the DNSSEC OK (DO) bit on a query and read the `AD` flag / EDE options off a response — required because module 3's `DnsLookup` contract rules out a `getaddrinfo`-style high-level resolver API | `curl -o /dev/null -w '%{http_code}' https://docs.rs/hickory-proto/latest/hickory_proto/op/struct.Edns.html` (DO bit), `.../op/struct.Header.html` (AD flag), `.../rr/rdata/opt/enum.EdnsOption.html` (EDE) | All three `200` | **TRUE, but not the crate's convenience path** — `hickory-resolver`'s high-level `Resolver`/`AsyncResolver` API (simple `lookup_ip`) does not surface these; the real `DnsLookup` impl needs to build/send queries and parse responses through `hickory-proto`'s lower-level message API directly, which is more implementation surface than "add a resolver crate and call `.lookup()`" |
+| The Rust crate registry (crates.io) is reachable from this dev/CI environment to add new dependencies (`reqwest`/`ureq`, `hickory-proto`, `tar`, `flate2`) | `curl -A cargo -o /dev/null -w '%{http_code}' https://index.crates.io/hi/ck/hickory-resolver` | `200` (a bare `curl https://crates.io` without a user agent returns `403` — Cloudflare bot-blocking the root page, not a registry outage; the actual index/download endpoints are unaffected) | **TRUE** |
+| Outbound plain UDP/53 to public resolvers (1.1.1.1/8.8.8.8/9.9.9.9) and outbound HTTPS to GitHub/UT1 are both reachable from this dev environment, so most of the pipeline is exercisable live rather than only against fixtures | `dig @1.1.1.1 example.com A`; the source fetches above | Both answered normally | **TRUE** |
+| A steady ~23 qps DNS sweep rate stays under public resolvers' undocumented abuse thresholds | *(no cheap falsifier — resolver operators don't publish a hard per-IP qps limit, and deliberately testing one via sustained load is itself the abuse this claim is trying to avoid causing)* | Not run | **Unverifiable here.** Already treated as a considered decision in the sourcing doc (¶"Sweep pacing") rather than a fresh claim for this module; flagging only that it remains unmeasured against real sustained load, and the module 3 audit's own deferred item (an aggregate Unknown-rate health signal) is the mechanism that would catch a rate limit being hit in production |
+
+**One more constraint, discovered while starting module 7's implementation, not from a fresh
+falsifier run: module 6 (`net-shield` integration) shipped on this branch since this table was
+first written, and its `BlocklistArtifact::load` (`packages/net-shield/src/blocklist.rs`) already
+defines the on-disk contract module 7 must write to** — `<base>/current/artifact.fst` +
+`<base>/current/manifest.bin`, mirrored under `<base>/previous/`, loaded with `current/` preferred
+and falling back to `previous/` on a signature/digest failure. `load()`'s own doc comment states
+the `version > high-water-mark` rollback check is deliberately **not** its job — that, and the
+high-water-mark's own on-disk format, remain undefined and are module 7's to decide. Concretely,
+module 7's publish step must: rotate the existing `current/` into `previous/` before writing a new
+`current/` (so a rebuild doesn't destroy the fallback slot the previous build populated), write
+both files atomically per slot, and track the high-water mark itself (e.g. read the current
+manifest's `version` before rotating, refuse to publish a `version` that doesn't exceed it) rather
+than inventing an on-disk high-water-mark file format that `net-shield` never reads.
+
+**What this changes about module 7, before writing code:**
+
+- StevenBlack and Hagezi `SourceConfig`s pin a commit SHA in the URL, and their `FetchedSource.license`/`.revision` come from GitHub's REST API (`/repos/{owner}/{repo}/license`, `/commits/{sha}`), not from parsing the fetched list body — neither source carries an in-band license or revision string.
+- Hagezi `SourceConfig.url` values must target `wildcard/<name>-onlydomains.txt`, never `adblock/<name>.txt` (wrong format entirely) or a nonexistent `domains/<name>.txt` path.
+- UT1's `SourceFetcher` needs a decompress-and-extract step (new `tar`+`flate2` — or one crate covering both — dependency) between the HTTP fetch and `parse_document`, and its own license check is an HTML scrape of `dsi.ut-capitole.fr` that must exclude commented-out markup, sourced from `<https://dsi.ut-capitole.fr/blacklists/>`.
+- The real `DnsLookup` implementation is built on `hickory-proto`'s message-level API, not `hickory-resolver`'s convenience lookups — confirm this before scaffolding the CLI's DNS client so the dependency choice isn't revisited mid-implementation.
+- Everything above is live-fetchable from this environment, so the CLI's fixture-mode flag is for deterministic tests, not a network-access workaround — a dry run against live sources is a real, runnable verification step, not merely aspirational.
+
+#### Net-client assumption audit (run 2026-08-15, before building the real `DnsLookup` + sweep loop in `src/liveness/`)
+
+An assumption-audit round specifically for the real network client and the qps-paced sweep loop,
+which module 3 deliberately deferred to `cli` (module 7, unbuilt). The earlier module-7 audit above
+verified hickory's existence at the docs.rs level ("TRUE, but not the crate's convenience path");
+this round starts implementation and pins the API-surface claim against the **shipped** crate
+source, since the crate has moved to 0.26 since that row was written.
+
+| Claim | Falsifier | Observed | Verdict |
+|---|---|---|---|
+| The resolvable `hickory-proto` exposes low-level message access: build a query with `Message`/`Query`/`Edns` (DO bit set), parse a response with `from_vec`, and read the AD flag, RCODE, TC flag, and EDNS options back | `cargo add hickory-proto@0.26.1`, then read `~/.cargo/registry/src/.../hickory-proto-0.26.1/src/{op/message.rs,op/header.rs,op/edns.rs,rr/record_data.rs}` for the exact names (the crate ships an API, not a promise) | `Message` exposes `pub` fields `metadata`/`queries`/`answers`/`edns`; `Metadata` exposes `authentic_data`/`truncation`/`response_code`; `Edns::option(EdnsCode) -> Option<&EdnsOption>`; `Message::from_vec`/`to_vec`; `RecordType::{A,AAAA,CNAME}`; `Record`/`Query` all readable | **TRUE with three shape corrections** — (a) access is by public field, not getter methods; (b) **RFC 8914 EDE has no native decode** — EDNS option code 15 lands in `EdnsOption::Unknown(15, Vec<u8>)` and the client must decode the 16-bit BE error code + optional text itself (a ~10-line parser, unit-testable with synthetic bytes); (c) **`RData` has no `DNAME` variant** — a DNAME redirection (RFC 6672 §2.2) surfaces in the answer section as a synthesized `CNAME`, so chain detection matches `RData::CNAME` presence and needs no DNAME-specific branch |
+| A fresh, normal NXDOMAIN against the default unfiltered resolver (1.1.1.1) carries **no** EDE and no AD, so EDE parsing cannot false-trigger on ordinary negative answers and the `AuthenticatedDenial`-gate trap can't quietly re-engage | `dig +dnssec nonexistent-$RANDOM.com @1.1.1.1` (recipe: confirm the reply arrived first) | `status: NXDOMAIN`, flags `qr rd ra`, EDNS `flags: do`, **no `EDE:` line, no `ad`** | **TRUE** — re-confirms module 3's `.com` NSEC3-opt-out finding and adds no-EDE-on-clean-NXDOMAIN on top |
+| Filtering resolvers self-declare with EDE 15/16/17 (the recipe's claim, which the client's `FilteredByResolver` path depends on live) | `dig +dnssec urban.hostafrican.ng @1.1.1.3`; `dig +dnssec malware.testcategory.com @1.1.1.2`; `dig +dnssec pagead2.googlesyndication.com @94.140.14.14` (AdGuard) | All resolve with **NO EDE option present**: 1.1.1.3 gives a signed NXDOMAIN with `ad`, 1.1.1.2 and AdGuard give `NOERROR` with an A answer (0.0.0.0 sink), no `EDE:` line anywhere | **FALSE / not reproducible via these public filters today** — those operators now sink via a 0.0.0.0 A record (which our pipeline reads as `Alive`, the safe direction) or a bare NXDOMAIN rather than self-declaring. Impact on safety: **none** — a resolver that never emits EDE simply never contributes `FilteredByResolver` evidence, and a filtering resolver's NXDOMAIN cannot be `Dead` on one resolver's word alone anyway (corroboration requires two). The EDE *read* path is still unit-tested with synthetic wire bytes; the "does EDE 15/19 occur in the wild today" half is **unverifiable here** and is recorded as such, same class as the qps-threshold row above |
+| UDP/53 to public resolvers is reachable from this environment (needed for the client's live `#[ignore]`d smoke tests, and re-confirms the earlier row) | the `dig` probes above actually getting replies (vs timing out) | Every probe above returned a reply | **TRUE** |
+| The `net`-gated dependency (feature-flagged `hickory-proto`) builds clean and keeps the default `cargo test` fully offline — the pure decision modules stay network-free per module 3's design | `cargo build --all-features` and `cargo test` (default) after wiring the feature | *(run after implementation)* | **PENDING — code build is the falsifier; reported after the module lands** |
+
+**What these findings change about the net client, before writing code:**
+
+- Read responses through `Message`'s public fields (`metadata`, `queries`, `answers`, `edns`) rather than getter methods.
+- Decode RFC 8914 EDE by hand from `EdnsOption::Unknown(15, raw)` — no hickory EDE type exists to lean on; the decoder is a pure function kept next to the module's `is_filtering_ede` logic and unit-tested with synthetic option bytes.
+- Chain detection (`NxDomainViaChain`) keys on `RData::CNAME` records in the answer section; no DNAME branch exists in this crate.
+- 1.1.1.x's sink-by-0.0.0.0-now means a filtered domain reads `Alive` from those resolvers, which corroborates `Alive` on a genuinely-NXDOMAIN filtered domain — the `Alive`-wins rule keeps this in the safe (keep) direction, matching the plan's false-positives-are-the-price stance. Worth a regression test documenting that a 0.0.0.0 sink answer must NOT become evidence of anything other than `Alive`.
+
+**Adversarial review (2026-08-15):** an Opus pass focused on transient error handling, error
+handling/tracing, and performance/parallelization found two critical defects — both live-fetch and
+live-DNS-sweep paths panic on completion (a `tokio::runtime::Runtime` dropped inside its own async
+context), and the DNS client has no query retries, so the canary's near-certain exposure to one
+dropped UDP packet across ~6,000 canary queries per sweep makes a real multi-hour sweep's most
+likely outcome a false abort — plus several high/medium findings (an unintended `net-shield`
+dependency on a full HTTP stack, silent-by-default logging, an unenforced false-positive gate,
+and more). Full findings, reproduced where practical:
+[module-7-cli-adversarial-review.md](module-7-cli-adversarial-review.md) — that file is a **pre-fix
+snapshot** as of the date above; see its own note at the top for where each finding's disposition is
+now tracked. **Fixed in this same branch's later commits**, per this row's own "module 7 (`cli`) is
+now done" text in `CLAUDE.md`: the `Runtime`-dropped-inside-async-context panic (`main.rs`'s
+`AlreadyFetched` wrapper now drives the real fetchers' async paths from outside `fetch_source`'s
+synchronous trait method, rather than `block_on`-ing from inside an already-running runtime) and the
+DNS client's missing retries (`liveness/net.rs`'s `UDP_RETRY_ATTEMPTS`/`UDP_RETRY_BACKOFF`, plus this
+module's own later `TOTAL_QUERY_BUDGET` fix for the retry loop's total time bound). The unintended
+`net-shield`-on-full-HTTP-stack dependency does not reproduce against current `Cargo.toml`:
+`net-shield` depends on `domain-blocklist` with no `cli`/`net` features enabled, so `reqwest`/`tar`/
+`clap` are not pulled in. **Neither the live-fetch path nor the live-DNS-sweep path has been run to
+completion against real infrastructure** — every verification so far, including this fix pass, has
+been fixture-mode/`--skip-liveness`/unit-test only; that gap is unchanged by the fixes above and is
+still open.
+
+### 8. `overlay` — a small, fast-cadence tier for urgent additions and removals
+
+```text
+src/overlay.rs
+```
+
+**The problem this solves.** The bulk `.fst` (module 4) can only ever be rebuilt whole — `fst::Map`
+has no incremental-edit API, and the compression itself is a function of the *entire* sorted key
+set, so one added or removed key can shift which states downstream get merged. That rebuild is cheap
+on the pipeline's own build machine but is not the bottleneck: every *device* update, no matter how
+small the actual change, still costs a full-artifact re-download and a full sequential hash-verify
+(the decision doc's on-device storage section — verification reads every byte, by design, on every
+load). Waiting for the next monthly bulk rebuild to propagate a single newly-flagged domain, or an
+urgent takedown of a wrongly-blocked one, is too slow for either case, and shrinking the bulk
+cadence to fix it would mean paying that full-artifact cost on every device far more often than the
+bulk gates (canary, shrinkage, growth, false-positive) need to run.
+
+The fix is not to make the bulk FST patchable — the `fst` crate offers no such thing, and mutating a
+live mmap that lookups may be concurrently reading is its own hazard the on-device storage design
+already avoids by never doing it (see the decision doc's rejected alternatives). The fix is a
+**second, much smaller artifact** that is cheap enough to re-fetch and re-verify in full, often:
+
+- `OverlayEntry { domain: String, scope: RuleScope, action: OverlayAction, categories: Vec<Category>, added_at: Timestamp }`,
+  where `OverlayAction { Add, Remove }` — `Remove` is what makes an urgent takedown of a wrongly-block
+  domain possible without waiting for the next bulk rebuild, the same way the bulk FST's `Apex`/
+  `ExactHost` distinction already exists for `Add`. **A `Remove` entry that matches at its declared
+  `RuleScope` unblocks the domain and stops lookup there** — it resolves to `DomainFilter`'s default
+  action rather than falling through to the bulk FST, which still carries the rule this entry exists
+  to override. It does not touch levels 1–2 of module 6's precedence table: a device-local allowlist
+  entry or an explicit `net-shield` rule at higher priority still wins over a `Remove`, the same way
+  either already wins over the bulk FST. See module 6's precedence table for the full ordering.
+- `OverlaySet { entries: Vec<OverlayEntry> }`, capped at a **starting value of 5,000 entries** — an
+  order of magnitude of headroom over what "urgent, between bulk rebuilds" should ever need, kept
+  small on purpose so the whole set stays cheap to hold in memory unindexed (module 6's lookup-budget
+  section) and cheap to transmit even on a slow connection.
+- A manifest reusing **exactly** module 4's trust contract — monotonic `version`, `{key_id,
+  signature}` list, a digest binding the manifest to the entry set, the same current/previous
+  atomic-slot swap on disk. This is not a new mechanism to design or a new mechanism to audit; it is
+  the same one, applied to a smaller payload. See module 4's manifest struct and the decision doc's
+  Distribution section for the field-for-field contract this must match.
+
+**Publish gates, scaled down, not skipped.** The bulk gates' statistical thresholds (10% shrinkage,
+10% growth, 0.5% false-positive) don't mean anything against a few-entry diff, but "never an
+automatic publish" still applies:
+
+- `overlay_size_gate(current_len, added, removed, max_publish_size) -> GateResult` — refuses a
+  publish that adds or removes more than a small fixed count in one go (starting value: **50**
+  entries per publish). A legitimate urgent fix is a handful of domains; anything larger than that is
+  either a mis-scoped batch that should go through the reviewed bulk pipeline instead, or a sign
+  something is wrong with whatever produced the list of urgent entries.
+- Every `OverlayEntry.domain` still goes through `domain_normalize::normalize`/`classify_scope`
+  (module 0) and the same public-suffix/shared-hosting-denylist refusal `merge()` already applies —
+  an overlay is not a bypass of the scoping rules that protect against black-holing a hosting
+  provider, just of the monthly cadence.
+- Signing and human sign-off are not waived for being small. The plan's framing — "every gate below
+  refuses publication and requires explicit human sign-off to override" — applies here at a smaller
+  scale, not a lower bar.
+
+**Folding and draining.** Every bulk rebuild (module 7's `cli`) first folds the current overlay's
+`Add` entries into the ordinary source-merge pipeline as if they had arrived from a source with that
+build's cadence, and applies its `Remove` entries as exclusions against the freshly-merged set,
+before running the bulk gates. Once a bulk build incorporating a given overlay entry publishes, that
+entry is dropped from the next `OverlaySet` — the overlay is a bounded, actively-drained queue of
+"not yet reflected in the bulk artifact," never a second permanent copy of the list living outside
+the reviewed bulk pipeline. An overlay that is never drained (the bulk pipeline stops running, or
+keeps failing its own gates) is exactly the kind of staleness the decision doc's "staleness must be
+visible" rule already covers — surfaced the same way, not through a separate mechanism.
+
+**Distribution stays inside the existing consent model — this does not become a background push.**
+Per the decision doc, updates are opt-in and never silently polled; the overlay does not change that
+contract, it changes what a check costs. A user who checks daily pays a few-KB, sub-second overlay
+fetch and verify on days without a bulk update, instead of either doing nothing (today's only opt-in
+outcome between monthly bulk releases) or paying a multi-megabyte re-fetch to catch one new domain.
+"Fast" here means "cheap enough that the user's own chosen check cadence is enough," not a new
+covert channel.
+
+**On-device precedence and lookup.** Specified in module 6 above (priority 3, between `net-shield`'s
+explicit rule set and the bulk FST) — checked before the bulk FST specifically because it exists to
+cover exactly the domains the bulk artifact doesn't have yet, and held as a plain in-memory map since
+its capped size makes mmap's page-fault tradeoff unnecessary. A matching `OverlayAction::Remove`
+terminates the lookup at level 3 rather than falling through to level 4 — see module 6's precedence
+table for why a fall-through would silently re-block a domain this entry exists to unblock. This
+holds regardless of how the map itself is implemented (plain `HashMap`, a second mmap, or a
+cache-through structure in front of the bulk FST); the storage choice is unmeasured and open, the
+termination behavior is not.
+
+**Reference documents**
+
+Reuses module 4's manifest/signing contract and its reference documents (Ed25519 signing, the
+Distribution section's rollback/rotation model) without restating them — nothing here introduces a
+new wire format or a new OS interface. See [module 4](#4-fst_build--the-on-device-artifact) and the
+decision doc's [Distribution](../../decisions/domain-blocklist-sourcing.md#distribution) section.
+
 ## Implementation order
 
-1. `packages/domain-normalize` — pure, no I/O, tested first and hardest. `normalize()` against IDNs
+1. ~~`packages/domain-normalize` — pure, no I/O, tested first and hardest. `normalize()` against IDNs
    (both directions of the UTS #46 → punycode ordering), trailing dots, mixed case, `www.` variants,
    and post-conversion length limits; `classify_scope` against public suffixes, provider suffixes,
    the shared-hosting denylist, and deep hostnames. Every apex-widening bug this design fears is
-   caught here or nowhere.
-2. `merge.rs` — pure functions (the union/provenance merge, scope resolution, category filtering,
-   `flag_personal_name`) with no I/O. Test against hand-built `RawEntry` fixtures.
-3. `gates.rs` — pure functions against synthetic counts and key sets. Built early precisely because
+   caught here or nowhere.~~ **Done.** `normalize()` uses the `idna` crate's UTS46 pass
+   (`AsciiDenyList::URL`, `Hyphens::Allow`, `DnsLength::Ignore`, with label/name length validated
+   explicitly afterward per RFC 1035 §2.3.4/RFC 5891 §4.4) and `classify_scope()` uses the `psl`
+   crate (compiled-in Public Suffix List data — no I/O, no network fetch) plus a caller-supplied
+   shared-hosting denylist slice. **`classify_scope` now downgrades to `ExactHost` rather than
+   dropping the entry entirely when the normalized domain is itself a public suffix** (`com`,
+   `co.uk`, or a wildcard-PSL tenant boundary like `pornslut.cn.st` — structurally the same as
+   `someone.blogspot.com`, just one PSL level lower, since the boundary rule that matched was a
+   wildcard rather than a plain suffix) — `Apex` is still refused (claiming the whole shared suffix
+   would blackhole every other tenant), but the literal string itself can never match anything but
+   that one exact query, so there's no scope-widening reason to drop it. A live run against the
+   same ~4.78M real merged domains found ~20 entries being dropped this way (`ec2-*.compute-1.
+   amazonaws.com`, `pornslut.cn.st`-style wildcard-tenant hosts, bare gTLDs like `xxx`/`adult`);
+   after the fix, only an actual `shared_hosting_denylist` match still drops an entry outright
+   (renamed `dropped_public_suffix_or_denylisted` → `dropped_shared_hosting_denylisted` to match),
+   and the same real merge: `dropped_shared_hosting_denylisted` 20 → 0, entries 4,721,732 →
+   4,721,752. 25 tests, including every named case from this plan (`com`,
+   `co.uk`, `blogspot.com`, `s3.amazonaws.com` never `Apex`; `someone.blogspot.com` is `Apex`;
+   `www.example.com` normalizes to itself and scopes `ExactHost`, distinct from the `example.com`
+   `Apex` key). **`AsciiDenyList::STD3` (the initial choice) was replaced with `AsciiDenyList::URL`
+   after a live run against ~4.78M real merged domains found ~1,029 entries silently dropped for
+   containing an underscore** — DNS-wire-legal (RFC 1035 §2.3.1: labels are arbitrary octets, not
+   LDH-restricted; `_dmarc.google.com` is a ubiquitous real example) and, confirmed against the
+   WHATWG URL Standard (`beStrict = false` on the URL host parser, "due to web compatibility"), a
+   hostname a real browser's address bar actually resolves and navigates to. `AsciiDenyList::URL`
+   is the same deny list the URL Standard's own domain-to-ASCII step applies — denies glyphless/
+   control characters and URL-structural punctuation (`%#/:<>?@[\]^|`, which is also how an IPv6
+   literal's `:`/`[`/`]` stay rejected, unchanged from before) but not underscore. Rerunning the
+   same ~4.78M-domain merge afterward: `dropped_normalization_failed` 1029 → 0, all 1,027 distinct
+   previously-rejected domains now present in the merged set. Consumed by `domain-blocklist`
+   (module 1+, done — see that row) and `net-shield` (module 6, done — see that row). <!-- step: domain-blocklist.domain-normalize -->
+2. ~~`merge.rs` — pure functions (the union/provenance merge, scope resolution, category filtering,
+   `flag_personal_name`) with no I/O. Test against hand-built `RawEntry` fixtures.~~ **Done.**
+   `packages/domain-blocklist` created — `types.rs` defines `SourceId`, `Category` (`Adult`,
+   `Gambling`, `Dating`), `ScopeHint`, `RawEntry` and `MergedEntry` ahead of module 1/`sources`
+   (unbuilt), since `merge.rs` needs somewhere to import them from. `resolve_scope()` combines
+   `domain_normalize::classify_scope` with the parser's `ScopeHint`: `classify_scope == None`
+   (public suffix or denylisted) refuses the entry regardless of hint; only a wildcard
+   (`ScopeHint::Apex`) whose base is itself eTLD+1 ever produces `RuleScope::Apex`; a **plain**
+   entry that happens to literally be a registrable domain is still scoped `ExactHost` — this
+   fills a gap the plan's three explicit bullets leave implicit, deliberately mirroring the
+   `www.`-stripping section's logic: widening without an explicit wildcard would silently over-block
+   exactly the way stripping `www.` would. `merge()` dedupes `RawEntry`s by normalized domain into a
+   `BTreeMap`, unioning `sources`/`categories` (never overwriting) and taking the wider scope on a
+   collision (`Apex` beats `ExactHost`), with two separate drop counters (`MergeReport`) for
+   normalization failures vs. public-suffix/denylist refusals so a parser regression and a PSL
+   surprise never look like the same event. `filter_by_category()` is a pure any-of filter over the
+   plan's "adult-only build still ships a gambling-flagged domain" rule. `flag_personal_name()`
+   matches the plan's own named cases exactly (`red-panda` flagged, `janedoe` missed) — 2–4
+   alphabetic tokens split on `-`/`.`/`_`. **An adversarial (Opus) review of this module found four
+   real gaps, all fixed:** (1) `merge()` normalizes `shared_hosting_denylist` once up front —
+   `classify_scope`'s contract assumes its denylist entries are already normalized, and a
+   hand-authored checked-in file is exactly where a stray trailing dot, capitalization, or a
+   Unicode-typed IDN would otherwise silently fail to match and reopen the shared-hosting hole the
+   parameter exists to close; (2) IP-literal entries (`"0.0.0.0"`) are dropped and counted
+   (`dropped_ip_literal`) rather than passed through as an ordinary domain rule — DNS labels are
+   digit-legal so `normalize()` accepts an IP literal as itself, and the plan assigns dropping these
+   to the unbuilt `sources` module, so this is defense in depth, not a redundant check; (3)
+   `merge()`'s output `sources`/`categories` are sorted before returning, since both are logical
+   sets and an input-order-dependent `Vec` would make the eventually-signed artifact
+   non-reproducible across a source-fetch order CI makes no promises about — `merge_output_does_not_
+   depend_on_raw_entry_order` pins this; (4) `flag_personal_name()` rejects any `xn--`-prefixed
+   (RFC 3492 §5 ACE) label outright — post-`normalize()` punycode fragments like `xn--mller-kva`
+   (`müller`) tokenize into three all-alphabetic pieces and would otherwise systematically
+   false-positive across the entire IDN corpus. The review's fifth claim — that `resolve_scope`
+   should grant `Apex` to any plain entry that is literally eTLD+1, not just wildcard-hinted ones —
+   was investigated and **rejected**: the plan's module 2 text states outright that "merging two
+   entries with different scopes takes the wider scope," which is only meaningful if a plain entry's
+   individual scope *can* differ from a wildcard entry's for the same domain — exactly what the
+   current `ScopeHint`-gated implementation does. 36 tests, including the plan's named cases (a
+   domain flagged `adult` by one source and `gambling` by another keeps both categories; the bare
+   `example.com`/`www.example.com` pair stays two distinct entries with distinct scopes) and the
+   review-driven regression tests above. Not yet consumed by `sources`, `gates`, or `fst_build`
+   (modules 1, 3, 4 — all still unbuilt). <!-- step: domain-blocklist.merge -->
+3. ~~`gates.rs` — pure functions against synthetic counts and key sets. Built early precisely because
    they are cheap, pure, and are what stops every category of bad build; leaving them for last means
-   the first real run has no guardrail.
-4. `sources/` — one parser per source against small fixture files first (a few lines of each
+   the first real run has no guardrail.~~ **Done, including an adversarial (Opus) review's fixes.**
+   `shrinkage_gate`/`growth_gate` take `prev_count`/`prev_keys` as `PreviousBuild<T>`
+   (`None`/`Existing`), not a bare `u64`/`Option` — the review's sharpest finding was that a caller
+   who failed to load the previous manifest and a caller correctly reporting a genuine first build
+   both produced the same zero/empty value, which silently disabled both gates' percentage checks
+   on the easiest mistake to make; `PreviousBuild` makes "no data" an explicit, named variant a
+   caller must consciously choose rather than an ambiguous default (only `shrinkage_gate`'s
+   `absolute_floor` still gates a first build). Every threshold-taking gate now validates its
+   fraction is finite and in `[0, 1]` first — a `NaN` threshold previously made every `>` comparison
+   silently `false`, passing the gate unconditionally on a config mistake rather than refusing to
+   run.
+
+   `false_positive_gate` is a substantially different design from the first version, not just a bug
+   fix: the plan originally specified subtracting a hand-maintained exclusion file from Tranco, but
+   Tranco carries no content-category metadata at all (it's a pure traffic ranking) and genuinely
+   contains adult sites at real density (~1–2.5%, not "a handful" — measured against live data), so
+   an exclusion file large enough to matter would need hundreds of entries reviewed on every re-pin.
+   The fix is **cross-source corroboration**: `FalsePositiveHit::is_corroborated()` treats two or
+   more independently-maintained sources agreeing a domain is sensitive as sufficient evidence (a
+   single source's tag is that source's own file-level curation choice — see the plan's module 1 —
+   so one source alone proves less than two agreeing does), and `review_queue()` narrows the actual
+   manual-triage surface to just the uncorroborated, not-yet-excluded hits — see the decision doc's
+   "cross-source corroboration" section for the full rationale, including the accepted limitation
+   that this assumes the sources curate independently, which hasn't been separately verified. Two
+   further fixes, both confirmed live before being fixed: `false_positive_hits` now normalizes
+   `control_set`/`exclusions` the same way `merged`'s own keys already are (an unnormalized control
+   set previously matched nothing and reported a 0% rate against a list blocking 100% of it — the
+   exact class of bug `merge.rs`'s own earlier adversarial review already fixed once, reintroduced
+   here); and lookup is now a `HashMap` index built once (O(control + merged)) rather than a nested
+   linear scan (confirmed to cost ~10¹² comparisons at realistic multi-million-entry list sizes).
+   `false_positive_gate` also takes a `min_control_size` floor — an empty or truncated control-set
+   fetch previously passed silently, indistinguishable from "measured, and clean." The direct
+   string-equality match against `MergedEntry.domain` (not the `Apex`-scope subdomain-covering
+   lookup `fst_build`/`net-shield`, modules 4/6, implement at query time) is kept and now correctly
+   justified: it's safe specifically because Tranco ranks registrable, pay-level domains, not
+   because "it's unlikely to matter."
+
+   `license_gate` gained a `merged` parameter and now fails when a source that contributed entries
+   has **no** snapshot at all — the license-only version of this check passed trivially on an
+   *omitted* snapshot, which is the cheaper mistake and the one this exists to catch, since module
+   1's fetch-time check re-verified here is exactly what should have made an omission unreachable.
+   It also fails on duplicate snapshots for one source (ambiguous coverage) and compares licenses
+   case/whitespace-insensitively via the new `LicenseId::spdx_matches`, matching SPDX's own
+   identifier rule (an earlier exact-string comparison failed *closed*, correctly, but on a
+   confusing message that invited "just add the lowercase spelling too" instead of fixing the
+   comparison). **Explicitly not yet covered, and tracked as a gap rather than silently dropped:**
+   a source's snapshot license drifting from its `SourceConfig.expected_license` pin, and the
+   manifest's `output_license` field's own consistency — both need `SourceConfig`/`Manifest`
+   (modules 1/4, still unbuilt) to exist before they can be checked. `SourceSnapshot`/`LicenseId`
+   were defined in `types.rs` ahead of `sources` (module 1) the same way `RawEntry`/`MergedEntry`
+   were ahead of it for module 2.
+
+   Every gate returns `GateResult::Pass`/`Fail(String)` — the failure message names the evidence
+   (which control domains hit and under which sources, which license and source, the measured
+   percentage against the limit, capped at 20 named hits with a count of the remainder) rather than
+   a bare boolean, per the plan's "refuses publication and requires explicit human sign-off"
+   framing. 80 tests. Not yet consumed by `cli` (module 7, unbuilt) — the pipeline that would call
+   these gates in sequence and act on a `Fail` doesn't exist yet. <!-- step: domain-blocklist.gates -->
+4. ~~`sources/` — one parser per source against small fixture files first (a few lines of each
    source's real format, not a live fetch), covering every row of the input-shape table above, then
-   wire in the real pinned `SourceFetcher` HTTP path last.
-5. `liveness.rs` — `due_for_check` first as a pure function against a fake clock and fake cache
+   wire in the real pinned `SourceFetcher` HTTP path last.~~ **Done, minus the real HTTP client.**
+   `sources/mod.rs` holds what all three parsers share: `SourceConfig` (checked-in fetch
+   coordinates — `source`/`url`/`pinned_revision`/`expected_license`), the `SourceFetcher` trait,
+   and `fetch_source()`, which checks a fetch's served revision against the pin, its served license
+   against `expected_license` (catching a silent relicense even when the new license would itself
+   be allowlisted — `FetchError::LicenseChanged`, distinct from `LicenseNotAllowed`), and its
+   license against the build's allowlist, in that order, before any parser sees the bytes — every
+   failure is a `FetchError` variant meant to abort the whole build, never to be caught and skipped,
+   per the plan's "a failed fetch aborts the whole build" rule. Parsing is one shared
+   `parse_document()` taking a `LineFormat` (`HostsFile` or `PlainDomain`, the only two native
+   formats these three sources ship in — hosts-file syntax differs from plain domain-per-line only
+   in whether an address column precedes the domain); `stevenblack.rs`/`hagezi.rs`/`ut1.rs` are thin
+   wrappers over it naming their `SourceId`/`Category`/`LineFormat`, matching the plan's one-file-
+   per-source layout. Implements every row of the input-shape table: comment/blank skip (including
+   an inline `# note` trailing a domain), hosts-format address-column discard, wildcard
+   (`*.example.com`) base extraction with `ScopeHint::Apex`, and bare-IP-literal drop-and-count
+   (`ParseReport::dropped_ip_literal`) — no normalization happens here, per the plan, since that
+   stays `domain_normalize::normalize`, applied once in `merge` (module 2). UT1's `category`
+   parameter is supplied by the caller per directory, since UT1 gives no in-band signal of which
+   category a `domains` file belongs to; `ut1::count_urls_entries()` is the pure counter the plan's
+   "documented coverage limitation, not a silent drop" rule calls for, so the size of the skipped-
+   `urls` gap stays visible in the build's metrics without this crate ever extracting a URL entry.
+   19 new tests (99 total). The real pinned HTTP `SourceFetcher` implementation, and UT1's per-
+   category `SourceConfig` list, are left to `cli` (module 7, unbuilt) per this module's own text
+   ("the pipeline binary wires in a real HTTP client") — nothing here needs live network access to
+   test. Not yet consumed by `liveness`, `fst_build`, or `cli` (modules 3, 4, 7 — all still
+   unbuilt). <!-- step: domain-blocklist.sources -->
+5. ~~`liveness.rs` — `due_for_check` first as a pure function against a fake clock and fake cache
    entries with cadence ≠ TTL (this is the part with the trickiest edge cases: reappeared-stale vs.
    genuinely-revived entries). Then `canary_check` against a fake resolver that simulates a
    family-filtering resolver, a wildcard-sink resolver, and a healthy one — all three must be
    distinguishable. The real DNS lookup is a thin, separately-tested edge behind a trait so none of
-   this needs live network access to test.
-6. `fst_build.rs` — pin against a small hand-built key set first (a handful of domains sharing
+   this needs live network access to test.~~ **Done, minus the real DNS client, persistent cache
+   I/O, and the qps-paced sweep loop — all left to `cli` (module 7, unbuilt), the same split
+   module 1 draws for its real HTTP fetcher.** `LookupResult`/`UnknownReason` model one
+   single-QTYPE answer; `Verdict` is the combined per-domain outcome `combine()` produces from one
+   A and one AAAA `LookupResult` via `check()`, per the plan's three-step ordering (either
+   resolving → `Alive`; both `NxDomain` → `Dead`; otherwise, at least one `Unknown` and neither
+   `Resolved` → `Unknown`, covering the named mixed `NxDomain`/`Unknown` case explicitly). Real
+   lookups go through the `DnsLookup` trait, exactly as `SourceFetcher` does for module 1's HTTP
+   fetch — nothing here needs live network access to test. `due_for_check(cache_entry, now,
+   ttl_seconds)` takes only the TTL, not a cadence parameter: cadence is the caller's coarser
+   scheduling concern, deliberately kept out of this signature so a caller can't conflate the two
+   the plan is careful to decouple; `now.saturating_sub(last_checked)` reads clock skew (`now`
+   before `last_checked`) as "just checked" rather than underflowing into a bogus multi-decade gap
+   that would read as due regardless of TTL. `should_prune()` is the one-line rule "only `Dead`
+   prunes," tested separately for first-seen-`Unknown` vs. previously-cached-`Unknown` per the
+   plan's own split. `canary_check()` runs every `alive_controls` entry then every `dead_controls`
+   entry through `check()` and returns `CanaryResult::Failed { detail }` naming which control
+   domain misbehaved and what was expected — distinguishing a family-filtering resolver (an alive
+   control comes back `Dead`), a wildcard-sink resolver (a dead control comes back `Alive`), and
+   an inconclusive resolver (a control comes back `Unknown`, which fails the canary even though a
+   real sweep would keep an `Unknown` domain, since the control set is supposed to be
+   unambiguous) as three distinct, separately tested failures; it reports the mismatch only —
+   discarding the sweep and refusing to write the cache back on any canary failure is `cli`'s job,
+   per the plan. **`dead_controls` is a `Vec`, symmetric with `alive_controls`**, not a single
+   `String` — a lone dead control is one resolver quirk away from a false pass (e.g. a rewrite
+   rule scoped to one reserved name and not another), and running the full set costs nothing extra
+   since `canary_check` already loops. 30 tests (129 total). Not yet consumed by `fst_build` or
+   `cli` (modules 4, 7 — both still unbuilt). **Five items are explicitly deferred design decisions
+   for `cli` (module 7, still unbuilt), not gaps silently dropped from this module.** An
+   interleaved canary — the canary only runs once at t=0 before a ~24h sweep, and proving the
+   resolver was honest at t=0 doesn't prove it stayed honest for the whole window — is deferred
+   because `CanaryResult` has no timestamp field for `cli` to build the interleaving on top of yet,
+   and that's worth deciding before module 7 rather than patching in here. RFC 8914 Extended DNS
+   Errors (https://www.rfc-editor.org/rfc/rfc8914) — a filtering resolver often self-declares via
+   EDE 15/16/17 (Blocked/Censored/Filtered) alongside its NXDOMAIN, the strongest available signal
+   for exactly the threat `canary_check` guards against — is deferred because `LookupResult` has no
+   variant for it yet. An aggregate "Unknown rate" health signal is deferred: at sustained
+   real-world query rates a public resolver may start rate-limiting, turning every rate-limited
+   query into `Unknown(Timeout)` (kept, by design), which could let a whole sweep silently become a
+   no-op with nothing in `gates.rs` positioned to catch it, since `gates.rs`'s shrinkage gate
+   watches entry counts, not per-domain Unknown rate. Keeping `DnsLookup` synchronous versus
+   switching it to async is deferred as a real API-stability tradeoff — it's `pub`, re-exported
+   from `lib.rs`, and both `check`/`canary_check` take `&R: DnsLookup` — that should be decided
+   deliberately before module 7 is built rather than discovered mid-implementation, given the
+   plan's own pacing design (many in-flight concurrent queries at a target qps, above) points
+   toward an async-first client like hickory-resolver. RFC 8020
+   (https://www.rfc-editor.org/rfc/rfc8020, "NXDOMAIN: There Really Is Nothing Underneath") — an
+   NXDOMAIN at `example.com` implies every `*.example.com` entry is also dead, with zero extra
+   queries — is deferred because nothing in this module's shape expresses shared context between
+   per-domain `check()` calls, which a real optimization lever for module 7's per-domain sweep
+   would need. <!-- step: domain-blocklist.liveness -->
+6. ~~`fst_build.rs` — pin against a small hand-built key set first (a handful of domains sharing
    prefixes and suffixes, mixed `Apex` and `ExactHost`) and assert exact-match, label-boundary
-   scoping, and **anchored** prefix-streaming behavior before building the real list.
-7. `cli` — wire the whole pipeline together; the first real run is a dry run against the three
-   fixture sources, not a live fetch.
-8. `net-shield` integration — the precedence table and the shared `normalize()`, per module 6.
-9. **The mmap benchmark** (below) — after there is a real artifact to map.
+   scoping, and **anchored** prefix-streaming behavior before building the real list.~~ **Done.**
+   `reverse_key()` reverses a normalized domain's labels (`example.com` → `com.example`), keeping
+   an `ExactHost` `www` key distinct from the apex key so the consumer's label-boundary lookup
+   never conflates them; `assign_provenance()` enumerates the distinct `{sources, categories,
+   scope}` combinations across the merged entries into a **deterministically sorted**
+   `provenance_table` and maps every reversed key to its combination's compact `u32` ID (a
+   `BTreeMap` gives the sorted, deduplicated key set `fst::MapBuilder` requires for free);
+   `build()` builds the `fst::Map` from key → provenance ID, computes the SHA-256 `fst_digest` of
+   the `.fst` bytes, assembles the `Manifest`, signs the manifest's **signable bytes** (the
+   manifest with its own `signatures` field emptied, so adding a second signature during rotation
+   can't invalidate the first) with every `(KeyId, SigningKey)` pair via `sign()`, and reports
+   measured `bytes_per_entry` in `FstBuildReport`. `FstBuildError` aborts on any FST/serialize
+   failure and refuses a build with no signing keys (`NoSigningKeys`) — a build with no signer
+   must never publish. `verify_manifest()` mirrors the decision doc's client rule (verify against
+   any one `{key_id, signature}` entry whose `key_id` is in the trusted set) and is used to
+   round-trip the output in tests. `Manifest`/`ProvenanceEntry`/`Signature` carry serde derives
+   (the 64-byte `Signature.bytes` gets a manual `Serialize`/`Deserialize`, since this serde build
+   doesn't implement the traits for `[u8; 64]`), and `RuleScope`/`SourceId`/`Category`/
+   `LicenseId`/`SourceSnapshot` gained the serde/`Ord` derives needed to encode them. 14 tests,
+   covering label-boundary scoping, a two-category domain surviving merge into one provenance
+   combination, manifest bincode round-trip, a two-signature rotation manifest verifying against
+   old-key-only/new-key-only/both clients, and tampering with `fst_digest` after signing
+   invalidating every signature entry. Not yet consumed by `cli` (module 7, unbuilt) — the
+   pipeline that would call `build` and act on the manifest doesn't exist yet. <!-- step: domain-blocklist.fst-build -->
+7. ~~`cli` — wire the whole pipeline together; the first real run is a dry run against the three
+   fixture sources, not a live fetch.~~ **Done, with the real qps-paced sweep's production hardening
+   (24h pacing at real scale, a genuinely random per-run nonce, a vetted in-category canary control)
+   left as explicit follow-up — see below.** `packages/domain-blocklist/src/main.rs` (+ `cli.rs`,
+   `cache_store.rs`, `slots.rs`, `sweep.rs`, and `src/fetchers/{github,ut1}.rs`) run the whole
+   pipeline end to end and were verified **live, at runtime, not just compiling**: a fixture-mode
+   dry run passes every gate; a real (non-dry) publish writes `current/{artifact.fst,manifest.bin}`;
+   a second run correctly rotates the first build into `previous/`, auto-increments `version`, and
+   passes `shrinkage_gate`/`growth_gate` against the loaded-and-verified previous manifest; and a
+   deliberately shrunk fixture set correctly fails `shrinkage_gate` and **leaves the previously
+   published `current/` untouched** (confirmed by file mtimes) rather than partially overwriting it.
+   `src/fetchers/github.rs`/`ut1.rs` are the real `SourceFetcher`s the module's own assumption audit
+   found were needed — a bounded-retry `reqwest`/rustls GitHub client (git-database commit-SHA
+   revision resolution, the license API's `NOASSERTION` sentinel, `X-RateLimit-Reset`-bounded
+   403 handling) and a UT1 tarball fetcher (in-memory `flate2`/`tar` extraction of `<category>/
+   {domains,urls}`, and an HTML-comment-stripping `rel="license"` scraper so the page's dead,
+   commented-out CC BY-NC-SA badge can never be read as the live CC BY-SA 4.0 license) — both
+   reworked from an earlier drafting pass's scratch files with no functional changes needed beyond
+   fixing their import paths for this crate's real module layout; all of both files' own tests pass
+   unmodified. `src/liveness/net.rs` is the real `DnsLookup`, gated behind a new `net` Cargo feature
+   so `cargo test` stays fully offline by default (verified: `cargo test`, default features, is 100%
+   network-free; `cargo build --all-features` and `cargo test --all-features` are both green) —
+   built directly against `hickory-proto` 0.26.1's message-level API (`Message`/`Query`/`Edns`
+   public fields, DO-bit query construction, hand-decoded RFC 8914 EDE from `EdnsOption::
+   Unknown(15, _)`, TC=1 UDP→TCP retry per RFC 1035 §4.2.1/RFC 7766, and CNAME-chain walking capped
+   at 16 hops with cycle detection — DNAME is not a distinct case here, since this crate surfaces a
+   DNAME hop as a synthesized CNAME, exactly as the plan's own net-client audit found) rather than
+   the high-level `hickory-resolver` convenience crate the `DnsLookup` trait's contract rules out.
+   `src/sweep.rs` drives it with qps-paced, concurrency-bounded dispatch (`futures::stream::
+   buffer_unordered` gated by a per-domain start-time schedule), corroboration across two
+   independently-configured resolvers, canary re-checks between chunks (aborting and discarding the
+   **entire** sweep's results on any failure, never a partial commit — the plan's own "no way to
+   know when a lying resolver started lying" rule), and hysteresis/`first_dead_at` bookkeeping
+   exactly as `CacheEntry`'s doc comment assigns to this module. `src/cache_store.rs` persists the
+   liveness cache as hand-written serde DTOs with an exhaustive, compiler-checked match to and from
+   the real `CacheEntry`/`Verdict`/`UnknownReason` — deliberately **not** derived directly on those
+   types, since doing so would mean editing an already-shipped pure module's file for a concern that
+   belongs to this caller. `src/slots.rs` mirrors `net-shield::blocklist`'s two-slot layout **by
+   value** (the dependency runs the other way: `net-shield` depends on `domain-blocklist`, not the
+   reverse) — cold-start load hard-aborts (never silently reports "no previous build") on a
+   signature or digest failure, and publish rotates `current/` → `previous/` before an atomic
+   temp-then-rename write per file. One real integration bug found and fixed while wiring this up,
+   not by a test: `gates::license_gate` requires exactly one `SourceSnapshot` per `SourceId`, but
+   this pipeline fetches UT1 as three separate per-category tarballs (adult/gambling/dating) that
+   all carry the identical `SourceId::Ut1` — `main.rs`'s `collapse_snapshots_by_source` merges them
+   into one snapshot per source (asserting every grouped snapshot agrees on license, joining their
+   individually pin-verified revisions) rather than changing `license_gate`'s own, correctly strict,
+   one-entry-per-source invariant. **Left explicitly undone, not silently skipped:** (1) ~~the
+   sweep's qps pacing is dispatch-time (a domain-check *starts* every `1/qps` seconds, concurrency-
+   capped at `--concurrency`) rather than a raw-query-count limiter, and canary re-checks happen at
+   `--canary-every`-sized chunk boundaries rather than continuously interleaved — both are the
+   plan's own stated starting-value shape, but neither has been run at the plan's real ~1,000,000-
+   domain, 24-hour scale, only against small fixture sets~~ **Partially measured, 2026-08-16 — see
+   `docs/decisions/domain-blocklist-sourcing.md`'s "Measured 2026-08-15/16" section for the full
+   numbers.** The real merged corpus is already ~4.75M domains from under half the planned source
+   list (not ~1,000,000), so the original `~23 qps`/24h sizing is stale on corpus size alone. The
+   `canary_every`-chunk-boundary concern was tested directly and cleared at the shipped default
+   (`--canary-every 2000`: 1.03x wall-clock overhead against a real dead/lame-domain sample) — it
+   only showed up (1.83x) at an artificially small `--canary-every 50` used for a quick local test.
+   A naive qps bump sized to the corpus-growth factor (`--qps 57.5`, ~5x) was tested against a real
+   corpus sample and produced a real degradation signal (`Unknown` rate 0.7%→10.6%, mostly `Timeout`
+   and cross-resolver `UncorroboratedDead`, with local resource exhaustion checked and ruled out) —
+   still not run at the true ~4.75M-domain/24h scale, and the CLI's qps/concurrency defaults are
+   deliberately left unchanged pending an incremental, canary-monitored ramp on the real deployment
+   host rather than a single guessed jump; (2) `--signing-key`/`--trust-key` take a
+   `key_id:path-to-32-byte-file` argument, not the `--signing-key-env` comma-separated-hex CI-secret
+   design a drafting pass's notes recommended — a real deployment wiring this into CI should add
+   that env-var path rather than writing key material to a file on the runner; (3) the nonce dead
+   control `liveness::nonce_dead_control` exists and is tested, but nothing in this binary generates
+   a random nonce and threads it through `--canary-dead` automatically — an operator must do that
+   themselves per run; (4) the vetted in-category alive control the module 3 canary doc comment
+   names as the single most dangerous unclosed gap (a resolver that filters only the swept category
+   passes every control this design can currently supply) is still not sourced — this crate's own
+   content-policy conventions forbid fabricating or checking one in, so it remains a deployment-time
+   data-sourcing decision, exactly as `liveness::canary`'s own doc comment already flagged; (5)
+   ~~the real DNS client's live behavior was verified only through its 12 offline unit tests against
+   hand-built `Message` fixtures — no `#[ignore]`d live smoke test against a real resolver over the
+   network was added~~ **Done, in a follow-up pass.** `sweep::tests::live_sweep_smoke_test_against_
+   real_resolvers` (`#[ignore]`d, `cargo test --bin domain-blocklist --features cli,net --release
+   -- --ignored`) runs one real sweep — real UDP/53 to 1.1.1.1/8.8.8.8, real canary corroboration,
+   real qps pacing — over a handful of domains in ~1 second, precisely so this exact code path can
+   be exercised without waiting on a 24-hour production run. **It caught a real, 100%-reproducible
+   defect on its first run**: `HickoryDnsLookup::lookup_async` built its query `Name` via
+   `Name::from_ascii(domain)`, which leaves `is_fqdn` false for a bare domain string (no trailing
+   dot); `hickory_proto::rr::Name`'s `PartialEq` treats that flag as significant, so
+   `check_response_echo`'s echoed-name comparison rejected **every real DNS response, from every
+   domain, unconditionally**, as a "mismatch" — meaning the live client had never completed a
+   single successful lookup, on any prior run, offline test, or review, despite passing every
+   fixture-based unit test (which never exercises a wire-decoded `Name`). Fixed with one
+   `name.set_fqdn(true)` before the query is sent — a question name on the wire is always fully
+   qualified per RFC 1035 §4.1.2 regardless of how the caller typed it, so the distinction the flag
+   exists for (relative vs. absolute, for a stub resolver's search-list behavior) is moot once a
+   name is about to be sent as one specific query. `cargo test --all-features` (253
+   domain-blocklist + 92 net-shield tests) stays green; (6) the license
+   allowlist a real run needs (`--allow-license`) defaults, with a loud warning, to an unratified
+   starting set (MIT, CC0-1.0, GPL-3.0, CC-BY-SA-4.0) — ratifying that list, including whether
+   copyleft (GPL-3.0) inputs are acceptable for this project, is a human licensing decision this
+   code deliberately does not make silently. <!-- step: domain-blocklist.cli -->
+ 8. ~~`net-shield` integration — the precedence table and the shared `normalize()`, per module 6.~~
+    **Done.** `packages/net-shield/src/blocklist.rs` — `BlocklistArtifact` (a `fst::Map<Mmap>` that
+    owns the mapping, avoiding the plan's `Arc<Mmap>`-plus-`Map` self-reference while keeping the
+    reference-counted/reclaimable property), `load()` implementing the two-slot (`current/`→`previous/`
+    fallback) cold-start verification of signature then `fst_digest` then FST validity, and
+    `lookup()` doing the decision doc's scope-aware label-boundary exact-`get` lookups (never prefix
+    streaming, so `examplezzz.com` can't match an `example.com` apex). `DnsShield` now resolves the
+    module-6 precedence table (allowlist → explicit `DomainFilter` rules → FST → default) and
+    normalizes the query with `domain_normalize::normalize` — the *same* function the build uses.
+    `DomainFilter` gained `rule_for()` (distinguishing an explicit `Proxy` rule from the trie's
+    miss-default, which `lookup()` alone cannot) while `from_rules`/`lookup`/existing tests stay
+    untouched. The lookup-budget worker (`BlocklistLookup`) owns the artifact on one thread, answers
+    over a bounded channel keyed by the normalized domain, waits at most a caller-set budget (plan's
+    starting value 2 ms), falls back to a small LRU then the default on expiry while counting the
+    event, and deduplicates in-flight lookups. **Two explicit narrowings, recorded in
+    `docs/engineering/coverage.md`:** (1) the SNI/Wintun path (`NetShield::process_packet`) still
+    uses `DomainFilter` alone — the FST is wired into the DNS path only, which is the plan's own
+    budget-section target; (2) `load()` has only ever met the two-slot layout written by this
+    module's test helper, never by module 7 `cli` (unbuilt), so the layout contract is defined and
+    tested against but not yet produced by the real pipeline. 25 new tests (22 in `blocklist.rs`
+    covering load verification/fallback, label-boundary scoping, precedence, the budget worker, and
+    end-to-end DNS, plus precedence tests; net-shield total 91 as of this pass — see the adversarial
+    review below, which adds one more test and brings the final total to 92). Consumed by nothing yet — the
+    daemon that constructs a `DnsShield` with a loaded artifact is a later wiring step.
+
+    **An adversarial review round (four parallel angle-scoped passes, one independently re-verifying
+    all four) found and fixed two real concurrency bugs in `BlocklistLookup`/`Worker`, neither caught
+    by the shipped tests because none of them induce a panic.** `Worker::run` had no `catch_unwind`
+    around the FST lookup: a panic there would kill the whole worker thread, silently degrading every
+    uncached domain to the level-5 default for the rest of the process's life, and would permanently
+    strand the panicking domain's `inflight` waiters (each subsequent `lookup()` call for that domain
+    appends another `Responder` that is never drained). Fixed by wrapping the lookup in `catch_unwind`
+    — a caught panic now answers that one request as `None` ("no rule") and the worker keeps running
+    — plus a `panic_count()` metric, the same "no silently absorbed path" convention the fallback
+    counter already followed. Separately, the cache was populated *after* draining `inflight`, not
+    before, opening a narrow window for a duplicate worker request on a domain that had just resolved
+    — fixed by reordering. Two more findings were documentation-only, not code changes: the review
+    confirmed the SNI narrowing above is real and traced (not just asserted), and flagged that
+    `DomainFilter::insert` stores rules unnormalized while module 6 queries normalized — pre-existing,
+    dormant (no non-test caller builds a `DomainFilter` from untrusted input yet, since `cli` is still
+    unbuilt), now called out in `radix.rs`'s own doc comment rather than left implicit. One test-
+    coverage gap was closed: `rule_for` returning `None` at a branch node that has children but no
+    action of its own (the shape the precedence table's `Some(Proxy)`-vs-miss distinction depends on)
+    had no direct test; one was added. Net-shield total now 92. <!-- step: domain-blocklist.net-shield-integration -->
+9. **The mmap benchmark** (below) — after there is a real artifact to map. <!-- step: domain-blocklist.mmap-benchmark -->
+10. `overlay.rs` — after `fst_build` and `net-shield` integration both exist, since it reuses
+    module 4's manifest/signing contract wholesale and slots into module 6's precedence table rather
+    than defining either from scratch. Pin the size and publish-size gates against synthetic entry
+    sets first, the same way `gates.rs` was built ahead of a real artifact to test against. <!-- step: domain-blocklist.overlay -->
 
 ## Benchmarking plan — the mmap major-fault tail
 
@@ -602,9 +1248,13 @@ RFC 5891 alone specifies neither the mapping rules nor the encoding.
   module 1.
 - **IP-literal blocking** — `net-shield`'s `IpFilter`, fed by its own rule source, not a
   domain-keyed FST.
-- **Delta/patch distribution of the artifact** — the FST ships monolithically. Noted in the decision
-  doc as a future improvement; until it exists, pruning's justification is bounded artifact size and
-  reduced stale-hit surface, not smaller downloads.
+- **Incremental patching of the bulk `.fst` itself** — the FST ships monolithically and always will;
+  `fst::Map` has no edit API and mutating a live mmap concurrently read by lookups is a correctness
+  hazard the design avoids rather than solves. What *is* now specified is a small, separately-signed
+  fast-cadence tier alongside it (module 8, `overlay`) for additions/removals that can't wait for the
+  next bulk rebuild — see module 8 and the decision doc's on-device-storage/distribution sections.
+  Bulk pruning's justification is unchanged by this: bounded artifact size and reduced stale-hit
+  surface, not smaller downloads.
 - **The on-device runtime lookup itself** — that is `net-shield`'s `DomainFilter`
   ([its plan](../net-shield/plan.md)); this crate only produces the artifact `DomainFilter` loads,
   plus the shared `normalize()` both sides use.

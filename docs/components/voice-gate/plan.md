@@ -178,12 +178,18 @@ The ONNX model is not loaded in unit tests — the runtime is always injected as
 ## Implementation order
 
 1. `verse-picker.ts` — data only, trivial to test; establishes the `Verse` type used everywhere.
+<!-- step: voice-gate.verse-picker -->
 2. `transcript-matcher.ts` — pure function; test-first with the edge cases above.
+<!-- step: voice-gate.transcript-matcher -->
 3. `rate-checker.ts` — pure function; test-first.
+<!-- step: voice-gate.rate-checker -->
 4. `liveness-classifier.ts` — inject the ONNX interface; unit test with mocked runtime.
+<!-- step: voice-gate.liveness-classifier -->
 5. `voice-gate.ts` — orchestrator; integration test with mock adapter and mock classifier.
+<!-- step: voice-gate.voice-gate -->
 6. `voice-adapter-electron.ts` in `apps/desktop` — wire `MediaRecorder` + Web Speech API;
    manual smoke test in the running app.
+<!-- step: voice-gate.electron-adapter -->
 
 ## What this does not cover
 

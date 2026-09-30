@@ -290,14 +290,52 @@ Every build therefore evaluates the merged list against a **known-good negative 
 refuses to publish if it fails:
 
 - The control is the **[Tranco](https://tranco-list.eu/) top-N list**, pinned to a specific daily
-  release like any other source, minus a small **reviewed, checked-in exclusion file** of control
-  entries that are legitimately adult (there are a handful in any top-10k list, and leaving them in
-  would make the metric meaningless).
-- The gate is the fraction of the remaining control set that the merged list blocks. **Starting
-  threshold: 0.5%** — deliberately a starting value, to be re-derived from the first real
-  measurement rather than defended as correct. A build exceeding it does not publish.
-- The build also reports *which* control entries were hit and under which provenance ID, so a
-  regression names the source that caused it.
+  release like any other source. Tranco (and its near-equivalents — Cisco Umbrella's popularity
+  list, Majestic, Chrome's CrUX) is a pure traffic ranking with **no content-category metadata at
+  all**; that isn't a Tranco-specific gap, it's structural to what a popularity ranking measures.
+  Because of that, Tranco's top-N genuinely contains adult sites at real traffic volume — measured
+  at roughly **1–2.5% density depending on N** (e.g. ~250 in a top-10k slice), not "a handful," and
+  the design below accounts for that density rather than assuming it away.
+- **What "legitimately adult" means here is decided by cross-source corroboration, not a
+  hand-maintained exclusion file measured against Tranco alone.** Every domain that could ever
+  register as a control-set hit is, by construction, already present in at least one source's raw
+  fetch (`MergedEntry` only exists for domains some `RawEntry` produced), and each source's
+  category tag is assigned at the file/directory level, not per domain — see the plan's module 1
+  input-shape notes: StevenBlack's `porn` extension, hagezi's NSFW list, and UT1's `adult`
+  directory are each fetched as a single trusted unit, so one source's tag can be that source's own
+  curation mistake (a domain the file shouldn't have included). Two *independently maintained*
+  sources agreeing on the same domain is a much stronger signal than either one alone, without
+  needing any classification beyond what the pipeline already fetches:
+  - A control-set hit corroborated by **two or more** sources is treated as correctly blocked and
+    never counts toward the rate — no review needed.
+  - A hit backed by only **one** source lands in a bounded **review queue** — this is the actual
+    manual-triage surface, and it is small by construction: the extremely well-known adult sites
+    that dominate Tranco's top ranks (the ones any curated list independently includes) clear the
+    2-of-3 bar automatically, leaving only the domains a single project happened to flag alone,
+    which is both the smaller set and the more plausible place for an actual misclassification to
+    live. A small, reviewed, checked-in exclusion file still exists for domains a human has
+    confirmed are legitimately sensitive despite lacking corroboration — its expected size shrinks
+    to that residual set, not "every adult site Tranco ranks."
+  - **Accepted limitation, stated plainly rather than assumed away:** corroboration only helps if
+    the sources are genuinely independent. If two of the three sources share upstream provenance
+    for a given entry (blocklist projects do sometimes cross-pollinate from each other or from
+    shared community submissions), a shared mistake would not be caught this way. This has not been
+    verified either way for StevenBlack/hagezi/UT1's adult lists specifically, and is worth checking
+    before leaning on the mechanism harder than "reduces the review burden," not "eliminates it."
+  - A genuinely independent third-party check remains available as a future strengthening layer,
+    specifically because the set needing it is now small: for just the single-source review-queue
+    domains (not the full million-entry control set — the earlier obstacle to using a rate-limited
+    API at all), a real third-party categorization service could cross-check before a human does.
+    Not required for the mechanism above to work; not built.
+- The gate is the fraction of the checked control set landing in the review queue (uncorroborated
+  and not already excluded) that the merged list blocks. **Starting threshold: 0.5%** — deliberately
+  a starting value, to be re-derived from the first real measurement rather than defended as
+  correct. A build exceeding it does not publish.
+- **A control set that comes back empty or suspiciously small fails outright**, rather than
+  measuring a 0% rate against nothing — a truncated download, a parse bug, or a maintenance page
+  standing in for Tranco's real list must never look identical to "measured, and clean."
+- The build also reports *which* control entries were hit and under which sources, so a regression
+  names the source that caused it.
 
 This mirrors `machine-learning`'s `gate.py` release guardrail: the project already refuses to ship a
 classifier with no measured quality signal, and a blocklist with no measured false-positive rate is
@@ -335,7 +373,7 @@ set; it does not require all of a domain's categories to match. The exact type
 ### Publish gates
 
 Signing proves an artifact came from this pipeline. It says nothing about whether the pipeline
-produced a *sane* artifact. Four checks stand between a completed build and a published bundle, and
+produced a *sane* artifact. Six checks stand between a completed build and a published bundle, and
 **each one requires explicit human sign-off to override — never an automatic publish**:
 
 | Gate | Refuses to publish when | Why |
@@ -343,8 +381,9 @@ produced a *sane* artifact. Four checks stand between a completed build and a pu
 | Liveness canary | any canary domain returns anything but its expected verdict | a filtering or hijacking resolver would otherwise prune the list to nothing |
 | Shrinkage | entry count drops **>10%** below the previous published build, or below an absolute floor | catches a bad sweep, a source that silently emptied, a parser regression |
 | Growth | *added* entries exceed **10%** of the previous published build | catches a compromised or mis-bumped upstream injecting bulk entries |
-| False-positive rate | control-set FP rate exceeds its threshold | catches noise amplification across the union |
+| False-positive rate | the uncorroborated, unreviewed review-queue rate against the control set exceeds its threshold, or the control set itself is suspiciously small | catches noise amplification across the union, and a broken control-set fetch masquerading as a clean measurement |
 | Artifact size | the built `.fst` exceeds its size budget | catches unbounded growth before a device pays for it |
+| License | any source that contributed entries has no license snapshot, an ambiguous (duplicated) one, or one off the allowlist | re-checks the [fetch-time license gate](#license-gate) at publish time so it can't be bypassed or weakened in between |
 
 The percentages are starting values chosen to be tight enough to catch a category error and loose
 enough not to fire on ordinary churn; like every other constant here they are to be re-derived once
@@ -408,13 +447,25 @@ OpenDNS FamilyShield, and a great many corporate and CI-provider networks — re
 sink address for essentially every domain on this list. Every entry reads as `Dead`. The pipeline
 prunes the list to near-zero, signs the result, and ships it. Nothing in the process looks broken.
 
-Two mechanisms, both required:
+Three mechanisms, all required:
 
 **A named, non-filtering resolver.** The pipeline is configured with an explicit resolver address
 and does not use the host's system resolver, which on a CI runner is whatever the provider
 happens to supply. The default is Cloudflare's unfiltered `1.1.1.1` / `2606:4700:4700::1111`,
 explicitly *not* the `1.1.1.2` (malware) or `1.1.1.3` (family) variants. Any substitute must be
 documented and canary-verified the same way.
+
+**Two-resolver corroboration before pruning.** A `Dead` verdict from a single resolver is never
+sufficient on its own — a domain is only actually pruned once a *second*, independently-configured
+resolver (a different operator, a different anycast network) also produces `Dead` for it. An
+earlier design tried to establish that same trust from DNSSEC authentication (the AD bit) on a
+single resolver's own answer instead, and that was measured, live, to be the wrong mechanism: most
+large TLDs — `.com`/`.net`/`.org`/`.xxx` included — sign with NSEC3 opt-out, under which a
+validating resolver cannot construct an authenticated proof of non-existence for an unsigned
+delegation at all, so requiring it made `Dead` nearly unreachable rather than safer to reach. See
+[`packages/domain-blocklist`'s `liveness::corroboration`
+module](../../packages/domain-blocklist/src/liveness/corroboration.rs) for the implementation and
+the full reasoning.
 
 **A canary check before every sweep**, over a small fixed set of control domains that has nothing to
 do with adult content, checked in both directions:
@@ -424,12 +475,70 @@ do with adult content, checked in both directions:
 - At least one **reserved name guaranteed not to resolve** (RFC 2606 / RFC 6761 — `invalid.` and a
   name under `test.`) must return `Dead`. This second direction catches the resolver that
   NXDOMAIN-rewrites to a wildcard sink, which would produce the *opposite* failure: nothing ever
-  prunes, and the list quietly stops being maintained.
+  prunes, and the list quietly stops being maintained. A real deployment should also mix in a
+  **per-run random-nonce control** under a real, currently-registered zone (`nonce_dead_control` in
+  the same module) — but never a zone hosted behind a provider that answers a nonexistent name with
+  NODATA rather than NXDOMAIN ("compact denial of existence"; Cloudflare-hosted zones, including
+  `example.com`, do this and were measured to break this exact control). See
+  `nonce_dead_control`'s doc comment for the full trap and how to verify a candidate zone before
+  using it.
 
 **If any canary returns anything other than its expected verdict, the entire sweep aborts.** Every
 verdict from that run is treated as untrusted and discarded — not merged, not cached, not written
 back. Nothing is published. A partially-completed sweep is not salvaged, because there is no way to
 know at which query the resolver started lying.
+
+#### Open gap: the canary cannot see a resolver that filters only this category
+
+The control set above is deliberately drawn from **outside** the category this pipeline sweeps —
+`alive_controls` must be "definitely-non-adult", `dead_controls` are reserved names or a per-run
+nonce (see [`packages/domain-blocklist`'s `liveness::canary`
+module](../../packages/domain-blocklist/src/liveness/canary.rs) for the implementation). That
+shape catches an indiscriminate sink and an indiscriminate NXDOMAIN rewrite — a resolver that lies
+about *everything*. It cannot catch a resolver that lies about *only this category*.
+
+A resolver that filters adult content specifically, and nothing else, answers every alive control
+honestly (they're all non-adult, by construction), answers every dead control honestly (reserved
+names and a nonce aren't in the category either), and then silently NXDOMAINs the entire real
+sweep. The canary passes. The sweep prunes the list to near-zero. This is not a hypothetical
+edge case — it is the *ordinary* shape of the exact failure this mechanism exists to catch, and it
+is documented as the single most dangerous failure mode two paragraphs above this one. Concrete,
+real deployments with exactly this shape: UK ISP-level content filtering, Italy's AGCOM blocking
+regime, a CI provider's "family-safe" network default, and Cloudflare's own `1.1.1.3` family-filter
+resolver variant (already named above as the resolver this pipeline must *not* use — the canary as
+currently shaped would not detect accidentally ending up on it anyway).
+
+**The fix is a known, standard technique the canary does not yet apply:** an *in-category* alive
+control — a domain a category-targeting filter would block, but which is not itself sensitive
+content and is safe to check into a public repository. Filtering vendors publish exactly this kind
+of test hostname for other categories (Cisco/OpenDNS's malware/phishing test domains are the
+well-known pattern); an equivalent for the adult-content category, sourced from a filtering
+vendor's *current* published documentation at deployment time, would close the gap the same way.
+
+**Why this repository cannot supply that value itself, and does not attempt to:**
+
+1. This project's own conventions (`CLAUDE.md`) forbid checking adult-content domains — real or
+   placeholder — into this public repository, even as a test fixture, and even for a security
+   control whose job is to detect adult-content filtering. That rule is not relaxed for this case.
+2. A vendor-published test domain must be taken from that vendor's *current* documentation, not
+   from a model's training-data memory or an engineer's recollection — a stale or misremembered
+   hostname is worse than an honest gap, since it would silently stop testing anything the moment
+   the vendor retires or repurposes it.
+
+Both constraints point the same way: **sourcing an in-category control is a deployment-time
+operator responsibility, not something this codebase can discharge.** No code change is needed to
+*support* it — `CanaryConfig::new`'s existing `alive_controls: Vec<String>` parameter already
+accepts any number of domains from any category; there is nothing about its shape that privileges
+"non-adult" domains over any other kind of alive control. The gap is entirely in the data supplied
+at construction time, which belongs to `cli` (module 7, unbuilt). When that module is built, its
+operator should source one or more current, vendor-published, category-relevant test domains from
+the filtering vendors' own current documentation and inject them via `CanaryConfig::new`'s
+`alive_controls` parameter alongside the existing non-adult controls — never by inventing a domain
+name, and never by drawing one from any adult-content list this repository would ever check in.
+
+Until that sourcing happens, this canary catches the crude failure (indiscriminate sink,
+indiscriminate NXDOMAIN rewrite) and **not** the targeted one — record this as a known, accepted
+limitation of every sweep run before that gap is closed, not a solved problem.
 
 #### Cadence, TTL, and pacing — three separate numbers
 
@@ -452,10 +561,111 @@ or late swings the check volume wildly.
 
 A domain cached as **alive**, or brand new to every source, is checked on every sweep.
 
+#### Measured 2026-08-15/16: the sizing and pacing numbers above are stale, and the fix is not a bare qps bump
+
+The `~23 qps` / `~1,000,000 domains` / `~24 hours` figures above were a sizing estimate made before
+`sources` (module 1) or `cli` (module 7) existed. With both now built, three things were measured
+directly against real sources and real resolvers rather than re-derived on paper.
+
+**The corpus is ~4.75x bigger than assumed, using less than the full source list.** Fetching and
+merging just StevenBlack's porn-only hosts file, Hagezi's NSFW wildcard list, and UT1's adult and
+gambling categories (4 of the plan's 6 planned source/category lists — missing UT1 dating and
+Hagezi's other tiers) produced **4,752,920 merged unique domains**, not ~1,000,000. UT1 adult alone
+is 4,599,280 raw lines before merge. The `~23 qps` figure was sized to sweep ~1,000,000 domains in
+24 hours; the real number, even undercounted, needs roughly **4.75x that dispatch rate** to hit the
+same 24-hour window — this is the honest reason a qps increase is on the table at all, not a desire
+for a faster sweep for its own sake.
+
+**The per-chunk `.collect()` barrier in `sweep.rs`'s dispatch loop was investigated and cleared at
+the shipped default.** A real dead/lame domain can cost close to the client's ~15-second worst-case
+query budget (`liveness/net.rs`'s `TOTAL_QUERY_BUDGET`), and because each `canary_every`-sized chunk
+must fully complete (`.collect()`) before the next chunk's canary re-check and dispatch can begin,
+one straggler taxes its whole chunk. At `--canary-every 50` (a value chosen only to get more canary
+observations in a quick local test, never a real setting) this cost 601 real domains a 1.83x wall-
+clock overhead (95.7s actual vs. 52.3s naive-ideal) against real dead/lame entries from the corpus
+above. At the CLI's actual shipped default, `--canary-every 2000`, the identical sample and domain
+mix measured **1.03x** — the straggler cost is real but amortizes to near-nothing once a chunk is
+production-sized. No code change was needed here; the concern was specific to an artificially small
+test value, not the shipped default.
+
+**A naive 5x qps bump (matching the 4.75x corpus-size gap, landing at `--qps 57.5` / ≈115 raw
+queries/sec) was tested against a real, canary_every-sized chunk of the merged corpus and showed
+real degradation, not just a wall-clock cost.** At the current default (`--qps 11.5`,
+`--concurrency 50`), a 2001-domain real sample resolved with **0.67–0.7% `Unknown`** verdicts. At
+5x qps with concurrency scaled to match (`--concurrency 200`, keeping headroom per Little's Law),
+the identical corpus sample produced **10.6% `Unknown`** — over 15x worse, not proportional — broken
+down as `Timeout: 116 (5.8%)`, `UncorroboratedDead: 88 (4.4%, the two resolvers disagreeing on an
+NXDOMAIN)`, `ServFail: 4`, `NoData: 4`. Local resource exhaustion was checked and ruled out as the
+cause: the test machine's `ulimit -n` was effectively unbounded (1,048,576) and the breakdown
+contains zero `Malformed`/`Transport` entries, which is what socket exhaustion or a client bug would
+produce instead. What's left — real timeouts and cross-resolver disagreement — is the signature this
+document's earlier "watch the canary" reasoning predicted a real ceiling would look like.
+
+**This result does not tell us where the real ceiling is, and must not be read as one.** It was
+measured from one development machine's residential/office network and its own, unrelated IP
+reputation history at 1.1.1.1/8.8.8.8 — a VPS's datacenter uplink and IP history could show a higher
+ceiling, a lower one, or a different failure signature entirely. What it *does* tell us: the
+instinct to just multiply the default qps by the corpus-size growth factor and ship that as the new
+default is not safe, because the first real test of that exact jump produced a real degradation
+signal, not a clean pass. **The correct next step is the incremental, canary-monitored qps ramp this
+document already prescribes, run against the actual deployment host** (starting at the current
+default, stepping up, watching the `Unknown` breakdown — specifically `Timeout` and
+`UncorroboratedDead` rates, not just the aggregate — for degradation before each step), not a single
+jump sized to the corpus-growth factor. The CLI's `--qps 11.5` / `--concurrency 50` defaults are
+therefore left unchanged pending that ramp; changing them now would be encoding an untested guess
+in the exact place this project's own review history keeps finding them (the image-sandbox
+threshold, the FST floor, the DNSSEC-authentication requirement — see `CLAUDE.md`'s `image-sandbox`
+and `domain-blocklist` rows).
+
 **Batching multiple domains into one DNS query is not practically available** — RFC 1035's QDCOUNT
 field permits it in principle, but essentially no real-world resolver answers more than one question
 per message. The available lever is **concurrency** (many in-flight query packets at once,
 rate-limited to the chosen qps), not batching.
+
+#### Measured 2026-08-16: the incremental qps ramp, run against the real deployment VPS
+
+The section above prescribed running the qps ramp against the real deployment host rather than
+guessing from the dev-machine result. That ramp was run on the production VPS (4 vCPU, datacenter
+uplink), each step a real `--sample` slice (a new CLI flag added for exactly this purpose — see its
+own doc comment in `cli.rs`) of the actual fetched 4.75M-domain corpus, against real 1.1.1.1/8.8.8.8
+resolvers, canary passing at every step:
+
+| qps / concurrency | sample | Unknown% | Timeouts | UncorroboratedDead |
+|---|---|---|---|---|
+| 11.5 / 50 (shipped default) | 2,000 | 2.35% | 0 | 0 |
+| 23 / 100 | 4,000 | 1.98% | 5 | 0 |
+| 46 / 200 | 8,000 | 1.80% | 10 | 0 |
+| 92 / 400 | 16,000 | 1.43% | 14 | 0 |
+
+No degradation signal anywhere in this ramp, unlike the dev-machine measurement above, which broke
+down at 57.5 qps (10.6% Unknown, 15x worse). This VPS's datacenter uplink and IP reputation history
+tolerate roughly 8x the shipped default cleanly — confirming the section above's own caveat that a
+VPS could show a materially different ceiling than a residential/office network, in either
+direction. **This does not change the shipped CLI defaults** — the defaults are a safe floor for an
+unknown deployment host, and this result is evidence for *this* host's operator to raise `--qps`
+explicitly for its own scheduled runs, not a reason to move the shipped default itself. A full
+92 qps / 400-concurrency production sweep against the complete real corpus was then launched from
+this measurement, detached from the invoking shell (`setsid`/`disown`, reparented to PID 1) so it
+survives an SSH disconnect, logging to `dbl-run/logs/production.log` on the host.
+
+Two real defects were found and fixed while getting the real (non-fixture) fetch path to run at
+all, neither previously exercised end-to-end against live sources:
+
+- `SourceConfig.pinned_revision` for the two GitHub sources and the three UT1 categories were
+  literal `"UNPINNED"` placeholders (`main.rs`'s own doc comment: "left as a placeholder ... so a
+  real fetch fails loudly and closed"). Moved to real pins via the reviewed pin-bump process this
+  file's "Pinned revisions, never floating HEAD" section requires: StevenBlack `35db0ae9...`,
+  hagezi `3975aafc...` (both `git commit` SHAs baked into the raw-content URL path), and the three
+  UT1 categories to `last-modified=Sat, 15 Aug 2026 20:50:17 GMT` (UT1 publishes no ETag;
+  `fetchers::ut1::pick_revision` falls back to the `Last-Modified` header, prefixed — the prefix
+  format was undocumented outside the function body and cost one failed real-fetch attempt to
+  discover).
+- `fetchers::ut1::MAX_MEMBER_BYTES` was 64 MiB on the doc comment's claim that "UT1's largest
+  `domains`/`urls` member measures a few MB" (2026-08-15 assumption audit). A real fetch of
+  `adult.tar.gz` hit the ceiling: `adult/domains` is **124,529,768 bytes** (4,599,280 lines), not
+  "a few MB" — the assumption audit measured the wrong file, or measured before UT1's adult list
+  grew to its current size. Raised to 256 MiB (~2x headroom over the measured real file), documented
+  in the constant's own doc comment as measured-wrong rather than silently widened.
 
 #### The TTL cache needs a real home
 
@@ -653,6 +863,49 @@ Mechanics:
 numbers — including how to force genuine kernel-level eviction rather than measuring a warm cache
 and calling it a fault — is in [the plan](../components/domain-blocklist/plan.md).
 
+### A fast-cadence overlay tier, so an update need not wait for the next bulk rebuild
+
+Two costs are easy to conflate and need separating. **Rebuilding** the FST when the domain set
+changes is cheap — it runs on the pipeline's own build machine, on the existing monthly cadence, with
+no device-side resource pressure at all. **Distributing** an update is not free at any size: every
+client update, no matter how small the actual change, still costs a full-artifact download and a
+full sequential hash-verify (verification reads every byte, by design — see the mmap section above).
+Making the bulk cadence tighter to propagate an urgent single-domain fix faster would mean paying
+that full cost on every device far more often than the bulk gates (canary, shrinkage, growth,
+false-positive) actually need to run, and it would not make the FST itself faster to update: `fst::
+Map` has no incremental-edit API, and mutating a live mmap that lookups may be concurrently reading
+is a correctness hazard this design already avoids elsewhere (see the mmap section's atomic
+`rename()`-only update rule). Rebuilding from the complete sorted key set is the only way the format
+supports, whether one domain changed or a million did.
+
+The fix is not to make the bulk artifact patchable. It's a **second, much smaller artifact** — a
+capped list of recent additions and removals, reusing the bulk manifest's exact trust contract
+(monotonic `version`, signature list, digest-bound payload, current/previous atomic slot swap) at a
+fraction of the size, and therefore cheap enough to re-fetch and re-verify in full on a much shorter
+cadence. It is folded into the next bulk rebuild and drained, never a second permanent copy of the
+list living outside the reviewed bulk pipeline — see [the plan](../components/domain-blocklist/plan.md)
+module 8 for the entry shape, size caps, and folding mechanics.
+
+**A removal is not just an additional entry; it changes query-time control flow.** The overlay is
+consulted before the bulk FST specifically so it can represent state the bulk artifact doesn't have
+yet, and a removal is exactly such a case: an entry the bulk FST still blocks that this artifact
+exists to urgently unblock. A matching removal therefore must terminate the lookup at the overlay
+tier rather than falling through to the bulk FST — a fall-through would silently re-apply the block
+the removal exists to lift, indistinguishable from the removal never having published at all. This
+holds regardless of the eventual lookup implementation (in-memory map, a second mmap, or an
+overlay-first cache-through structure ahead of the bulk FST, none yet measured); it does not change
+the precedence of device-local rules or explicit `net-shield` rules, which still outrank the overlay
+the same way they outrank the bulk FST — see the plan's module 6 precedence table.
+
+**This does not weaken the opt-in-only stance above, or reintroduce it by another name.** The overlay
+is fetched on the exact same user-consented check as the bulk artifact; nothing here adds a
+background poll or a push channel. What changes is what that check costs: today, a user who checks
+between monthly bulk releases gets nothing for it — there is no smaller update to fetch. With the
+overlay, the same check picks up a few-KB, sub-second update instead. "Faster" here means "cheap
+enough that the user's own chosen cadence already delivers it," not a new covert channel — the
+opt-in stance is unchanged, and remains a decision revisited only with a stated privacy tradeoff, not
+one incidentally weakened by a distribution optimization.
+
 ### Distribution
 
 The FST file *is* the signed, distributed artifact — no separate transform happens on the client.
@@ -736,6 +989,13 @@ choice; staleness they can't is a defect.
 
 ## Rejected alternatives
 
+- **A continuously mutable/patchable on-device FST** — considered as an alternative to the overlay
+  tier above, to avoid shipping a second artifact type. Rejected on two independent grounds, either
+  one sufficient alone: the `fst` crate provides no incremental-edit API (the format's compression is
+  a function of the whole sorted key set, not something a local patch can preserve), and mutating a
+  file backing a live mmap that lookups may be concurrently reading is a correctness hazard this
+  design otherwise avoids entirely via atomic `rename()`-only updates. A second, small, append-then-
+  drain artifact reuses the existing trust contract instead of inventing an unsafe one.
 - **A single source** — no single list has both good coverage and reliable pruning; the union with
   provenance is what makes a low-quality or disappearing source cheap to back out.
 - **Auto-fetching each source's branch HEAD** — convenient, and it turns any upstream compromise or

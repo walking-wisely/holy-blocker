@@ -178,12 +178,12 @@ The loop runs until an unrecoverable adapter error occurs or the returned `Futur
 
 ## Implementation order
 
-1. ~~`radix.rs` — pure data structures with no I/O. Build `DomainFilter` first (label trie), then `IpFilter` (sorted CIDR vec). Test both with synthetic rule sets covering exact matches, subdomain inheritance, CIDR containment, and default-allow behaviour.~~ **Done.**
-2. ~~`sni.rs` — pure byte parsing with no I/O or network state. Test with hand-constructed TLS record buffers covering: well-formed ClientHello with SNI, ClientHello without SNI extension, truncated buffers at each length-field boundary, and records with malformed extension lists.~~ **Done.**
-3. ~~`src/lib.rs` — public re-exports and the `NetShield` struct shell. At this point `run` can be a stub returning `Ok(())`.~~ **Done.**
-4. ~~`tun.rs` — `PacketSink` trait and `RawPacket` type first; test the routing dispatch logic using a fake sink against pre-built packet buffers. Then add the Wintun `TunAdapter` implementation behind `#[cfg(target_os = "windows")]`.~~ **Done.**
-5. ~~Wire `NetShield::run()` to the full loop: integrate `TunAdapter`, `DomainFilter`, `IpFilter`, and `extract_sni`; smoke-test by routing a known-block domain and confirming the packet is dropped.~~ **Done.**
-6. ~~`dns.rs`, `udp.rs`, `dns_shield.rs` — the DNS path, added for the Android VPN.~~ **Done.**
+1. ~~`radix.rs` — pure data structures with no I/O. Build `DomainFilter` first (label trie), then `IpFilter` (sorted CIDR vec). Test both with synthetic rule sets covering exact matches, subdomain inheritance, CIDR containment, and default-allow behaviour.~~ **Done.** <!-- step: net-shield.radix -->
+2. ~~`sni.rs` — pure byte parsing with no I/O or network state. Test with hand-constructed TLS record buffers covering: well-formed ClientHello with SNI, ClientHello without SNI extension, truncated buffers at each length-field boundary, and records with malformed extension lists.~~ **Done.** <!-- step: net-shield.sni -->
+3. ~~`src/lib.rs` — public re-exports and the `NetShield` struct shell. At this point `run` can be a stub returning `Ok(())`.~~ **Done.** <!-- step: net-shield.lib -->
+4. ~~`tun.rs` — `PacketSink` trait and `RawPacket` type first; test the routing dispatch logic using a fake sink against pre-built packet buffers. Then add the Wintun `TunAdapter` implementation behind `#[cfg(target_os = "windows")]`.~~ **Done.** <!-- step: net-shield.tun -->
+5. ~~Wire `NetShield::run()` to the full loop: integrate `TunAdapter`, `DomainFilter`, `IpFilter`, and `extract_sni`; smoke-test by routing a known-block domain and confirming the packet is dropped.~~ **Done.** <!-- step: net-shield.run-loop -->
+6. ~~`dns.rs`, `udp.rs`, `dns_shield.rs` — the DNS path, added for the Android VPN.~~ **Done.** <!-- step: net-shield.dns -->
 
 ### 6. The DNS path — `dns`, `udp`, `dns_shield`
 
