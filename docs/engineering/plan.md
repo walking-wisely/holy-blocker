@@ -498,3 +498,21 @@ Acceptance: `code`. Verify: `python -m unittest discover -s tools/plan/tests -t 
 A diff touching only `packages/new-crate/` (unclaimed), `.github/workflows/`, or `CLAUDE.md` returns exit 0 from `loop check`. Either claim those roots in a manifest or record the narrowing in `docs/engineering/coverage.md`.
 
 Acceptance: `code`. Verify: `python -m unittest discover -s tools/plan/tests -t .`.
+
+### Step — archive done steps
+
+<!-- step: engineering.ledger-archive -->
+
+Nothing prunes `steps.toml` or `plan.md`, so done steps accumulate in the files agents read first.
+Add `steps.archive.toml` beside each manifest and `python -m tools.plan.ledger archive <package>`,
+with the dry-run then `--yes` shape of `worktrees reap`.
+
+- A step moves only when it is `done`, its evidence is on `master`, and no live step depends on it or
+  names it as `regressed_step`. Archived ids still resolve for `validate`, `depends_on` and `loop check`.
+- `plan.md` keeps a one-line pointer per archived step; its marker moves with the pointer, so `validate`
+  still finds exactly one marker per id.
+- Open `kind = "bug"` steps stay in the live file.
+- Run by hand when a manifest passes about 150 lines or each quarter, not from CI.
+
+Acceptance: `code`. Verify: `python -m unittest discover -s tools/plan/tests -t .`.
+
