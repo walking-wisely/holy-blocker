@@ -6,7 +6,9 @@
 //! incomplete. See `docs/decisions/domain-blocklist-sourcing.md`, "Combining sources" §1.
 
 /// What a rule matches.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub enum RuleScope {
     /// This domain and everything under it.
     Apex,

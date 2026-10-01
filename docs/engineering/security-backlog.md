@@ -73,6 +73,12 @@ Focus areas:
 
 Enable Dependabot or Renovate for `pnpm`, Cargo, Python, and GitHub Actions.
 
+Status: Dependabot covers pnpm, all nine Rust crates, Gradle (`apps/mobile`), SwiftPM
+(`native-modules/mac-daemon`), pip and GitHub Actions. `cargo deny` gates advisories,
+licences, wildcards and registry sources in CI, and a weekly workflow re-checks
+advisories. Not yet done: SBOM or provenance for release artifacts, there being no
+release workflow.
+
 Why now:
 
 - Electron, Rust TLS crates, Python ML tooling, and test dependencies will age quickly.

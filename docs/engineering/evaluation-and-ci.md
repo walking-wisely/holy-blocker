@@ -114,26 +114,70 @@ Tier 3: release or nightly eval
 The public Tier 1 workflow is intentionally narrow for the current state of the repository:
 
 ```text
-GitHub Actions workflows: .github/workflows/ci-js.yml, ci-rust.yml, ci-plan.yml
+GitHub Actions workflows: ci.yml (entry point), ci-js.yml, ci-rust.yml, ci-plan.yml,
+ci-advisories.yml, codeql.yml
+
+- ci.yml runs on every pull request and push to master. It calls ci-js, ci-rust and
+  ci-plan as reusable workflows and ends in a single `CI gate` job that fails if any of
+  them failed or was cancelled and accepts skipped. Require `CI gate` in branch
+  protection; the individual jobs are path-filtered and may legitimately not run.
 
 - ci-js (apps/desktop and the pnpm workspace):
   - pnpm lint, pnpm typecheck, pnpm build
 
 - ci-rust (every crate under packages/, one matrix leg per affected crate):
+  - cargo clippy --all-targets with -D warnings
+  - cargo fmt --check on the crates listed in `FMT_CLEAN` in the workflow
   - cargo test --locked on the toolchain pinned in rust-toolchain.toml
+  - cargo deny against deny.toml: RustSec advisories, a licence allow-list, wildcard
+    dependencies, and crates.io as the only registry
+  - for the three *-ffi crates, a `--features bindgen` build that runs `uniffi-bindgen`
+    for Kotlin and Swift against the host cdylib and fails if either errors
   - a crate is affected when it or any path dependency changes, e.g. a change
     to domain-normalize also runs domain-blocklist, net-shield and net-shield-ffi
 
 - ci-plan:
   - tools/plan unit tests and ledger validation
   - secret-scan (gitleaks)
+
+- ci-advisories (weekly and on demand): cargo deny advisories for every crate, so a new
+  RustSec entry surfaces without waiting for a code change. Not part of the gate.
 ```
 
-On pull requests and pushes to `master`, each job runs only when its paths change.
-`ci-plan` also exposes `workflow_dispatch` so maintainers can run it on demand.
+Each job runs only when its paths change. `ci-plan` also exposes `workflow_dispatch`.
 
-Not covered yet: clippy/rustfmt, Kotlin, Swift and C++ builds, and the ONNX inference
-and parity tests, which skip without the gitignored model.
+`rustfmt` is enforced only on crates that are already formatted. text-policy,
+domain-blocklist, net-shield, image-sandbox and mitm-proxy are not rustfmt-clean:
+formatting them is a repository-wide mechanical change that would conflict
+with every open branch, so it is deferred until the branch queue is drained. Add each
+crate to `FMT_CLEAN` in the same change that formats it.
+
+`deny.toml` decisions an owner may want to revisit:
+
+- MPL-2.0 is allowed because the UniFFI crates carry it. It is file-level copyleft and
+  the crates are used unmodified.
+- The workspace crates are `publish = false` so the licence check skips them; the
+  project licence is not an SPDX expression.
+- RUSTSEC-2025-0141 (bincode 1.3.3 unmaintained, no vulnerability) is ignored with a
+  reason in `deny.toml`.
+- The graph is checked with default features. The `onnx` feature of image-sandbox and
+  image-sandbox-ffi pulls `ort`; neither `cargo deny` nor clippy covers it.
+- cargo-deny reads the RustSec database from GitHub at CI time. This is a CI-only
+  network call; no runtime path is affected.
+
+Branch protection for `master` (repository owner to apply; not enabled by a workflow):
+
+- Require a pull request before merging, with at least one approval.
+- Require status checks to pass, with only `CI gate` selected, and require branches to
+  be up to date.
+- Optionally require review from code owners (`.github/CODEOWNERS`). Every entry is
+  `@walking-wisely`, the repository owner and the only collaborator; GitHub does not
+  count an author's approval of their own PR, so this blocks every PR until a second
+  maintainer exists or the owner bypasses it. Replace the handle with a team when one does.
+- Block force pushes and deletion.
+
+Not covered yet: Kotlin, Swift and C++ builds, native Windows and macOS runners, and the
+ONNX inference and parity tests, which skip without the gitignored model.
 
 ## Private Eval Packs
 

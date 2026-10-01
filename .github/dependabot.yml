@@ -20,14 +20,20 @@ updates:
           - minor
           - patch
 
-  # Rust crates — all three packages in one ecosystem entry.
+  # Rust crates — every crate under packages/, one ecosystem entry.
   # Dependabot opens a separate PR per directory, but they are
   # grouped within each crate so minor/patch bumps land as one PR.
   - package-ecosystem: cargo
     directories:
       - /packages/text-policy
-      - /packages/mitm-proxy
+      - /packages/text-policy-ffi
+      - /packages/domain-normalize
+      - /packages/domain-blocklist
       - /packages/net-shield
+      - /packages/net-shield-ffi
+      - /packages/image-sandbox
+      - /packages/image-sandbox-ffi
+      - /packages/mitm-proxy
     schedule:
       interval: weekly
       day: monday
@@ -53,6 +59,38 @@ updates:
       prefix: "infra(deps)"
     groups:
       python-minor-patch:
+        update-types:
+          - minor
+          - patch
+
+  # Android app
+  - package-ecosystem: gradle
+    directory: /apps/mobile
+    schedule:
+      interval: weekly
+      day: monday
+      time: "04:00"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "infra(deps)"
+    groups:
+      gradle-minor-patch:
+        update-types:
+          - minor
+          - patch
+
+  # macOS daemon
+  - package-ecosystem: swift
+    directory: /native-modules/mac-daemon
+    schedule:
+      interval: weekly
+      day: monday
+      time: "04:00"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "infra(deps)"
+    groups:
+      swift-minor-patch:
         update-types:
           - minor
           - patch

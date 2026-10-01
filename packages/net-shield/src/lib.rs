@@ -12,6 +12,7 @@ pub use radix::{DomainFilter, FilterAction, IpFilter};
 pub use sni::extract_sni;
 pub use tun::{PacketSink, RawPacket};
 
+#[cfg(target_os = "windows")]
 use anyhow::Context as _;
 
 /// Top-level entry point that wires a TUN adapter, domain filter, IP filter,
@@ -19,6 +20,7 @@ use anyhow::Context as _;
 pub struct NetShield {
     domain_filter: DomainFilter,
     ip_filter: IpFilter,
+    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
     proxy_port: u16,
 }
 

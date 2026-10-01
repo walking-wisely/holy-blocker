@@ -8,6 +8,8 @@ use std::convert::Infallible;
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
 
+pub type ImageScanner = Box<dyn Fn(&[u8]) -> ScanResult + Send + Sync>;
+
 /// Hooks called for each intercepted request/response pair.
 ///
 /// All fields default to allow-everything stubs so callers only need to
@@ -15,7 +17,7 @@ use tokio::sync::{mpsc, Mutex};
 pub struct ScanHooks {
     pub url_scanner: Box<dyn Fn(&str) -> ScanResult + Send + Sync>,
     pub body_scanner: Box<dyn Fn(&str) -> ScanResult + Send + Sync>,
-    pub image_scanner: Box<dyn Fn(&[u8]) -> ScanResult + Send + Sync>,
+    pub image_scanner: ImageScanner,
     /// Phase 5 sink: a copy of every HLS/DASH segment is pushed here.
     pub video_tx: mpsc::Sender<Bytes>,
     /// Body bytes scanned per response (bodies larger than this are forwarded
@@ -177,12 +179,11 @@ async fn forward(
         // through without a verdict rather than being incorrectly blocked.
         if bytes.len() <= scan.body_limit {
             // Phase 3 — body scan (HTML)
-            if is_html {
-                if let Ok(text) = std::str::from_utf8(&bytes) {
-                    if matches!((scan.body_scanner)(text), ScanResult::Block { .. }) {
-                        return Ok(blocked());
-                    }
-                }
+            if is_html
+                && let Ok(text) = std::str::from_utf8(&bytes)
+                && matches!((scan.body_scanner)(text), ScanResult::Block { .. })
+            {
+                return Ok(blocked());
             }
 
             // Phase 4 — image scan
@@ -255,7 +256,7 @@ mod tests {
             hyper::server::conn::http1::Builder::new()
                 .serve_connection(
                     TokioIo::new(server_side),
-                    hyper::service::service_fn(move |req| handler(req)),
+                    hyper::service::service_fn(handler),
                 )
                 .await
                 .ok();

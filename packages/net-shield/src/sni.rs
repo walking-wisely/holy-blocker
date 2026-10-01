@@ -172,11 +172,12 @@ mod tests {
 
         // Handshake header
         let hs_len = hello_body.len();
-        let mut handshake: Vec<u8> = Vec::new();
-        handshake.push(0x01); // ClientHello
-        handshake.push(((hs_len >> 16) & 0xff) as u8);
-        handshake.push(((hs_len >> 8) & 0xff) as u8);
-        handshake.push((hs_len & 0xff) as u8);
+        let mut handshake: Vec<u8> = vec![
+            0x01, // ClientHello
+            ((hs_len >> 16) & 0xff) as u8,
+            ((hs_len >> 8) & 0xff) as u8,
+            (hs_len & 0xff) as u8,
+        ];
         handshake.extend_from_slice(&hello_body);
 
         // TLS record header

@@ -90,7 +90,7 @@ async fn spawn_https_origin(origin_ca: &TestCa, body: &'static [u8]) -> u16 {
         .signed_by(&leaf_key, &origin_ca.issuer)
         .unwrap();
 
-    let cert_der: CertificateDer<'static> = leaf_cert.der().clone().into();
+    let cert_der: CertificateDer<'static> = leaf_cert.der().clone();
     let key_der: PrivateKeyDer<'static> =
         PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(leaf_key.serialize_der()));
 

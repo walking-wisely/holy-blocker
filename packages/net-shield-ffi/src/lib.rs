@@ -133,7 +133,10 @@ mod tests {
         let guard = DnsGuard::with_builtin_rules();
         for name in ["blocked.example", "cdn.blocked.example"] {
             assert!(
-                matches!(guard.inspect(query_packet(name)), DnsDecision::Blocked { .. }),
+                matches!(
+                    guard.inspect(query_packet(name)),
+                    DnsDecision::Blocked { .. }
+                ),
                 "{name}"
             );
         }
@@ -182,7 +185,10 @@ mod tests {
         // stray packet would be the wrong shape entirely.
         let guard = DnsGuard::with_builtin_rules();
         assert_eq!(guard.inspect(vec![]), DnsDecision::Ignore);
-        assert_eq!(guard.inspect(vec![0xde, 0xad, 0xbe, 0xef]), DnsDecision::Ignore);
+        assert_eq!(
+            guard.inspect(vec![0xde, 0xad, 0xbe, 0xef]),
+            DnsDecision::Ignore
+        );
     }
 
     #[test]
@@ -191,9 +197,7 @@ mod tests {
         let request = query_packet("allowed.example");
         let answer = b"\x12\x34\x81\x80 answer".to_vec();
 
-        let framed = guard
-            .wrap_response(request, answer.clone())
-            .expect("wraps");
+        let framed = guard.wrap_response(request, answer.clone()).expect("wraps");
         let parsed = udp::parse_ipv4_udp(&framed).expect("valid datagram");
         assert_eq!(parsed.dst_ip, CLIENT);
         assert_eq!(parsed.payload, answer.as_slice());
@@ -202,7 +206,11 @@ mod tests {
     #[test]
     fn wrap_response_returns_none_for_a_packet_it_cannot_parse() {
         let guard = DnsGuard::with_builtin_rules();
-        assert!(guard.wrap_response(vec![0xde, 0xad], vec![1, 2, 3]).is_none());
+        assert!(
+            guard
+                .wrap_response(vec![0xde, 0xad], vec![1, 2, 3])
+                .is_none()
+        );
     }
 
     #[test]

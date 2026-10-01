@@ -39,7 +39,7 @@ where
         hyper::server::conn::http1::Builder::new()
             .serve_connection(
                 TokioIo::new(server_side),
-                hyper::service::service_fn(move |req| handler(req)),
+                hyper::service::service_fn(handler),
             )
             .await
             .ok();

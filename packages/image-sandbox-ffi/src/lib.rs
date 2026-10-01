@@ -144,10 +144,14 @@ impl ImageGuard {
         let preprocess = PreprocessConfig::default();
         let classifier = ImageClassifier::load(&PathBuf::from(&model_path), preprocess.input_size)
             .map_err(|error| ImageGuardError::Unavailable {
-            reason: format!("{model_path}: {error}"),
-        })?;
+                reason: format!("{model_path}: {error}"),
+            })?;
 
-        let config = SandboxConfig { explicit_threshold, sexy_threshold, preprocess };
+        let config = SandboxConfig {
+            explicit_threshold,
+            sexy_threshold,
+            preprocess,
+        };
         Ok(Arc::new(Self {
             sandbox: ImageSandbox::new(classifier, config),
         }))
@@ -231,7 +235,10 @@ mod tests {
         else {
             panic!("a missing model must not construct");
         };
-        assert!(reason.contains("/nonexistent/model.onnx"), "reason: {reason}");
+        assert!(
+            reason.contains("/nonexistent/model.onnx"),
+            "reason: {reason}"
+        );
     }
 
     #[test]
@@ -303,7 +310,10 @@ mod tests {
     fn an_allow_that_never_reached_the_model_has_no_score() {
         // Not `Some(0.0)`. A broken image path must not read as a clean screen.
         assert_eq!(
-            ImageOutcome::from(ScoredVerdict { verdict: ImageVerdict::Allow, score: None }),
+            ImageOutcome::from(ScoredVerdict {
+                verdict: ImageVerdict::Allow,
+                score: None
+            }),
             ImageOutcome::Allow { score: None }
         );
     }
