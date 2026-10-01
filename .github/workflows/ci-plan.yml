@@ -1,15 +1,8 @@
 name: CI Plan
 
 on:
-  pull_request:
-  push:
-    branches:
-      - master
+  workflow_call:
   workflow_dispatch:
-
-concurrency:
-  group: ci-plan-${{ github.ref }}
-  cancel-in-progress: true
 
 jobs:
   changes:

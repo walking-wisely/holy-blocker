@@ -61,6 +61,7 @@ impl ProtectionMode {
 
     /// Store a new mode into a shared atomic cell.
     /// Accepted by IPC handlers so they don't duplicate the u8 encoding.
+    #[allow(dead_code)]
     pub fn store(cell: &AtomicU8, mode: Self) {
         cell.store(mode.as_u8(), Ordering::Relaxed);
     }

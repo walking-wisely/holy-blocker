@@ -1,32 +1,40 @@
 name: CI JS
 
 on:
-  pull_request:
-    paths:
-      - ".github/workflows/ci-js.yml"
-      - "apps/desktop/**"
-      - "package.json"
-      - "pnpm-lock.yaml"
-      - "pnpm-workspace.yaml"
-      - "turbo.json"
-  push:
-    branches:
-      - master
-    paths:
-      - ".github/workflows/ci-js.yml"
-      - "apps/desktop/**"
-      - "package.json"
-      - "pnpm-lock.yaml"
-      - "pnpm-workspace.yaml"
-      - "turbo.json"
-
-concurrency:
-  group: ci-js-${{ github.ref }}
-  cancel-in-progress: true
+  workflow_call:
 
 jobs:
+  changes:
+    name: Changed paths
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      js: ${{ steps.filter.outputs.js }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Detect JavaScript changes
+        id: filter
+        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        with:
+          filters: |
+            js:
+              - ".github/workflows/ci-js.yml"
+              - "apps/desktop/**"
+              - "package.json"
+              - "pnpm-lock.yaml"
+              - "pnpm-workspace.yaml"
+              - "turbo.json"
+
   js:
     name: JavaScript workspace
+    needs: changes
+    if: needs.changes.outputs.js == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:

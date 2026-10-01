@@ -1,0 +1,8 @@
+/.github/ @walking-wisely
+/rust-toolchain.toml @walking-wisely
+/deny.toml @walking-wisely
+/packages/mitm-proxy/ @walking-wisely
+/packages/net-shield/ @walking-wisely
+/packages/net-shield-ffi/ @walking-wisely
+/native-modules/ @walking-wisely
+/apps/mobile/ @walking-wisely

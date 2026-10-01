@@ -18,7 +18,7 @@ include(FetchContent)
 FetchContent_Declare(
   googletest
   GIT_REPOSITORY https://github.com/google/googletest.git
-  GIT_TAG        v1.14.0
+  GIT_TAG        f8d7d77c06936315286eb55f8de22cd23c188571
 )
 set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(googletest)
@@ -37,6 +37,7 @@ add_compile_options(
 
 # Minimum Windows SDK: 10.0.19041.0 (required for SetInterfaceDnsSettings)
 add_compile_definitions(
+  NOMINMAX
   _WIN32_WINNT=0x0A00
   WINVER=0x0A00
   NTDDI_VERSION=0x0A000008   # 20H1 = 0x0A000008
@@ -115,6 +116,7 @@ target_link_libraries(net_svc_tests PRIVATE
 
 target_compile_definitions(net_svc_tests PRIVATE HOLY_BLOCKER_FAKE_WIN32)
 
+enable_testing()
 include(GoogleTest)
 gtest_discover_tests(net_svc_tests)
 

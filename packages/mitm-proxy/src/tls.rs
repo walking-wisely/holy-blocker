@@ -21,6 +21,7 @@ type OwnedIssuer = Issuer<'static, KeyPair>;
 /// See "Requirements for trusted certificates in iOS 13 and macOS 10.15"
 /// (https://support.apple.com/en-us/103769). The generated window must stay under this
 /// *including* the backdating below.
+#[cfg(test)]
 const MAX_LEAF_VALIDITY_DAYS: i64 = 398;
 
 /// Forward validity of a generated leaf.
@@ -131,7 +132,7 @@ impl TlsState {
             .signed_by(key_pair, &self.ca_issuer)
             .context("signing leaf certificate")?;
 
-        Ok(leaf_cert.der().clone().into())
+        Ok(leaf_cert.der().clone())
     }
 
     fn make_server_config(&self, sni: &str) -> Result<ServerConfig> {

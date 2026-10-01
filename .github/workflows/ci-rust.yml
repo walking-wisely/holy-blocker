@@ -1,14 +1,7 @@
 name: CI Rust
 
 on:
-  pull_request:
-  push:
-    branches:
-      - master
-
-concurrency:
-  group: ci-rust-${{ github.ref }}
-  cancel-in-progress: true
+  workflow_call:
 
 jobs:
   changes:
@@ -33,6 +26,7 @@ jobs:
             shared: &shared
               - ".github/workflows/ci-rust.yml"
               - "rust-toolchain.toml"
+              - "deny.toml"
             text-policy:
               - *shared
               - "packages/text-policy/**"
@@ -79,6 +73,8 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: read
+    env:
+      FMT_CLEAN: '["text-policy-ffi","domain-normalize","net-shield-ffi","image-sandbox-ffi"]'
     strategy:
       fail-fast: false
       matrix:
@@ -95,12 +91,46 @@ jobs:
         uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # stable
         with:
           toolchain: 1.90.0
+          components: clippy, rustfmt
 
       - name: Cache Cargo artifacts
         uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
         with:
           workspaces: packages/${{ matrix.crate }}
 
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+        with:
+          tool: cargo-deny@0.20.2
+
+      - name: Format
+        if: contains(fromJSON(env.FMT_CLEAN), matrix.crate)
+        working-directory: packages/${{ matrix.crate }}
+        run: cargo fmt --check
+
+      - name: Clippy
+        working-directory: packages/${{ matrix.crate }}
+        run: cargo clippy --locked --all-targets -- -D warnings
+
       - name: Test
         working-directory: packages/${{ matrix.crate }}
         run: cargo test --locked
+
+      - name: Dependency policy
+        run: cargo deny --manifest-path packages/${{ matrix.crate }}/Cargo.toml --locked --config deny.toml check
+
+      - name: UniFFI bindings
+        if: endsWith(matrix.crate, '-ffi')
+        working-directory: packages/${{ matrix.crate }}
+        env:
+          CRATE: ${{ matrix.crate }}
+        run: |
+          lib="target/debug/lib${CRATE//-/_}.so"
+          cargo build --locked --lib
+          test -f "$lib"
+          for language in kotlin swift; do
+            cargo run --locked --quiet --features bindgen --bin uniffi-bindgen -- \
+              generate --library "$lib" --language "$language" --no-format \
+              --out-dir "$RUNNER_TEMP/bindings/$CRATE/$language"
+          done
+          find "$RUNNER_TEMP/bindings/$CRATE" -type f | grep -q .

@@ -1,0 +1,44 @@
+name: CI Advisories
+
+on:
+  schedule:
+    - cron: "0 5 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: ci-advisories-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  advisories:
+    name: ${{ matrix.crate }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        crate:
+          - text-policy
+          - text-policy-ffi
+          - domain-normalize
+          - domain-blocklist
+          - net-shield
+          - net-shield-ffi
+          - image-sandbox
+          - image-sandbox-ffi
+          - mitm-proxy
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+        with:
+          tool: cargo-deny@0.20.2
+
+      - name: Check advisories
+        run: cargo deny --manifest-path packages/${{ matrix.crate }}/Cargo.toml --locked --config deny.toml check advisories

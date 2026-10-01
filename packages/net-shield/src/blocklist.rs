@@ -580,10 +580,10 @@ impl LruCache {
 
     fn put(&mut self, key: String, value: Option<FilterAction>) {
         if !self.map.contains_key(&key) {
-            if self.map.len() == self.cap {
-                if let Some(oldest) = self.order.pop_front() {
-                    self.map.remove(&oldest);
-                }
+            if self.map.len() == self.cap
+                && let Some(oldest) = self.order.pop_front()
+            {
+                self.map.remove(&oldest);
             }
             self.order.push_back(key.clone());
         }
