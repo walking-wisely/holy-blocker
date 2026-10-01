@@ -42,17 +42,16 @@ verify = "python -m unittest discover -s tools/plan/tests -t ."
 [[step]]
 id = "engineering.agents-md-dedupe"
 title = "one guidance file, not two — reconcile AGENTS.md with CLAUDE.md"
-status = "pending"
-evidence = ""
+status = "done"
+evidence = "AGENTS.md reduced to a pointer at CLAUDE.md; tools/plan/tests/test_guidance.py"
 acceptance = "code"
-depends_on = ["engineering.claude-status-derived"]
 verify = "python -m unittest discover -s tools/plan/tests -t ."
 
 [[step]]
 id = "engineering.bug-kind-ledger"
 title = "bug kind and regression links in the ledger schema"
-status = "at-pr"
-evidence = "PR #66"
+status = "done"
+evidence = "PR #66, commit 74a64ef on master"
 acceptance = "code"
 depends_on = ["engineering.ledger-coverage"]
 verify = "python -m unittest discover -s tools/plan/tests -t ."
@@ -60,16 +59,16 @@ verify = "python -m unittest discover -s tools/plan/tests -t ."
 [[step]]
 id = "engineering.review-triage-policy"
 title = "review triage policy — severity tiers, fix-attempt cap, escalation packet"
-status = "at-pr"
-evidence = "PR #67"
+status = "done"
+evidence = "PR #67, commit 5e1e22c on master; docs/engineering/review-triage.md"
 acceptance = "product"
 verify = "python -m unittest discover -s tools/plan/tests -t ."
 
 [[step]]
 id = "engineering.privacy-review-skill"
 title = "privacy-review skill — data-class inventory gate"
-status = "at-pr"
-evidence = "PR #65"
+status = "done"
+evidence = "PR #65, commit df0313b on master; .claude/skills/privacy-review"
 acceptance = "product"
 verify = "python -m unittest discover -s tools/plan/tests -t ."
 

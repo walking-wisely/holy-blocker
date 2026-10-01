@@ -1,148 +1,25 @@
 # AGENTS.md
 
-Guidance for coding agents working in this repository.
+Holy Blocker is an on-device content blocking project: local-first, no cloud calls, no telemetry.
 
-## Project Shape
+**Read [`CLAUDE.md`](CLAUDE.md) first.** It is the canonical guidance file and holds everything
+this one used to duplicate: the router that decides which loop a request enters, package status,
+conventions, verification checks, and the worktree and PR rhythm. This file carries no project
+state of its own, so it cannot go stale.
 
-Holy Blocker is an on-device content blocking project. Keep the privacy and local-first model central when making changes: do not add cloud calls, telemetry, remote content analysis, or external dataset dependencies unless the user explicitly asks for them.
+## Which loop
 
-## Current State
+- New capability or no plan yet → the `plan-inception` skill.
+- An existing plan step → the `step-loop` skill.
+- Anything else → classify it with the tier table in `CLAUDE.md`, stricter tier on a tie.
 
-The packages below **exist in the repo today** and are actively being built:
+## Commands
 
-| Package                     | Language                      | Status                                                              |
-| --------------------------- | ----------------------------- | ------------------------------------------------------------------- |
-| `apps/desktop`              | TypeScript / Electron + React | Skeleton — BrowserWindow, one IPC stub, status UI                   |
-| `packages/text-policy`      | Rust                          | normalize + lexicon done; scorer/evaluator/policy not yet started   |
-| `packages/mitm-proxy`       | Rust                          | Plain HTTP forwarding works; HTTPS CONNECT returns 501              |
-| `native-modules/win-daemon` | C++20                         | WinEvent hooks + message loop; no capture/OCR/IPC yet               |
-| `machine-learning`          | Python                        | **Baseline evaluation only, no fine-tuning.** Uses `Falconsai/nsfw_image_detection` (pretrained ViT, Apache-2.0, downloaded from Hugging Face on the first evaluation run — no weights are shipped in this package) as-is and measures its false-positive rate on a fully synthetic UI/text-screenshot corpus (code editors, chat, documents, terminals, spreadsheets, forms — text and chrome only, no photos/icons/video frames) via `synth_ui.py` + `eval.py`. No threshold is picked; a score distribution and threshold sweep are reported instead (300 synthetic images, **this model's own whole-image resize, not `image-sandbox`'s tile-max, and not comparable to `image-sandbox`'s thresholds**: FPR 9.7% @ 0.20, 2.3% @ 0.50 — 0.20 and 0.50 are swept values here, not this project's operating point). See `docs/components/machine-learning/plan.md` for details and what's deliberately deferred (tile-max geometry, recall, real screenshots, fine-tuning) |
+- JavaScript workspace: `pnpm install`, `pnpm build`, `pnpm typecheck`, `pnpm dev:desktop`
+- Rust: `cargo test` from the crate directory
+- macOS daemon: `./scripts/test.sh` from `native-modules/mac-daemon`, never bare `swift test`
+- Plan tooling: `python -m tools.plan.ledger next docs/components/<component>`
+- Docs: `python -m tools.plan.doclint`
+- Tooling tests: `python -m unittest discover -s tools/plan/tests -t .`
 
-The packages below are **planned but not yet created** — do not assume they exist:
-
-- `packages/net-shield` — TUN adapter + domain/IP radix filter
-- `packages/image-sandbox` — perceptual hashing + ONNX image classifier
-- `packages/video-watchdog` — async HLS/DASH segment sampler
-- `machine-learning` — MobileNetV3 fine-tuning, eval, and export pipeline; see `docs/components/machine-learning/plan.md`
-
-Each active package has a step-by-step implementation plan in `docs/<package>/PLAN.md`. Read the relevant plan before starting work on a package — it lists the next modules to add, their types, and the correct implementation order.
-
-## Development Workflow — three skills, one front to back
-
-Work flows through three skills in order. They exist because a measured pattern showed
-that a fresh-context agent drops a remembered convention the moment context resets, so
-the pipeline is loaded by name rather than remembered.
-
-- **New work, no plan yet** — run the `plan-inception` skill. It turns a feature idea
-  into a decision record and an executable `plan.md`. It never decides product, faith,
-  legal, or acceptance policy itself: it classifies the plan's claims into four domains,
-  checks them against the doctrine index (`mission.md`, `docs/decisions/`,
-  `docs/product/outcomes.md` + `flows/`, `docs/engineering/coverage.md`), and escalates
-  any unowned decision to the human. Do not assume a new feature fits an existing plan
-  or that `step-loop` covers it — `step-loop` only executes plans that already exist.
-- **Execute an existing plan** — run the `step-loop` skill. It picks the next pending
-  step (`python -m tools.plan.ledger next`), audits its external claims, works in a
-  branch, implements test-first, reviews adversarially in a fresh context, and lands the
-  step per its acceptance kind.
-- **Where the owner sits.** The owner decides product questions, and architecture questions
-  that are ML, cross-platform contracts, new trust boundaries or one-way doors; the agent
-  red-tests those first (`docs/decisions/decision-tiers-and-red-teaming.md`). The owner does not
-  review code or implementation detail, and meets a feature once, when it is done, through its
-  demo (`docs/decisions/feature-demos-and-local-e2e.md`). Privileged steps on the dev machine go
-  through the dispatcher in `docs/decisions/agent-privilege-boundary.md`, never a root shell.
-- **Never skip the reviews.** Before a plan lands, and before a step lands its code, the
-  two bracketing skills run: `assumption-audit` (falsifying command per external claim,
-  before code) and `adversarial-review` (fresh-context review of the diff, after code).
-  Not running them is not a shortcut; it is the failure the whole arrangement exists to
-  prevent.
-
-Current major areas:
-
-## Development Commands
-
-Use `pnpm` for the JavaScript workspace.
-
-- Install JS dependencies: `pnpm install`
-- Run the desktop app: `pnpm dev:desktop`
-- Build all JS workspace packages: `pnpm build`
-- Typecheck all JS workspace packages: `pnpm typecheck`
-- Build the desktop package only: `pnpm --filter @holy-blocker/desktop build`
-- Typecheck the desktop package only: `pnpm --filter @holy-blocker/desktop typecheck`
-
-For Rust policy code:
-
-- From `packages/text-policy`, use `cargo test` for tests.
-- Use `cargo run` only when validating executable behavior.
-
-For Python ML code:
-
-- Not yet built. See `docs/components/machine-learning/plan.md` for the intended package layout under `machine-learning/src/holy_blocker_ml`.
-- Prefer small, importable functions over script-only code so behavior can be unit tested.
-- Place tests under `machine-learning/tests` and wire a standard runner such as `pytest` before relying on it.
-
-For the Windows daemon:
-
-- Build with CMake from `native-modules/win-daemon`.
-- Keep platform APIs isolated from portable decision logic where practical, so pure behavior can be unit tested separately from Win32 event plumbing.
-
-## Test-First Rule For Logic
-
-For any new business-logic function, write focused unit tests first, then implement the function. This applies especially to:
-
-- classification thresholds and policy decisions;
-- text matching, normalization, scoring, or allow/block decisions;
-- ML pipeline configuration and artifact-selection logic;
-- daemon event filtering, debouncing, IPC message shaping, and state transitions;
-- Electron main/preload logic that affects daemon status, local data, or policy decisions.
-
-Frontend-only rendering changes do not need test-first treatment by default, but extracted non-UI logic should still get unit tests.
-
-When a test framework is missing, add the smallest appropriate test setup for the package you are changing instead of leaving new logic untested. Keep tests deterministic and avoid private datasets, explicit sensitive corpora, screenshots, or generated adult-content fixtures in the public repo.
-
-## Code Conventions
-
-- Preserve the existing language boundaries. Do not move daemon, ML, policy, or UI responsibilities into another layer without a clear reason.
-- Keep code local-first. Avoid network access in runtime paths unless explicitly requested.
-- Prefer pure functions for policy and classification decisions. Put side effects at the edges.
-- Keep Electron security settings strict: preserve context isolation and avoid enabling Node integration in the renderer.
-- In the renderer, follow the existing React + TypeScript style and use `lucide-react` icons where icons are needed.
-- In Rust, keep policy logic in testable modules instead of burying it in `main`.
-- In Python, keep training/export orchestration thin and move reusable behavior into importable functions.
-- In C++, keep Win32 callback glue small and move decision logic into testable helpers when the daemon grows.
-
-## Documentation
-
-Docs are plain Markdown under `docs/`. Keep them generator-neutral and use relative links between pages. Do not add sensitive blocklists, private datasets, explicit evaluation samples, generated adult-content screenshots, or other private moderation artifacts to documentation.
-
-Update docs when changing architecture, daemon responsibilities, classification flow, evaluation strategy, or public development workflows.
-
-## Verification Expectations
-
-Before finishing a code change, run the narrowest relevant checks:
-
-- Desktop TypeScript changes: `pnpm --filter @holy-blocker/desktop typecheck`
-- Desktop build or bundling changes: `pnpm --filter @holy-blocker/desktop build`
-- Rust policy changes: `cargo test` from `packages/text-policy`
-- Python logic changes: run the package's unit tests, adding a test command if needed
-- Native daemon changes: build with CMake and run any added unit tests
-
-If a relevant check cannot be run, report the reason clearly.
-
-## Before And After The Code
-
-Two skills bracket implementation work, and they exist because of a measured pattern: modules here
-rest on claims about the outside world, and when those claims go unverified they are wrong often
-enough to invalidate the module rather than a detail of it.
-
-- **Before implementing a plan step**, run the `assumption-audit` skill. It enumerates the external
-  facts the step depends on, attaches one falsifying command to each, runs them, and reports before
-  any code is written.
-- **After writing code**, run the `adversarial-review` skill on the diff, branch, or PR. Its
-  catalogue is this repository's own recurring failure modes, ordered by frequency, with two rules
-  that make a review trustworthy: reproduce or label, and cite or omit.
-
-**Any change that alters what a layer covers updates
-[`docs/engineering/coverage.md`](docs/engineering/coverage.md) in the same PR.** Each component here
-is scoped narrowly and honestly and records its own narrowing; the ledger is the only place the
-union is computed, and the union is the product. `Unverified` is promoted to `Covered` by an
-observation, never by an argument.
+Anything not listed here is in `CLAUDE.md`.
