@@ -115,10 +115,10 @@ The public Tier 1 workflow is intentionally narrow for the current state of the 
 
 ```text
 GitHub Actions workflows: ci.yml (entry point), ci-js.yml, ci-rust.yml, ci-plan.yml,
-ci-advisories.yml, codeql.yml
+ci-platforms.yml, ci-advisories.yml, codeql.yml
 
-- ci.yml runs on every pull request and push to master. It calls ci-js, ci-rust and
-  ci-plan as reusable workflows and ends in a single `CI gate` job that fails if any of
+- ci.yml runs on every pull request and push to master. It calls ci-js, ci-rust,
+  ci-plan and ci-platforms as reusable workflows and ends in a single `CI gate` job that fails if any of
   them failed or was cancelled and accepts skipped. Require `CI gate` in branch
   protection; the individual jobs are path-filtered and may legitimately not run.
 
@@ -139,6 +139,17 @@ ci-advisories.yml, codeql.yml
 - ci-plan:
   - tools/plan unit tests and ledger validation
   - secret-scan (gitleaks)
+
+- ci-platforms (path-filtered native runners):
+  - windows-latest: clippy and `cargo test --locked` for net-shield, which compiles the
+    `cfg(target_os = "windows")` Wintun path; CMake build and ctest of the win-network
+    fake-Win32 tests (`HOLY_BLOCKER_FAKE_WIN32=ON`, no elevation, no driver; 35 tests,
+    `--no-tests=error` because ctest otherwise exits 0 on "No tests were found"); a
+    win-daemon build
+  - macos-latest: `native-modules/mac-daemon/scripts/test.sh`, which builds both FFI
+    dylibs first (Xcode 26.6, Swift 6.3.3 on the runner; 347 tests)
+  - ubuntu-latest: Gradle wrapper validation, Kotlin binding generation through
+    `apps/mobile/scripts/build-ffi.sh`, then `testDebugUnitTest assembleDebug`
 
 - ci-advisories (weekly and on demand): cargo deny advisories for every crate, so a new
   RustSec entry surfaces without waiting for a code change. Not part of the gate.
@@ -176,8 +187,43 @@ Branch protection for `master` (repository owner to apply; not enabled by a work
   maintainer exists or the owner bypasses it. Replace the handle with a team when one does.
 - Block force pushes and deletion.
 
-Not covered yet: Kotlin, Swift and C++ builds, native Windows and macOS runners, and the
-ONNX inference and parity tests, which skip without the gitignored model.
+Not covered yet:
+
+- The `holy_blocker_net_svc` executable. It does not link: `ServiceHost::Run` and
+  `InstallerActions` have no definitions until `win-network.service-host` and
+  `win-network.installer-actions` land, so CI builds only the `net_svc_tests` target.
+  Building the service exe is the first thing to add when those steps are done.
+- `win-network` integration tests (`HOLY_BLOCKER_INTEGRATION_TESTS`), which need elevation
+  and the Wintun driver, and every emulator smoke test under `apps/mobile/scripts/`.
+- Per-ABI Android `.so` builds (`cargo-ndk`); the app job runs JVM unit tests and assembles
+  without native libraries.
+- CodeQL c-cpp stays on `build-mode: none`: a real build needs the MSVC toolchain on a
+  Windows runner and a matrix change to `codeql.yml`; Kotlin and Swift are not analysed.
+- The ONNX inference and parity tests, which skip without the gitignored model.
+- Billing: the macOS and Windows jobs ran about 1.5 minutes each on this repository's
+  first green run. Runner minutes are free on public repositories; revisit if it goes private.
+
+The first real Windows build found defects the Linux-only CI could not: `win-network`
+included `windows.h` before `winsock2.h`, cast an integer to an SDK enum, failed `/WX`
+on an unused parameter, and never called `enable_testing()`, so `ctest` ran nothing.
+
+## CI Backlog
+
+Open CI work, each with the event that makes it actionable. Delete a row when it lands.
+
+| Item | Why it is open | Do it when |
+|---|---|---|
+| Build `holy_blocker_net_svc` in the Windows job | Does not link until `ServiceHost::Run` and `InstallerActions` exist | `win-network.service-host` and `win-network.installer-actions` are done |
+| `win-network` integration tests | Need elevation and the Wintun driver | A self-hosted or admin-capable Windows runner exists |
+| Android emulator smoke tests | `apps/mobile/scripts/smoke-test*.sh` drive an emulator and a reboot; manual today | A reliable emulator runner is chosen; run nightly, not per PR |
+| Per-ABI Android `.so` via `cargo-ndk` | The app job assembles without native libraries | The mobile image path (LiteRT) needs native libs in CI |
+| CodeQL c-cpp real build | `build-mode: none` analyses source that is never compiled | `codeql.yml` gains a Windows/MSVC matrix leg |
+| CodeQL for Kotlin and Swift | Neither language is analysed | The CodeQL matrix is next touched |
+| ONNX inference and parity tests | Skip without the gitignored model | A model-provisioning decision exists; trusted-only tier, never public CI |
+| `onnx` feature graph under clippy and cargo-deny | `image-sandbox` and `image-sandbox-ffi` are checked on default features only | The same time as the ONNX tests |
+| rustfmt on the five unformatted crates | `text-policy`, `domain-blocklist`, `net-shield`, `image-sandbox`, `mitm-proxy` would need a repo-wide reformat that conflicts with open branches | The open-branch queue is merged; then format one crate at a time and add it to `FMT_CLEAN` |
+| SBOM and build provenance | No release workflow exists | The first release artifact is cut |
+| Branch protection requiring `CI gate` | Settings live outside the repo's files | Applied by the owner via the API, recorded here once done |
 
 ## Private Eval Packs
 

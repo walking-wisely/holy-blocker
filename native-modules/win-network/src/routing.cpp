@@ -21,7 +21,7 @@ RoutingManager::AddDefaultRoute(NET_LUID adapter_luid) {
     row.DestinationPrefix.Prefix.si_family   = 2;   // AF_INET
     row.NextHop.si_family                    = 2;   // AF_INET (gateway 0.0.0.0)
     row.Metric                               = kRouteMetric;
-    row.Protocol                             = 3;   // MIB_IPPROTO_NETMGMT
+    row.Protocol                             = static_cast<decltype(row.Protocol)>(3);   // MIB_IPPROTO_NETMGMT
 
     DWORD err = CreateIpForwardEntry2(&row);
     if (err != NO_ERROR) return std::unexpected(win_error(err));
@@ -32,7 +32,7 @@ RoutingManager::AddDefaultRoute(NET_LUID adapter_luid) {
 }
 
 std::expected<void, std::error_code>
-RoutingManager::RemoveDefaultRoute(NET_LUID adapter_luid) {
+RoutingManager::RemoveDefaultRoute([[maybe_unused]] NET_LUID adapter_luid) {
     if (!route_installed_) return {};  // idempotent
 
     DWORD err = DeleteIpForwardEntry2(&route_);
