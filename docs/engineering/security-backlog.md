@@ -47,7 +47,7 @@ Suggested checks:
 
 Implemented with `gitleaks` in two layers: a `pre-commit` hook
 (`.pre-commit-config.yaml`) running `gitleaks protect --staged` on every local
-commit, and a `secret-scan` CI job (`.github/workflows/ci.yml`) running
+commit, and a `secret-scan` CI job (`.github/workflows/ci-plan.yml`) running
 `gitleaks detect` against full git history on every PR and push. The project
 allowlist baseline lives in `.gitleaks.toml`; false positives are added there
 with a documented reason rather than suppressed inline.

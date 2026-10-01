@@ -114,24 +114,26 @@ Tier 3: release or nightly eval
 The public Tier 1 workflow is intentionally narrow for the current state of the repository:
 
 ```text
-GitHub Actions workflow: .github/workflows/ci.yml
+GitHub Actions workflows: .github/workflows/ci-js.yml, ci-rust.yml, ci-plan.yml
 
-- desktop:
-  - pnpm --filter @holy-blocker/desktop typecheck
-  - pnpm --filter @holy-blocker/desktop build
+- ci-js (apps/desktop and the pnpm workspace):
+  - pnpm lint, pnpm typecheck, pnpm build
 
-- text-policy:
-  - cargo test
+- ci-rust (every crate under packages/, one matrix leg per affected crate):
+  - cargo test --locked on the toolchain pinned in rust-toolchain.toml
+  - a crate is affected when it or any path dependency changes, e.g. a change
+    to domain-normalize also runs domain-blocklist, net-shield and net-shield-ffi
 
-- mitm-proxy:
-  - cargo test
-
-- net-shield:
-  - cargo test
+- ci-plan:
+  - tools/plan unit tests and ledger validation
+  - secret-scan (gitleaks)
 ```
 
-On pull requests and pushes to `main`, each job runs only when its package paths change.
-The same workflow also exposes `workflow_dispatch` so maintainers can run the full suite on demand.
+On pull requests and pushes to `master`, each job runs only when its paths change.
+`ci-plan` also exposes `workflow_dispatch` so maintainers can run it on demand.
+
+Not covered yet: clippy/rustfmt, Kotlin, Swift and C++ builds, and the ONNX inference
+and parity tests, which skip without the gitignored model.
 
 ## Private Eval Packs
 
