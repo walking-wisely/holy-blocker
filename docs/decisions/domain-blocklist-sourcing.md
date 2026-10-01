@@ -1,5 +1,29 @@
 # Decision: Domain Blocklist Sourcing, Merging, and Distribution
 
+## Summary
+
+- The blocklist is built offline from three pinned upstream sources (StevenBlack/hosts, hagezi NSFW, UT1 `adult`), merged with per-entry provenance, and shipped to devices as a single signed, mmap'd FST over reversed domain labels.
+- **Legal boundary first:** the project never builds, holds or infers a CSAM list, and the pipeline never fetches or inspects a listed site. Any CSAM suspicion can only originate externally and goes through a private channel.
+- Normalization is a comparison key only and must never widen a rule's scope; scope comes from what the source named, checked against the Public Suffix List.
+- Six publish gates stand between a build and a release, and each needs explicit human sign-off to override. A failed source fetch fails the build rather than shipping a partial list.
+- Liveness revalidation is DNS-only, centralised in the pipeline and cached with a TTL, never done on-device.
+- A small, separately signed overlay tier carries urgent additions and removals between bulk rebuilds. The bulk FST is never patched in place.
+- The entry count (~1,000,000) and bytes-per-entry are planning assumptions, gated by build-time checks rather than trusted.
+
+## Section map
+
+| Question | Section |
+|---|---|
+| What is legally off-limits, and how a report is handled | [Legal boundary](#legal-boundary-settled-first-because-it-constrains-everything-else), [The CSAM boundary](#the-csam-boundary) |
+| Which lists, and how revisions are pinned | [Sources](#sources) |
+| How sources are merged, scoped and normalized | [Combining sources](#combining-sources) |
+| What blocks a release | [Publish gates](#publish-gates) |
+| Why DNS-only, and how the TTL cache works | [Liveness revalidation](#liveness-revalidation-dns-only-centralized-cached-with-a-ttl) |
+| The on-device format and lookup | [On-device storage and lookup](#on-device-storage-and-lookup) |
+| Urgent updates between rebuilds | [Fast-cadence overlay tier](#a-fast-cadence-overlay-tier-so-an-update-need-not-wait-for-the-next-bulk-rebuild) |
+| Signing, manifest, trust contract | [Distribution](#distribution) |
+| What was considered and refused | [Rejected alternatives](#rejected-alternatives) |
+
 ## Status
 
 Accepted. No code exists yet — this records the design so `packages/domain-blocklist` (planned,

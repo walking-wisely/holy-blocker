@@ -33,20 +33,26 @@ How the codebase is built, tested, and maintained. Audience: contributors.
 Architecture Decision Records — one file per significant discrete choice. Records what was decided, why, and what was rejected. Never deleted, only superseded.
 
 ### [`components/`](components/)
-One folder per component. Each contains a `plan.md` (implementation phases, current state, what's next) and platform-specific files where the implementation meaningfully differs per OS.
+One folder per component, indexed in [`components/README.md`](components/README.md). Each has its own `README.md` (code location, status, decisions, what to read for which task), a `plan.md` (build order and step markers), a `steps.toml` ledger, and, for large components, a `modules/` folder with one specification per module. Start from the index, not from a plan.
 
-| Component | Language | Plan |
-|---|---|---|
-| `text-policy` | Rust | [plan.md](components/text-policy/plan.md) |
-| `mitm-proxy` | Rust | [plan.md](components/mitm-proxy/plan.md) |
-| `net-shield` | Rust | [plan.md](components/net-shield/plan.md) |
-| `image-sandbox` | Rust | [plan.md](components/image-sandbox/plan.md) |
-| `video-watchdog` | Rust | [plan.md](components/video-watchdog/plan.md) |
-| `domain-blocklist` | Rust | [plan.md](components/domain-blocklist/plan.md) |
-| `win-daemon` | C++20 | [plan.md](components/win-daemon/plan.md) |
-| `win-network` | C++ / Windows Service | [plan.md](components/win-network/plan.md) |
-| `mobile` | Kotlin / Android | [plan.md](components/mobile/plan.md) |
-| `desktop` | TypeScript / Electron | [plan.md](components/desktop/plan.md) |
-| `backend` | Go | [plan.md](components/backend/plan.md) |
-| `frontend` | TypeScript / React | [plan.md](components/frontend/plan.md) |
-| `voice-gate` | Rust + platform adapters | [plan.md](components/voice-gate/plan.md) |
+### [`status/`](status/)
+Per-package current state, one file per package, named `<area>-<package>.md`. This is where "what exists and what is verified" lives; `CLAUDE.md` carries only a one-line summary and a link.
+
+## Where to look
+
+| You want | Open |
+|---|---|
+| Why the project exists | [`mission.md`](mission.md) |
+| What a component is and where its code lives | [`components/README.md`](components/README.md) → the component's `README.md` |
+| The next step to build | `python -m tools.plan.ledger next docs/components/<component>` |
+| A module's specification | `components/<component>/modules/` |
+| What exists today and what is verified | [`status/`](status/), then [`engineering/coverage.md`](engineering/coverage.md) |
+| Why a design choice was made | [`decisions/README.md`](decisions/README.md) |
+| How a runtime behaviour plays out | [`product/flows/`](product/flows/) |
+| Cross-component design | [`architecture/overview.md`](architecture/overview.md) |
+
+Old review records and superseded snapshots live in a component's `archive/` folder and are not current state. The root [`PLAN.md`](../PLAN.md) is the original vision roadmap; it predates the component plans and is not a build order.
+
+## Keeping it navigable
+
+`python -m tools.plan.doclint` fails on a dead relative link or anchor, a component without a `README.md`, and a component missing from `components/README.md`. CI runs it on every docs change.

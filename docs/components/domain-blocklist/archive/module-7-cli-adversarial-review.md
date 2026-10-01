@@ -8,13 +8,13 @@ kept as-written below (findings text unedited); do not read it as the current st
 two Critical findings (§1 the `Runtime`-dropped-inside-async-context panic, §2 the DNS client's
 missing retries) and the unintended `net-shield`-on-full-HTTP-stack dependency were fixed in this
 same branch's later commits — see
-[the plan's module 7 disposition note](plan.md#7-cli--the-pipeline-entry-point) for what changed and
+[the plan's module 7 disposition note](../plan.md#7-cli--the-pipeline-entry-point) for what changed and
 what a fresh review would need to re-verify. Findings below this point were not individually
 re-audited when that disposition note was written; treat any one of them as still open until
 checked against current code. See
-[the plan's module 7 section](plan.md#7-cli--the-pipeline-entry-point) for the behavioral contract
+[the plan's module 7 section](../plan.md#7-cli--the-pipeline-entry-point) for the behavioral contract
 this code is supposed to satisfy, and
-[domain-blocklist-sourcing.md](../../decisions/domain-blocklist-sourcing.md) for the pipeline
+[domain-blocklist-sourcing.md](../../../decisions/domain-blocklist-sourcing.md) for the pipeline
 design.
 
 **Reproduction summary:** 3 findings reproduced by executing isolated code written for this review

@@ -31,6 +31,8 @@ jobs:
               - "docs/components/**/plan.md"
               - "docs/engineering/steps.toml"
               - "docs/engineering/plan.md"
+              - "docs/**"
+              - "*.md"
 
   plan-ledger:
     name: Plan ledger
@@ -56,6 +58,9 @@ jobs:
 
       - name: Validate step manifests
         run: python -m tools.plan.ledger validate docs/components/*/ docs/engineering
+
+      - name: Lint docs navigation (links, anchors, component indexes)
+        run: python -m tools.plan.doclint
 
   secret-scan:
     name: Secret scan

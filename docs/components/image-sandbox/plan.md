@@ -41,7 +41,7 @@ ToTensor(); Normalize(IMAGENET_MEAN, IMAGENET_STD)
 ```
 
 `torchvision.transforms.Resize` with a scalar resizes the **shorter** side. Every number in
-[results.md](../machine-learning/results.md) was measured under that pipeline, so a squash
+the published results (that record was removed from the repo — see [machine-learning/plan.md](../machine-learning/plan.md)) was measured under that pipeline, so a squash
 would mean the published accuracy describes something other than what ships.
 
 `tests/parity.rs` guards this against a torchvision-generated fixture, and it immediately caught
@@ -53,7 +53,7 @@ not noise, and invisible to any test that only checks Rust against itself.
 ### Correction, part two: the centre crop is not what ships either
 
 The deployed geometry is **tile-max**, not the centre crop described above. The
-[input-handling experiment](../machine-learning/experiments/input-handling.md) measured four
+input-handling experiment (record removed from the repo — see [machine-learning/plan.md](../machine-learning/plan.md)) measured four
 candidates against off-centre composites and the centre crop lost badly: it caught **41%** of
 explicit content where tiling caught **62%** at each arm's own calibrated threshold, because it
 discards ~23% of a wide image and explicit content in the side of a banner is simply never seen.
