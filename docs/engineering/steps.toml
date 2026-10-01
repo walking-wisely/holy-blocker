@@ -166,7 +166,7 @@ verify = "python -m unittest discover -s tools/plan/tests -t ."
 [[step]]
 id = "engineering.loop-check-ungoverned-roots"
 title = "loop check leaves .github, CLAUDE.md and unclaimed new roots ungoverned"
-status = "pending"
+status = "at-pr"
 evidence = ""
 kind = "bug"
 regressed_step = "engineering.loop-enforcement"

@@ -57,7 +57,7 @@ def load_governed(root: Path) -> list[Governed]:
 
 def load_governed_at(root: Path, rev: str) -> list[Governed]:
     archive = subprocess.run(
-        ["git", "archive", rev, "docs"], cwd=root, check=True, capture_output=True
+        ["git", "archive", "--end-of-options", rev, "docs"], cwd=root, check=True, capture_output=True
     ).stdout
     with tempfile.TemporaryDirectory() as tmp:
         subprocess.run(["tar", "-x", "-C", tmp], input=archive, check=True)
@@ -167,13 +167,22 @@ def _changed_files(args: argparse.Namespace) -> list[str]:
     if args.changed_files:
         text = Path(args.changed_files).read_text(encoding="utf-8")
     else:
-        text = subprocess.run(
-            ["git", "diff", "--name-only", "--no-renames", f"{args.base}...{args.head}"],
+        out = subprocess.run(
+            [
+                "git",
+                "diff",
+                "-z",
+                "--name-only",
+                "--no-renames",
+                "--end-of-options",
+                f"{args.base}...{args.head}",
+            ],
             cwd=args.root,
             check=True,
             capture_output=True,
             text=True,
         ).stdout
+        return [path for path in out.split("\0") if path]
     return [line.strip() for line in text.splitlines() if line.strip()]
 
 

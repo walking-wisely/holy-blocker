@@ -228,7 +228,7 @@ class GitDiffTest(unittest.TestCase):
         with contextlib.redirect_stderr(err):
             code = loop.main(
                 ["check", "--root", str(self.root), "--body-file", str(body_file),
-                 "--base", self.base, "--head", "HEAD"]
+                 f"--base={self.base}", "--head", "HEAD"]
             )
         return code, err.getvalue()
 
@@ -267,6 +267,27 @@ class GitDiffTest(unittest.TestCase):
         code, err = self.check()
         self.assertEqual(code, 1)
         self.assertIn("packages/b/y.rs", err)
+
+    def test_non_ascii_path_under_a_claimed_root_is_still_governed(self):
+        self.write("packages/a/é.rs", "fn e() {}\n")
+        self.commit()
+        code, err = self.check()
+        self.assertEqual(code, 1)
+        self.assertIn("Assumption audit", err)
+
+    def test_non_ascii_path_in_an_unclaimed_crate_fails(self):
+        self.write("packages/é/z.rs", "fn z() {}\n")
+        self.commit()
+        code, err = self.check()
+        self.assertEqual(code, 1)
+        self.assertIn("é", err)
+
+    def test_option_shaped_base_is_rejected_without_side_effects(self):
+        target = Path(self._tmp.name) / "pwn"
+        self.base = f"--output={target}"
+        code, _ = self.check()
+        self.assertEqual(code, 1)
+        self.assertFalse(target.exists())
 
     def test_base_without_manifests_fails_closed(self):
         original = self.base
