@@ -14,6 +14,8 @@
 # Steps are the plan's `## Implementation order` items, in its own order. The
 # package's existing main.cpp hooks are the starting point, not a step.
 
+paths = ["native-modules/win-daemon"]
+
 [[step]]
 id = "win-daemon.capture"
 title = "capture — GDI window capture"

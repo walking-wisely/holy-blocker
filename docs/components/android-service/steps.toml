@@ -17,6 +17,8 @@
 # plan and apps/mobile exist on master, so there is nothing here left to build and
 # `ledger next` correctly reports all steps done.
 
+paths = []
+
 [[step]]
 id = "android-service.superseded"
 title = "superseded by apps/mobile — do not build against this plan"

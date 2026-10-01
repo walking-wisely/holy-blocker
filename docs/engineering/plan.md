@@ -54,7 +54,7 @@ A repo-wide test (`tools/plan/tests/test_manifests.py`) discovers every
 `docs/components/*/plan.md` and fails if a component has no manifest or if any
 manifest does not validate against its plan, so future plans cannot silently opt out.
 
-## Step 2 — loop enforcement
+## Step 2 — loop enforcement **Done.**
 
 <!-- step: engineering.loop-enforcement -->
 
@@ -115,6 +115,12 @@ audit table, an empty review section — to stdout. This is the mechanism that p
 the artifacts in the PR instead of a transcript; it is what `gh pr create --body-file`
 should be fed. Optional in the sense that `check` does not depend on it, but without
 it the rule is a tax rather than a convenience.
+
+Built notes: `paths` is a top-level key in each `steps.toml` (empty or absent for components with
+no code yet; `tools/plan` and `.claude/skills` belong to the engineering manifest). `check` also
+rejects an empty audit or review section, ignores headings inside code fences or HTML comments, and
+fails closed on an unreadable body or an undeterminable changed-file list. `open` renders the two
+sections as comments, so an unfilled template fails the check. Dependabot PRs are skipped in CI.
 
 ### 2.4 CI
 
@@ -374,7 +380,7 @@ Run 2026-09-19 before writing the skill. All claims settle now; none deferred.
 | No enumerated class transmits off-device | `rg` for URLSession/NWConnection/OkHttp/URLConnection across mac-daemon, mobile, desktop sources | None. Only a loopback probe socket and the mobile VPN's by-design DNS forwarding; desktop speaks to a local pipe. Proxy debug trace logs `method`/`host`/`port` per forwarded request (`forward.rs:36`) — device-local, but itself a shallow visited-domain record | **TRUE** on inspection; the debug-level host record is filed as a finding, settles-now |
 | Audit target path is fresh | `ls docs/engineering/privacy-backlog.md` | Does not exist yet | n/a — created by the first audit-mode run (this step ships the skill that writes it, not the file itself), settles-now |
 
-### Step 8 — wire mandatory gates into step-loop
+### Step 8 — wire mandatory gates into step-loop **Done.**
 
 <!-- step: engineering.mandatory-review-gates -->
 
@@ -417,7 +423,7 @@ These steps implement [decision-tiers-and-red-teaming.md](../decisions/decision-
 `plan-inception` changes landed with the decisions; what remains is wiring and tooling. Steps 9 and 10
 touch `step-loop`, so both wait for step 8 to avoid editing the same file in parallel.
 
-### Step 9 — step-loop: feature-level hand-off and the local e2e gate
+### Step 9 — step-loop: feature-level hand-off and the local e2e gate **Done.**
 
 <!-- step: engineering.step-loop-feature-gates -->
 
@@ -468,3 +474,27 @@ settle that. Verify: `visudo -cf` on the drop-in and the dispatcher's own tests.
   planned ones). They have little to move.
 - A GDPR compliance audit against a lawyer's checklist. `privacy-review` (step 7)
   is a mechanical data-inventory gate, not a certification.
+
+### Bug — placeholder section content
+
+<!-- step: engineering.loop-check-placeholder-content -->
+
+`loop check` passes a body whose sections hold only `-`, `.`, a zero-width space or a bare `N/A`, and an unterminated `<!--` or code fence is not stripped. Reproduce with `check()` on a synthetic body; the fix defines a minimum for real content and closes the unterminated cases.
+
+Acceptance: `code`. Verify: `python -m unittest discover -s tools/plan/tests -t .`.
+
+### Bug — step id not tied to the governing manifest
+
+<!-- step: engineering.loop-check-step-id-scope -->
+
+`_names_step` accepts any manifest's step id, so a PR touching `tools/plan/` can name `text-policy.verdict`. `test_step_id_may_belong_to_a_different_manifest` asserts this on purpose, so the fix first decides whether a cross-package step is legitimate.
+
+Acceptance: `code`. Verify: `python -m unittest discover -s tools/plan/tests -t .`.
+
+### Bug — ungoverned roots
+
+<!-- step: engineering.loop-check-ungoverned-roots -->
+
+A diff touching only `packages/new-crate/` (unclaimed), `.github/workflows/`, or `CLAUDE.md` returns exit 0 from `loop check`. Either claim those roots in a manifest or record the narrowing in `docs/engineering/coverage.md`.
+
+Acceptance: `code`. Verify: `python -m unittest discover -s tools/plan/tests -t .`.

@@ -13,6 +13,8 @@
 # plan.md. `evidence` is one line pointing at where the step landed (commit, PR, or
 # the plan's own wording), not an argument.
 
+paths = ["tools/plan", ".claude/skills"]
+
 [[step]]
 id = "engineering.ledger-coverage"
 title = "ledger coverage — a steps.toml and plan markers for every component"
@@ -24,8 +26,8 @@ verify = "python -m unittest discover -s tools/plan/tests -t . && python -m tool
 [[step]]
 id = "engineering.loop-enforcement"
 title = "loop enforcement — a trigger rule and a machine-checked PR contract"
-status = "pending"
-evidence = ""
+status = "done"
+evidence = "tools/plan/loop.py (check, open), manifest `paths`, ci-plan loop-contract job; branch infra/loop-enforcement"
 acceptance = "code"
 depends_on = ["engineering.ledger-coverage"]
 verify = "python -m unittest discover -s tools/plan/tests -t ."
@@ -75,8 +77,8 @@ verify = "python -m unittest discover -s tools/plan/tests -t ."
 [[step]]
 id = "engineering.mandatory-review-gates"
 title = "wire security + privacy review into step-loop unconditionally"
-status = "pending"
-evidence = ""
+status = "done"
+evidence = "step-loop gate 4 runs security + privacy reviews unconditionally with review-triage routing; tools/plan/tests/test_step_loop_gates.py; branch infra/loop-enforcement"
 acceptance = "code"
 depends_on = [
     "engineering.loop-enforcement",
@@ -89,8 +91,8 @@ verify = "python -m unittest discover -s tools/plan/tests -t ."
 [[step]]
 id = "engineering.step-loop-feature-gates"
 title = "step-loop: feature-level hand-off and the local e2e gate"
-status = "pending"
-evidence = ""
+status = "done"
+evidence = "step-loop gate 6 e2e gate and demo hand-off; tools/plan/tests/test_step_loop_gates.py; branch infra/loop-enforcement"
 acceptance = "code"
 depends_on = ["engineering.mandatory-review-gates"]
 verify = "python -m unittest discover -s tools/plan/tests -t ."
@@ -112,3 +114,33 @@ evidence = ""
 acceptance = "product"
 depends_on = ["engineering.mandatory-review-gates"]
 verify = "visudo -cf <drop-in>"
+
+[[step]]
+id = "engineering.loop-check-placeholder-content"
+title = "loop check accepts placeholder section content and unterminated comments"
+status = "pending"
+evidence = ""
+kind = "bug"
+regressed_step = "engineering.loop-enforcement"
+acceptance = "code"
+verify = "python -m unittest discover -s tools/plan/tests -t ."
+
+[[step]]
+id = "engineering.loop-check-step-id-scope"
+title = "loop check accepts a step id from a manifest that does not govern the touched paths"
+status = "pending"
+evidence = ""
+kind = "bug"
+regressed_step = "engineering.loop-enforcement"
+acceptance = "code"
+verify = "python -m unittest discover -s tools/plan/tests -t ."
+
+[[step]]
+id = "engineering.loop-check-ungoverned-roots"
+title = "loop check leaves .github, CLAUDE.md and unclaimed new roots ungoverned"
+status = "pending"
+evidence = ""
+kind = "bug"
+regressed_step = "engineering.loop-enforcement"
+acceptance = "code"
+verify = "python -m unittest discover -s tools/plan/tests -t ."

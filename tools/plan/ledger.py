@@ -71,6 +71,13 @@ def load_manifest(package_dir: Path) -> list[Step]:
     ]
 
 
+def load_paths(package_dir: Path) -> tuple[str, ...]:
+    """Code roots a manifest governs; empty when the package has no code yet."""
+    path = Path(package_dir) / "steps.toml"
+    data = tomllib.loads(path.read_text(encoding="utf-8"))
+    return tuple(data.get("paths", ()))
+
+
 def extract_markers(text: str) -> list[str]:
     return MARKER_RE.findall(text)
 

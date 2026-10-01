@@ -4,8 +4,8 @@ After a review finds something, what happens? This page answers that. `step-loop
 gate 5 used to say only "if the review finds a load-bearing gap, go back to gate 1",
 which leaves every non-blocking finding and every judgment call unspecified. This is
 the specification those words pointed at: severity tiers, a fix-attempt cap, a routing
-table, and the escalation packet format (§4) that step 8 wires into `step-loop` so it
-quotes instead of composes freehand.
+table, and the escalation packet format (§4) that `step-loop` gate 4 quotes
+so it never composes one freehand.
 
 Severity is ranked by consequence, on the same axis `adversarial-review` already uses
 ("a guard that fails open silently outranks a crash" — `.claude/skills/adversarial-review/SKILL.md`):
@@ -34,9 +34,8 @@ not a guideline:
 MAX_FIX_ATTEMPTS = 1
 ```
 
-This document is the contract; mechanical enforcement — `step-loop` actually
-refusing a third attempt — lands when step 8 wires the routing table (§3) into the
-skill. Until then the number is binding on the loop's operator, not on the skill.
+This document is the contract; `step-loop` gate 4 names the constant and refuses a third
+attempt.
 
 One attempt exists to answer the finding; the second run verifies the fix. Anything that
 still does not clear is either a mis-framed finding or a problem the first attempt did
@@ -70,3 +69,7 @@ tightens from observed outcomes instead of staying a fixed guess.
 
 | date | finding | routed-as | should-have-been | why |
 |---|---|---|---|---|
+| 2026-10-02 | `edited` trigger re-runs all of CI on every PR title or body edit | escalated | pending | cost versus a separate light workflow is a product call |
+| 2026-10-02 | `loop-contract` runs the checker from the PR head, so a PR can edit its own gate; CODEOWNERS coverage of `tools/plan/**`, `docs/**/steps.toml`, `.github/**` unconfirmed | escalated | pending | guardrail or enforcement is a risk-tolerance call |
+| 2026-10-02 | steps 8 and 9 marked done on gates that are only prose in `SKILL.md`, with no e2e runner | escalated | pending | whether `acceptance = "code"` is the right claim for documented-only capability |
+| 2026-10-02 | Dependabot PRs skip the contract check even on governed paths | escalated | pending | intentional skip versus coverage is a risk-tolerance call |

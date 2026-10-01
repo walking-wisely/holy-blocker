@@ -1,0 +1,260 @@
+import contextlib
+import io
+import tempfile
+import unittest
+from pathlib import Path
+
+from tools.plan import ledger, loop
+
+MANIFESTS = [
+    loop.Governed(
+        package="docs/components/net-shield",
+        paths=("packages/net-shield", "packages/net-shield-ffi"),
+        step_ids=("net-shield.dns", "net-shield.sni"),
+    ),
+    loop.Governed(
+        package="docs/components/desktop",
+        paths=("apps/desktop",),
+        step_ids=("desktop.ipc",),
+    ),
+]
+
+COMPLETE_BODY = """Summary.
+
+Step: `net-shield.dns`
+
+## Assumption audit
+All claims settle now.
+
+## Adversarial review
+N/A — docs-only wording change.
+"""
+
+
+def check(body, changed):
+    return loop.check(body, changed, MANIFESTS)
+
+
+class OwningTest(unittest.TestCase):
+    def test_file_under_a_governed_path_matches(self):
+        self.assertEqual(
+            [m.package for m in loop.governing(["packages/net-shield/src/lib.rs"], MANIFESTS)],
+            ["docs/components/net-shield"],
+        )
+
+    def test_sibling_directory_with_shared_prefix_does_not_match(self):
+        self.assertEqual(loop.governing(["packages/net-shield-extra/a.rs"], MANIFESTS), [])
+
+    def test_exact_path_matches(self):
+        self.assertEqual(len(loop.governing(["apps/desktop"], MANIFESTS)), 1)
+
+    def test_trailing_slash_in_manifest_path_is_tolerated(self):
+        manifests = [loop.Governed("p", ("apps/desktop/",), ("desktop.ipc",))]
+        self.assertEqual(len(loop.governing(["apps/desktop/a.ts"], manifests)), 1)
+
+
+class CheckTest(unittest.TestCase):
+    def test_no_governed_file_passes_with_empty_body(self):
+        self.assertEqual(check("", ["docs/README.md", "CLAUDE.md"]), [])
+
+    def test_governed_file_with_empty_body_fails_on_both_counts(self):
+        problems = check("", ["packages/net-shield/src/lib.rs"])
+        self.assertTrue(any("step id" in p for p in problems))
+        self.assertTrue(any("Assumption audit" in p for p in problems))
+        self.assertTrue(any("Adversarial review" in p for p in problems))
+
+    def test_unknown_step_id_fails(self):
+        body = COMPLETE_BODY.replace("net-shield.dns", "net-shield.bogus")
+        problems = check(body, ["packages/net-shield/src/lib.rs"])
+        self.assertTrue(any("step id" in p for p in problems))
+
+    def test_id_that_is_only_a_prefix_of_a_real_one_fails(self):
+        body = COMPLETE_BODY.replace("net-shield.dns", "net-shield.dns-extra")
+        self.assertTrue(any("step id" in p for p in check(body, ["apps/desktop/a.ts"])))
+
+    def test_missing_audit_heading_fails(self):
+        body = COMPLETE_BODY.replace("## Assumption audit\nAll claims settle now.\n", "")
+        problems = check(body, ["packages/net-shield/src/lib.rs"])
+        self.assertEqual(len(problems), 1)
+        self.assertIn("Assumption audit", problems[0])
+
+    def test_missing_review_heading_fails(self):
+        body = COMPLETE_BODY.replace(
+            "## Adversarial review\nN/A — docs-only wording change.\n", ""
+        )
+        problems = check(body, ["packages/net-shield/src/lib.rs"])
+        self.assertEqual(len(problems), 1)
+        self.assertIn("Adversarial review", problems[0])
+
+    def test_complete_body_passes(self):
+        self.assertEqual(check(COMPLETE_BODY, ["packages/net-shield/src/lib.rs"]), [])
+
+    def test_one_line_not_applicable_section_passes(self):
+        body = "`desktop.ipc`\n\n## Assumption audit\nN/A — rename.\n\n## Adversarial review\nN/A — rename.\n"
+        self.assertEqual(check(body, ["apps/desktop/src/a.ts"]), [])
+
+    def test_heading_with_no_content_fails(self):
+        body = "`desktop.ipc`\n\n## Assumption audit\n\n## Adversarial review\nN/A — rename.\n"
+        problems = check(body, ["apps/desktop/src/a.ts"])
+        self.assertEqual(len(problems), 1)
+        self.assertIn("empty", problems[0])
+
+    def test_heading_followed_only_by_the_next_heading_is_empty(self):
+        body = "`desktop.ipc`\n## Assumption audit\n## Adversarial review\nN/A — x.\n"
+        self.assertTrue(any("empty" in p for p in check(body, ["apps/desktop/a.ts"])))
+
+    def test_commented_out_heading_does_not_count(self):
+        body = (
+            "`desktop.ipc`\n<!-- ## Assumption audit\nstuff -->\n"
+            "## Adversarial review\nN/A — x.\n"
+        )
+        problems = check(body, ["apps/desktop/a.ts"])
+        self.assertTrue(any("Assumption audit" in p for p in problems))
+
+    def test_heading_inside_code_fence_does_not_count(self):
+        body = (
+            "`desktop.ipc`\n```\n## Assumption audit\nx\n```\n"
+            "## Adversarial review\nN/A — x.\n"
+        )
+        self.assertTrue(any("Assumption audit" in p for p in check(body, ["apps/desktop/a.ts"])))
+
+    def test_nested_heading_level_does_not_count(self):
+        body = "`desktop.ipc`\n### Assumption audit\nx\n## Adversarial review\nN/A — x.\n"
+        self.assertTrue(any("Assumption audit" in p for p in check(body, ["apps/desktop/a.ts"])))
+
+    def test_crlf_body_is_accepted(self):
+        body = COMPLETE_BODY.replace("\n", "\r\n")
+        self.assertEqual(check(body, ["packages/net-shield/src/lib.rs"]), [])
+
+    def test_step_id_may_belong_to_a_different_manifest(self):
+        body = COMPLETE_BODY.replace("net-shield.dns", "desktop.ipc")
+        self.assertEqual(check(body, ["packages/net-shield/src/lib.rs"]), [])
+
+
+class OpenTest(unittest.TestCase):
+    STEP = ledger.Step(
+        id="net-shield.dns",
+        title="dns path",
+        status="pending",
+        evidence="",
+        acceptance="code",
+        verify="cargo test",
+    )
+
+    def test_rendered_body_names_the_step_and_both_sections(self):
+        body = loop.render_body(self.STEP)
+        self.assertIn("`net-shield.dns`", body)
+        self.assertIn("cargo test", body)
+        self.assertIn("## Assumption audit", body)
+        self.assertIn("## Adversarial review", body)
+
+    def test_unfilled_template_fails_the_check(self):
+        body = loop.render_body(self.STEP)
+        problems = check(body, ["packages/net-shield/src/lib.rs"])
+        self.assertTrue(problems)
+
+    def test_filled_template_passes_the_check(self):
+        body = loop.render_body(self.STEP)
+        body = body.replace("## Assumption audit\n", "## Assumption audit\nN/A — x.\n")
+        body = body.replace("## Adversarial review\n", "## Adversarial review\nN/A — x.\n")
+        self.assertEqual(check(body, ["packages/net-shield/src/lib.rs"]), [])
+
+
+class LoadTest(unittest.TestCase):
+    def _package(self, root, name, toml, plan):
+        d = Path(root) / "docs" / "components" / name
+        d.mkdir(parents=True)
+        (d / "steps.toml").write_text(toml, encoding="utf-8")
+        (d / "plan.md").write_text(plan, encoding="utf-8")
+
+    def test_reads_paths_and_ids_from_every_manifest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._package(
+                tmp,
+                "a",
+                'paths = ["packages/a"]\n[[step]]\nid = "a.one"\nstatus = "pending"\n',
+                "<!-- step: a.one -->",
+            )
+            self._package(
+                tmp,
+                "b",
+                '[[step]]\nid = "b.one"\nstatus = "pending"\n',
+                "<!-- step: b.one -->",
+            )
+            found = {g.package.rsplit("/", 1)[-1]: g for g in loop.load_governed(Path(tmp))}
+            self.assertEqual(found["a"].paths, ("packages/a",))
+            self.assertEqual(found["a"].step_ids, ("a.one",))
+            self.assertEqual(found["b"].paths, ())
+
+    def test_repo_manifests_load(self):
+        root = Path(__file__).resolve().parents[3]
+        governed = loop.load_governed(root)
+        self.assertGreaterEqual(len(governed), 18)
+
+
+class CliTest(unittest.TestCase):
+    def _run(self, argv):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = loop.main(argv)
+        return code, out.getvalue(), err.getvalue()
+
+    def test_check_exits_zero_when_nothing_is_governed(self):
+        root = Path(__file__).resolve().parents[3]
+        with tempfile.TemporaryDirectory() as tmp:
+            body = Path(tmp, "body.md")
+            body.write_text("", encoding="utf-8")
+            files = Path(tmp, "files.txt")
+            files.write_text("README.md\n", encoding="utf-8")
+            code, _, _ = self._run(
+                ["check", "--root", str(root), "--body-file", str(body), "--changed-files", str(files)]
+            )
+        self.assertEqual(code, 0)
+
+    def test_check_exits_one_and_names_problems_for_governed_change(self):
+        root = Path(__file__).resolve().parents[3]
+        with tempfile.TemporaryDirectory() as tmp:
+            body = Path(tmp, "body.md")
+            body.write_text("", encoding="utf-8")
+            files = Path(tmp, "files.txt")
+            files.write_text("packages/net-shield/src/lib.rs\n", encoding="utf-8")
+            code, _, err = self._run(
+                ["check", "--root", str(root), "--body-file", str(body), "--changed-files", str(files)]
+            )
+        self.assertEqual(code, 1)
+        self.assertIn("Assumption audit", err)
+
+    def test_check_with_unreadable_body_fails_closed(self):
+        root = Path(__file__).resolve().parents[3]
+        with tempfile.TemporaryDirectory() as tmp:
+            files = Path(tmp, "files.txt")
+            files.write_text("README.md\n", encoding="utf-8")
+            code, _, err = self._run(
+                [
+                    "check",
+                    "--root",
+                    str(root),
+                    "--body-file",
+                    str(Path(tmp, "missing.md")),
+                    "--changed-files",
+                    str(files),
+                ]
+            )
+        self.assertEqual(code, 1)
+        self.assertIn("body", err)
+
+    def test_open_prints_a_body_for_a_known_step(self):
+        root = Path(__file__).resolve().parents[3]
+        code, out, _ = self._run(["open", "engineering.loop-enforcement", "--root", str(root)])
+        self.assertEqual(code, 0)
+        self.assertIn("## Assumption audit", out)
+
+    def test_open_rejects_an_unknown_step(self):
+        root = Path(__file__).resolve().parents[3]
+        code, _, err = self._run(["open", "nope.nope", "--root", str(root)])
+        self.assertEqual(code, 1)
+        self.assertIn("nope.nope", err)
+
+
+if __name__ == "__main__":
+    unittest.main()

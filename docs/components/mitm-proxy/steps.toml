@@ -13,6 +13,8 @@
 #
 # Steps are the numbered `## Implementation order` list, in the plan's own order.
 
+paths = ["packages/mitm-proxy"]
+
 [[step]]
 id = "mitm-proxy.tls"
 title = "tls — certificate generation and two-leg TLS setup"

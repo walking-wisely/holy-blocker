@@ -52,3 +52,46 @@ class ManifestCoverageTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ManifestPathsTest(unittest.TestCase):
+    def _manifests(self) -> list[Path]:
+        return sorted(COMPONENTS.glob("*/steps.toml")) + [ENGINEERING / "steps.toml"]
+
+    def test_paths_are_relative_and_inside_the_repo(self):
+        for manifest in self._manifests():
+            for path in ledger.load_paths(manifest.parent):
+                self.assertFalse(path.startswith("/"), f"{manifest}: {path}")
+                self.assertNotIn("..", Path(path).parts, f"{manifest}: {path}")
+
+    def test_no_two_manifests_claim_the_same_root(self):
+        owners: dict[str, Path] = {}
+        for manifest in self._manifests():
+            for path in ledger.load_paths(manifest.parent):
+                key = path.strip("/")
+                self.assertNotIn(key, owners, f"{key} claimed by {owners.get(key)} and {manifest}")
+                owners[key] = manifest
+
+    def test_every_existing_code_root_is_claimed(self):
+        claimed = {
+            path.strip("/")
+            for manifest in self._manifests()
+            for path in ledger.load_paths(manifest.parent)
+        }
+        unclaimed = [
+            f"{top}/{child.name}"
+            for top in ("apps", "packages", "native-modules")
+            for child in sorted((ROOT / top).iterdir())
+            if child.is_dir() and f"{top}/{child.name}" not in claimed
+        ]
+        self.assertEqual(unclaimed, [], f"code roots no manifest governs: {unclaimed}")
+
+    def test_ci_path_filter_covers_every_governed_root(self):
+        workflow = (ROOT / ".github" / "workflows" / "ci-plan.yml").read_text(encoding="utf-8")
+        missing = [
+            path
+            for manifest in self._manifests()
+            for path in ledger.load_paths(manifest.parent)
+            if f'- "{path.strip("/")}/**"' not in workflow
+        ]
+        self.assertEqual(missing, [], f"roots missing from the ci-plan path filter: {missing}")

@@ -11,6 +11,8 @@
 # wrong in module N" notes live in plan.md. `evidence` is one line pointing at
 # where the step landed (commit, PR, or the plan's own wording), not an argument.
 
+paths = []
+
 [[step]]
 id = "frontend.scaffold"
 title = "Project scaffold — Vite, React Router, TanStack Query, base layout"

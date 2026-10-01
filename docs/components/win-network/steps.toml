@@ -13,6 +13,8 @@
 #
 # Steps are the plan's `## Implementation order` items, in its own order.
 
+paths = ["native-modules/win-network"]
+
 [[step]]
 id = "win-network.cmake-scaffold"
 title = "scaffold CMakeLists.txt and fake_win32 shim"
