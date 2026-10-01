@@ -1,0 +1,195 @@
+name: CI Platforms
+
+on:
+  workflow_call:
+
+jobs:
+  changes:
+    name: Changed paths
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      windows-rust: ${{ steps.filter.outputs.windows-rust }}
+      windows-native: ${{ steps.filter.outputs.windows-native }}
+      macos: ${{ steps.filter.outputs.macos }}
+      android: ${{ steps.filter.outputs.android }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Detect platform changes
+        id: filter
+        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        with:
+          filters: |
+            windows-rust:
+              - ".github/workflows/ci-platforms.yml"
+              - "rust-toolchain.toml"
+              - "packages/net-shield/**"
+              - "packages/domain-blocklist/**"
+              - "packages/domain-normalize/**"
+            windows-native:
+              - ".github/workflows/ci-platforms.yml"
+              - "native-modules/win-network/**"
+              - "native-modules/win-daemon/**"
+            macos:
+              - ".github/workflows/ci-platforms.yml"
+              - "rust-toolchain.toml"
+              - "native-modules/mac-daemon/**"
+              - "packages/text-policy/**"
+              - "packages/text-policy-ffi/**"
+              - "packages/image-sandbox/**"
+              - "packages/image-sandbox-ffi/**"
+            android:
+              - ".github/workflows/ci-platforms.yml"
+              - "rust-toolchain.toml"
+              - "apps/mobile/**"
+              - "packages/text-policy/**"
+              - "packages/text-policy-ffi/**"
+              - "packages/net-shield/**"
+              - "packages/net-shield-ffi/**"
+              - "packages/domain-blocklist/**"
+              - "packages/domain-normalize/**"
+
+  windows-rust:
+    name: windows / net-shield
+    needs: changes
+    if: needs.changes.outputs.windows-rust == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # stable
+        with:
+          toolchain: 1.90.0
+          components: clippy
+
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        with:
+          workspaces: packages/net-shield
+
+      - name: Clippy
+        working-directory: packages/net-shield
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Test
+        working-directory: packages/net-shield
+        run: cargo test --locked
+
+  windows-native:
+    name: windows / native modules
+    needs: changes
+    if: needs.changes.outputs.windows-native == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Configure win-network
+        run: cmake -S native-modules/win-network -B build/win-network -DHOLY_BLOCKER_FAKE_WIN32=ON
+
+      - name: Build win-network
+        run: cmake --build build/win-network --config Release
+
+      - name: Test win-network
+        run: ctest --test-dir build/win-network -C Release --output-on-failure
+
+      - name: Configure win-daemon
+        run: cmake -S native-modules/win-daemon -B build/win-daemon
+
+      - name: Build win-daemon
+        run: cmake --build build/win-daemon --config Release
+
+  macos:
+    name: macos / mac-daemon
+    needs: changes
+    if: needs.changes.outputs.macos == 'true'
+    runs-on: macos-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # stable
+        with:
+          toolchain: 1.90.0
+
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        with:
+          workspaces: |
+            packages/text-policy-ffi
+            packages/image-sandbox-ffi
+
+      - name: Toolchain versions
+        run: |
+          xcode-select -p
+          swift --version
+
+      - name: Test
+        working-directory: native-modules/mac-daemon
+        run: ./scripts/test.sh
+
+  android:
+    name: android / mobile
+    needs: changes
+    if: needs.changes.outputs.android == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Validate Gradle wrapper
+        uses: gradle/actions/wrapper-validation@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
+
+      - name: Setup Java
+        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # stable
+        with:
+          toolchain: 1.90.0
+
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        with:
+          workspaces: |
+            packages/text-policy-ffi
+            packages/net-shield-ffi
+
+      - name: Generate Kotlin bindings
+        run: apps/mobile/scripts/build-ffi.sh
+
+      - name: Unit tests
+        working-directory: apps/mobile
+        run: ./gradlew --no-daemon testDebugUnitTest assembleDebug
