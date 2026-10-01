@@ -21,7 +21,7 @@ RoutingManager::AddDefaultRoute(NET_LUID adapter_luid) {
     row.DestinationPrefix.Prefix.si_family   = 2;   // AF_INET
     row.NextHop.si_family                    = 2;   // AF_INET (gateway 0.0.0.0)
     row.Metric                               = kRouteMetric;
-    row.Protocol                             = 3;   // MIB_IPPROTO_NETMGMT
+    row.Protocol                             = static_cast<decltype(row.Protocol)>(3);   // MIB_IPPROTO_NETMGMT
 
     DWORD err = CreateIpForwardEntry2(&row);
     if (err != NO_ERROR) return std::unexpected(win_error(err));
