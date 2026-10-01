@@ -36,6 +36,9 @@ distinction is tracked here rather than in the status table.
    module list.
 5. `Status` is one of the five values above, always. `Where` is `master` or an exact branch name,
    never the bare word "branch".
+6. A row cites a scenario as `scenario:<id>`, with the host class and the date, and the scenario must name
+   the row in its `proves` list. Only the owner promotes a row to `Covered`
+   ([e2e-scenario-contract.md](../decisions/e2e-scenario-contract.md)).
 
 ---
 
