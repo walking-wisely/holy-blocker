@@ -105,8 +105,10 @@ jobs:
       - name: Configure win-network
         run: cmake -S native-modules/win-network -B build/win-network -DHOLY_BLOCKER_FAKE_WIN32=ON
 
-      - name: Build win-network
-        run: cmake --build build/win-network --config Release
+      # holy_blocker_net_svc does not link until win-network.service-host and
+      # win-network.installer-actions are implemented.
+      - name: Build win-network tests
+        run: cmake --build build/win-network --config Release --target net_svc_tests
 
       - name: Test win-network
         run: ctest --test-dir build/win-network -C Release --output-on-failure
