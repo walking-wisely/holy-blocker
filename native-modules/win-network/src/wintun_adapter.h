@@ -3,6 +3,9 @@
 #ifdef HOLY_BLOCKER_FAKE_WIN32
 #  include "win32_api.h"
 #else
+#  include <winsock2.h>
+#  include <ws2ipdef.h>
+#  include <iphlpapi.h>
 #  include <windows.h>
 #  include "wintun.h"
 #endif

@@ -37,6 +37,8 @@ add_compile_options(
 
 # Minimum Windows SDK: 10.0.19041.0 (required for SetInterfaceDnsSettings)
 add_compile_definitions(
+  WIN32_LEAN_AND_MEAN
+  NOMINMAX
   _WIN32_WINNT=0x0A00
   WINVER=0x0A00
   NTDDI_VERSION=0x0A000008   # 20H1 = 0x0A000008

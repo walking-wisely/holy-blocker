@@ -32,7 +32,7 @@ RoutingManager::AddDefaultRoute(NET_LUID adapter_luid) {
 }
 
 std::expected<void, std::error_code>
-RoutingManager::RemoveDefaultRoute(NET_LUID adapter_luid) {
+RoutingManager::RemoveDefaultRoute([[maybe_unused]] NET_LUID adapter_luid) {
     if (!route_installed_) return {};  // idempotent
 
     DWORD err = DeleteIpForwardEntry2(&route_);
