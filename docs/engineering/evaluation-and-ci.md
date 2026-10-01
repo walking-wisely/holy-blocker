@@ -207,6 +207,24 @@ The first real Windows build found defects the Linux-only CI could not: `win-net
 included `windows.h` before `winsock2.h`, cast an integer to an SDK enum, failed `/WX`
 on an unused parameter, and never called `enable_testing()`, so `ctest` ran nothing.
 
+## CI Backlog
+
+Open CI work, each with the event that makes it actionable. Delete a row when it lands.
+
+| Item | Why it is open | Do it when |
+|---|---|---|
+| Build `holy_blocker_net_svc` in the Windows job | Does not link until `ServiceHost::Run` and `InstallerActions` exist | `win-network.service-host` and `win-network.installer-actions` are done |
+| `win-network` integration tests | Need elevation and the Wintun driver | A self-hosted or admin-capable Windows runner exists |
+| Android emulator smoke tests | `apps/mobile/scripts/smoke-test*.sh` drive an emulator and a reboot; manual today | A reliable emulator runner is chosen; run nightly, not per PR |
+| Per-ABI Android `.so` via `cargo-ndk` | The app job assembles without native libraries | The mobile image path (LiteRT) needs native libs in CI |
+| CodeQL c-cpp real build | `build-mode: none` analyses source that is never compiled | `codeql.yml` gains a Windows/MSVC matrix leg |
+| CodeQL for Kotlin and Swift | Neither language is analysed | The CodeQL matrix is next touched |
+| ONNX inference and parity tests | Skip without the gitignored model | A model-provisioning decision exists; trusted-only tier, never public CI |
+| `onnx` feature graph under clippy and cargo-deny | `image-sandbox` and `image-sandbox-ffi` are checked on default features only | The same time as the ONNX tests |
+| rustfmt on the five unformatted crates | `text-policy`, `domain-blocklist`, `net-shield`, `image-sandbox`, `mitm-proxy` would need a repo-wide reformat that conflicts with open branches | The open-branch queue is merged; then format one crate at a time and add it to `FMT_CLEAN` |
+| SBOM and build provenance | No release workflow exists | The first release artifact is cut |
+| Branch protection requiring `CI gate` | Settings live outside the repo's files | Applied by the owner via the API, recorded here once done |
+
 ## Private Eval Packs
 
 Do not store large explicit blocklists, sensitive multilingual rules, or full OCR screenshot corpora in the public repository.
