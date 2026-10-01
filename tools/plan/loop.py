@@ -143,7 +143,7 @@ def _changed_files(args: argparse.Namespace) -> list[str]:
         text = Path(args.changed_files).read_text(encoding="utf-8")
     else:
         text = subprocess.run(
-            ["git", "diff", "--name-only", f"{args.base}...{args.head}"],
+            ["git", "diff", "--name-only", "--no-renames", f"{args.base}...{args.head}"],
             cwd=args.root,
             check=True,
             capture_output=True,
