@@ -329,6 +329,17 @@ scaffolding and will fail at load time if they fall out of sync with the `.so`.
 14. SNI/IP filtering in the VPN, which needs the userspace TCP stack §5 describes. Reuses
     net-shield's `extract_sni` and `IpFilter` over the FFI surface step 11 established.
     <!-- step: mobile.sni-ip-filter -->
+15. The Android e2e scenario: wrap `scripts/smoke-test.sh`, `smoke-test-vpn.sh` and
+    `smoke-test-capture.sh` as `demos/mobile-android/scenario.toml` under
+    [e2e-scenario-contract.md](../../decisions/e2e-scenario-contract.md). The manifest declares `covers`
+    (`apps/mobile` plus the path-dependency closure of the two FFI crates), `proves` (the Android rows in
+    `docs/engineering/coverage.md` the three scripts can observe) and `does_not_prove` (vendor skins, DoT,
+    real devices, the image path). The preflight is `.claude/skills/android-e2e/env.sh` plus a booted
+    emulator. Each script must emit its blocked and permitted assertion counts and stop echoing logcat
+    lines into its failure reason. Unit and integration layers are unchanged; only this step is observed on
+    an emulator. Do not start before `engineering.e2e-runner` is done; the ledger cannot express a
+    dependency across packages.
+    <!-- step: mobile.e2e-android-scenario -->
 
 #### Reference documents — steps 7 and 8
 

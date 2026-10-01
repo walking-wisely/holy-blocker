@@ -441,14 +441,47 @@ Edit `.claude/skills/step-loop/SKILL.md` only.
 
 Acceptance: `code`. Verify: `python -m unittest discover -s tools/plan/tests -t .`.
 
-### Step 10 — local e2e runner
+### Step 10 — local e2e: contract, runner, surfacing
+
+Specified by [e2e-scenario-contract.md](../decisions/e2e-scenario-contract.md); read its decisions 1–7 and its
+"What this does not cover" first. Scenarios themselves are per-feature. The first one is
+`mobile.e2e-android-scenario` in `docs/components/mobile/plan.md`, which depends on the contract
+and runner below.
+
+Test layers: the manifest parser, exit-code mapping, tree-hash and note logic are unit tests with a
+temporary git repository. Nothing here needs an emulator. Only the Android scenario step is observed
+on a device.
+
+#### Step 10a — the scenario contract
+
+<!-- step: engineering.e2e-contract -->
+
+`tools/plan/e2e/manifest.py`: load and validate `demos/*/scenario.toml` (fields per decision 1),
+and a `doclint` check that `covers` is closed under `cargo metadata` path dependencies and names the
+scenario's own script and seed paths. No runner yet.
+
+Acceptance: `code`. Verify: `python -m unittest discover -s tools/plan/tests -t .`.
+
+#### Step 10b — the runner
 
 <!-- step: engineering.e2e-runner -->
 
-`tools/plan/e2e`: a path-to-scenario map, a preflight that reports `environment not ready`
-separately from a failure, and an `e2e stale` report. Scenarios themselves are per-feature and
-are not part of this step. No scenario exists yet, so the first one (a candidate is the macOS
-text path) is a separate component step created through `plan-inception`.
+`tools/plan/e2e`: select scenarios by `covers` against a diff and print the uncovered-path count; run
+preflight (exit `2` only for a declared capability, after trying to fix it); run the scenario and decide
+the pass from exit `0` plus the blocked and permitted assertion counts; refuse to record on a dirty
+covered tree; record the note on the covered-path tree hash with host class and artifact digest;
+capture stdout and emit only the final line (decisions 2–4 and 7).
+
+Acceptance: `code`. Verify: `python -m unittest discover -s tools/plan/tests -t .`.
+
+#### Step 10c — surfacing and the PR check
+
+<!-- step: engineering.e2e-surfacing -->
+
+`e2e stale` over the notes; `tools.plan.todos` lists stale scenarios; `step-loop` gate 0 and gate 6
+call `e2e stale`; `loop check` requires a `<scenario-id> @ <tree-hash>` line whose note exists for the
+PR head when a governed path with a covering scenario changed (decisions 3 and 5). Edits
+`.claude/skills/step-loop/SKILL.md`, so it waits for no other step that edits that file.
 
 Acceptance: `code`. Verify: `python -m unittest discover -s tools/plan/tests -t .`.
 

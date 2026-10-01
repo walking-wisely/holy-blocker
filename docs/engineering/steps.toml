@@ -98,12 +98,30 @@ depends_on = ["engineering.mandatory-review-gates"]
 verify = "python -m unittest discover -s tools/plan/tests -t ."
 
 [[step]]
-id = "engineering.e2e-runner"
-title = "local e2e runner — path map, preflight, staleness report"
+id = "engineering.e2e-contract"
+title = "e2e scenario contract — manifest schema and covers-closure lint"
 status = "pending"
 evidence = ""
 acceptance = "code"
 depends_on = ["engineering.step-loop-feature-gates"]
+verify = "python -m unittest discover -s tools/plan/tests -t ."
+
+[[step]]
+id = "engineering.e2e-runner"
+title = "local e2e runner — selection, preflight, runner-decided pass, git-note record"
+status = "pending"
+evidence = ""
+acceptance = "code"
+depends_on = ["engineering.e2e-contract"]
+verify = "python -m unittest discover -s tools/plan/tests -t ."
+
+[[step]]
+id = "engineering.e2e-surfacing"
+title = "e2e staleness surfaced in todos and the step loop, and checked on the PR"
+status = "pending"
+evidence = ""
+acceptance = "code"
+depends_on = ["engineering.e2e-runner"]
 verify = "python -m unittest discover -s tools/plan/tests -t ."
 
 [[step]]
