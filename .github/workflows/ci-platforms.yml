@@ -111,7 +111,7 @@ jobs:
         run: cmake --build build/win-network --config Release --target net_svc_tests
 
       - name: Test win-network
-        run: ctest --test-dir build/win-network -C Release --output-on-failure
+        run: ctest --test-dir build/win-network -C Release --output-on-failure --no-tests=error
 
       - name: Configure win-daemon
         run: cmake -S native-modules/win-daemon -B build/win-daemon

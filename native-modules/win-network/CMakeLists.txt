@@ -116,6 +116,7 @@ target_link_libraries(net_svc_tests PRIVATE
 
 target_compile_definitions(net_svc_tests PRIVATE HOLY_BLOCKER_FAKE_WIN32)
 
+enable_testing()
 include(GoogleTest)
 gtest_discover_tests(net_svc_tests)
 
