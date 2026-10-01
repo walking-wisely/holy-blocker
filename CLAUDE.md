@@ -1,10 +1,49 @@
-# AGENTS.md
+# CLAUDE.md
 
-Guidance for coding agents working in this repository.
+Guidance for coding agents working in this repository. This is the canonical file; `AGENTS.md` only points here.
 
 ## Project Shape
 
 Holy Blocker is an on-device content blocking project. Keep the privacy and local-first model central when making changes: do not add cloud calls, telemetry, remote content analysis, or external dataset dependencies unless the user explicitly asks for them.
+
+## Routing — which loop applies
+
+Classify every request **before touching code**, and say the classification in one line. A request
+rarely names its loop; the agent picks it. Follow the first branch that matches:
+
+1. **Nothing covers it, and it adds a capability, changes product behaviour, or makes an
+   architecture choice** → run `plan-inception`. It writes a decision record and a `plan.md`, and
+   never implements. Do not assume a new feature fits an existing plan.
+2. **It matches a step marker** (`<!-- step: ... -->`) in a `docs/components/**/steps.toml`, or the
+   request is "next step" / "continue X" → run `step-loop`. Find the step with
+   `python -m tools.plan.ledger next docs/components/<component>`, or across every worktree with
+   `python -m tools.plan.todos`.
+3. **It is a defect.** Reproduce it first. If it regresses a `done` step, file a `kind = "bug"` step
+   with `regressed_step` set, then run `step-loop` on it. A fix that is the same file and the same
+   test suite as the change in hand is made inline.
+4. **No step matches, but the change moves a row in `docs/engineering/coverage.md`** → add the step
+   first (through `plan-inception` if it needs a decision, otherwise directly in the component's
+   `plan.md` and `steps.toml`), then run `step-loop`.
+5. **Anything else** → classify it with the tier table below.
+
+If two tiers both fit, take the stricter one and say so. Never pick a looser tier because the
+change feels small.
+
+| Tier | What | Merge |
+|---|---|---|
+| Full loop (`step-loop`) | any manifest step; any file a `coverage.md` row cites; anything touching preload/IPC, TLS/CA, TUN, named pipes, capture/OCR or OS permissions | auto only if the step's `acceptance = "code"`; `observation` and `product` steps stop at the PR |
+| Loop-lite | docs-only, dependency bumps, mechanical refactor, frontend rendering | normal PR; run the package's own check and update `coverage.md` if a row moves |
+| Exempt | typo fixes; throwaway spikes that never leave the worktree | none |
+
+Where the owner sits: the owner decides product questions, and architecture questions that are ML,
+cross-platform contracts, new trust boundaries or one-way doors; the agent red-teams those first
+(`docs/decisions/decision-tiers-and-red-teaming.md`). The owner does not review code or
+implementation detail, and meets a feature once, when it is done, through its demo
+(`docs/decisions/feature-demos-and-local-e2e.md`). Privileged steps on the dev machine go through
+the dispatcher in `docs/decisions/agent-privilege-boundary.md`, never a root shell.
+
+This router is a convention, not yet a mechanism: `docs/engineering/plan.md` step 2 adds the CI
+check that fails a PR touching governed code without the loop's artifacts.
 
 ## Current State
 
@@ -190,7 +229,8 @@ The body should explain *why* the change was made — the what is visible in the
 
 ## Working Rhythm — Worktree In, PR Out
 
-Every piece of work starts in its **own git worktree** and ends as an **open pull request**, with no
+Once the [router](#routing--which-loop-applies) has classified the work, every piece of it that is
+not exempt starts in its **own git worktree** and ends as an **open pull request**, with no
 prompting needed for either. Both halves are the default, not a thing to propose and wait on.
 
 ### Start: a separate worktree, branched from the base branch

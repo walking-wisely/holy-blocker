@@ -68,6 +68,8 @@ Deliverables, in order. Each is a repo-local change.
 
 ### 2.1 A trigger rule
 
+**Landed** as `CLAUDE.md` "Routing — which loop applies", ahead of the rest of step 2. It is a convention until 2.2–2.4 add the check.
+
 Add a short, tree-shaped rule to the working-rhythm section of `CLAUDE.md`, and one
 sentence to `.claude/skills/step-loop/SKILL.md` pointing at it:
 
@@ -157,7 +159,7 @@ Acceptance: `code`. Verify: `python -m unittest discover -s tools/plan/tests -t 
 The loss risk is real: the reviewer must diff each deleted row against the plans it
 was migrated into — a deleted measured fact is invisible to a green test.
 
-## Step 4 — one guidance file, not two
+## Step 4 — one guidance file, not two **Done.**
 
 <!-- step: engineering.agents-md-dedupe -->
 
@@ -166,6 +168,9 @@ subset that still says `packages/net-shield` and `packages/image-sandbox` are
 "planned but not yet created"; `CLAUDE.md` carries the current state. Agents are
 handed one or both depending on the client, so the two answer the same questions
 differently — the exact drift this plan exists to remove, one level up.
+
+The `depends_on` on step 3 was dropped: the pointer holds no status table, so nothing in it
+waits on the status migration.
 
 Deliverables:
 
@@ -197,7 +202,7 @@ started until they exist. Run `python -m tools.plan.ledger next docs/engineering
 to find the next unblocked step; do not start a step whose `depends_on` has not
 landed.
 
-### Step 5 — bug kind and regression links in the ledger schema
+### Step 5 — bug kind and regression links in the ledger schema **Done.**
 
 <!-- step: engineering.bug-kind-ledger -->
 
@@ -254,7 +259,7 @@ Acceptance: `code`. Verify: `python -m unittest discover -s tools/plan/tests -t 
 | No existing `kind` or `regressed_step` key in any steps.toml or tool file, so the new optional keys cannot collide with or re-validate existing data | `grep -rn "regressed_step\|kind" docs/engineering/steps.toml tools/plan/*.py` | only the `engineering.bug-kind-ledger` step id/name match; no data keys | **HOLDS** |
 | `gh` can open a PR against `walking-wisely/holy-blocker` | `gh auth status` | active account `walking-wisely`, `repo` scope | **HOLDS** — the plan's earlier FALSE (old READ-only account) is obsolete; the account was re-authed |
 
-### Step 6 — review triage policy
+### Step 6 — review triage policy **Done.**
 
 <!-- step: engineering.review-triage-policy -->
 
@@ -315,7 +320,7 @@ is itself a contract-shaped product decision under step-loop's own gate 3.
 
 Acceptance: `product`. The loop stops at the PR; a human closes it.
 
-### Step 7 — privacy-review skill
+### Step 7 — privacy-review skill **Done.**
 
 <!-- step: engineering.privacy-review-skill -->
 

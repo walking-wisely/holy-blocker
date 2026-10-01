@@ -20,6 +20,8 @@ State is **derived, never stored**: a step's status is `steps.toml`, and whether
 its branch landed is git and `gh` — never a file the loop writes. A written
 status goes stale and forks per branch.
 
+Which work enters this loop at all is decided by `CLAUDE.md`, "Routing — which loop applies".
+
 ## 0. Pick the step
 
 ```
