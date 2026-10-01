@@ -106,7 +106,7 @@ class ManifestPathsTest(unittest.TestCase):
             path
             for manifest in self._manifests()
             for path in ledger.load_paths(manifest.parent)
-            if not path.startswith(CODEQL_BLIND_ROOTS)
+            if not _within(path, CODEQL_BLIND_ROOTS)
             and not any(
                 f'- "{prefix}/**"' in pull_request
                 for prefix in _prefixes(path.strip("/"))
@@ -116,7 +116,7 @@ class ManifestPathsTest(unittest.TestCase):
 
 
 CODEQL_BLIND_ROOTS = (
-    ".claude/",
+    ".claude",
     ".github",
     "CLAUDE.md",
     "AGENTS.md",
@@ -125,6 +125,10 @@ CODEQL_BLIND_ROOTS = (
     ".pre-commit-config.yaml",
     ".husky",
 )
+
+
+def _within(path, roots):
+    return any(path == root or path.startswith(root + "/") for root in roots)
 
 
 def _prefixes(path):

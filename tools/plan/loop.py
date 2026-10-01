@@ -16,6 +16,7 @@ import argparse
 import re
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -52,6 +53,30 @@ def load_governed(root: Path) -> list[Governed]:
             )
         )
     return governed
+
+
+def load_governed_at(root: Path, rev: str) -> list[Governed]:
+    archive = subprocess.run(
+        ["git", "archive", rev, "docs"], cwd=root, check=True, capture_output=True
+    ).stdout
+    with tempfile.TemporaryDirectory() as tmp:
+        subprocess.run(["tar", "-x", "-C", tmp], input=archive, check=True)
+        return load_governed(Path(tmp))
+
+
+def merge_governed(head: list[Governed], base: list[Governed]) -> list[Governed]:
+    merged = {m.package: m for m in head}
+    for m in base:
+        kept = merged.get(m.package)
+        if kept is None:
+            merged[m.package] = m
+            continue
+        merged[m.package] = Governed(
+            package=m.package,
+            paths=tuple(dict.fromkeys(kept.paths + m.paths)),
+            step_ids=tuple(dict.fromkeys(kept.step_ids + m.step_ids)),
+        )
+    return list(merged.values())
 
 
 def _owns(path: str, changed: str) -> bool:
@@ -106,7 +131,7 @@ def _names_step(body: str, manifests: list[Governed]) -> bool:
 
 def check(body: str, changed_files: list[str], manifests: list[Governed]) -> list[str]:
     problems = [
-        f"{f} is under a code root but no steps.toml claims it; add its directory to a manifest's paths"
+        f"{f} is under a code root but no steps.toml claims it; add it to a manifest's paths"
         for f in unclaimed(changed_files, manifests)
     ]
     if not governing(changed_files, manifests):
@@ -163,7 +188,14 @@ def _cmd_check(args: argparse.Namespace) -> int:
     except (OSError, subprocess.CalledProcessError) as err:
         print(f"cannot determine changed files: {err}", file=sys.stderr)
         return 1
-    problems = check(body, changed, load_governed(args.root))
+    governed = load_governed(args.root)
+    if args.base:
+        try:
+            governed = merge_governed(governed, load_governed_at(args.root, args.base))
+        except (OSError, subprocess.CalledProcessError) as err:
+            print(f"cannot load base manifests: {err}", file=sys.stderr)
+            return 1
+    problems = check(body, changed, governed)
     for problem in problems:
         print(problem, file=sys.stderr)
     return 1 if problems else 0
