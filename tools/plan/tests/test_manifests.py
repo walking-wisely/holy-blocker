@@ -95,3 +95,23 @@ class ManifestPathsTest(unittest.TestCase):
             if f'- "{path.strip("/")}/**"' not in workflow
         ]
         self.assertEqual(missing, [], f"roots missing from the ci-plan path filter: {missing}")
+
+    def test_codeql_pull_request_paths_cover_every_governed_root(self):
+        workflow = (ROOT / ".github" / "workflows" / "codeql.yml").read_text(encoding="utf-8")
+        pull_request = workflow.split("pull_request:", 1)[1].split("schedule:", 1)[0]
+        missing = [
+            path
+            for manifest in self._manifests()
+            for path in ledger.load_paths(manifest.parent)
+            if not path.startswith(".claude/")
+            and not any(
+                f'- "{prefix}/**"' in pull_request
+                for prefix in _prefixes(path.strip("/"))
+            )
+        ]
+        self.assertEqual(missing, [], f"roots missing from the codeql pull_request paths: {missing}")
+
+
+def _prefixes(path):
+    parts = path.split("/")
+    return ["/".join(parts[: i + 1]) for i in range(len(parts))]

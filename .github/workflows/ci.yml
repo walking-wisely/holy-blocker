@@ -8,18 +8,20 @@ on:
       - master
 
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.ref }}-${{ github.event.action == 'edited' && 'edited' || 'code' }}
   cancel-in-progress: true
 
 jobs:
   js:
     name: js
+    if: github.event.action != 'edited'
     permissions:
       contents: read
     uses: ./.github/workflows/ci-js.yml
 
   rust:
     name: rust
+    if: github.event.action != 'edited'
     permissions:
       contents: read
     uses: ./.github/workflows/ci-rust.yml
@@ -32,6 +34,7 @@ jobs:
 
   platforms:
     name: platforms
+    if: github.event.action != 'edited'
     permissions:
       contents: read
     uses: ./.github/workflows/ci-platforms.yml
