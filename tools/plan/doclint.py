@@ -14,7 +14,8 @@ from urllib.parse import unquote
 
 ROOT = Path(__file__).resolve().parents[2]
 
-_FENCE = re.compile(r"^\s*(```|~~~)")
+_FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
+_REF_DEF = re.compile(r"^ {0,3}\[[^\]]+\]:\s*(\S+)(?:\s+(?:\"[^\"]*\"|'[^']*'|\([^)]*\)))?\s*$")
 _HEADING = re.compile(r"^\s{0,3}#{1,6}\s+(.*?)\s*#*\s*$")
 _LINK = re.compile(r"\[[^\]]*\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
 _INLINE_CODE = re.compile(r"`[^`]*`")
@@ -32,13 +33,22 @@ def github_slug(heading: str) -> str:
 
 
 def _lines_outside_fences(text: str):
-    in_fence = False
+    opener = ""
     for number, line in enumerate(text.splitlines(), start=1):
-        if _FENCE.match(line):
-            in_fence = not in_fence
+        fence = _FENCE.match(line)
+        if opener:
+            if (
+                fence
+                and fence.group(1)[0] == opener[0]
+                and len(fence.group(1)) >= len(opener)
+                and not fence.group(2).strip()
+            ):
+                opener = ""
             continue
-        if not in_fence:
-            yield number, line
+        if fence and not (fence.group(1)[0] == "`" and "`" in fence.group(2)):
+            opener = fence.group(1)
+            continue
+        yield number, line
 
 
 def extract_anchors(text: str) -> set[str]:
@@ -58,8 +68,11 @@ def extract_anchors(text: str) -> set[str]:
 def extract_links(text: str) -> list[tuple[int, str]]:
     links: list[tuple[int, str]] = []
     for number, line in _lines_outside_fences(text):
-        for match in _LINK.finditer(_INLINE_CODE.sub("", line)):
-            target = match.group(1)
+        ref = _REF_DEF.match(line)
+        targets = [ref.group(1)] if ref else [
+            m.group(1) for m in _LINK.finditer(_INLINE_CODE.sub("", line))
+        ]
+        for target in targets:
             if target.startswith(("/", "<")) or "<" in target or _SCHEME.match(target):
                 continue
             links.append((number, target))

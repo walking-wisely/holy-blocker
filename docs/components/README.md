@@ -22,7 +22,7 @@ Exists today means code is in the repo. Detailed state lives in [`../status/`](.
 | [machine-learning](machine-learning/README.md) | Python | `machine-learning/` | Evaluation and export for the backbone |
 | [mac-daemon](mac-daemon/README.md) | Swift | `native-modules/mac-daemon` | macOS network and render paths |
 | [win-daemon](win-daemon/README.md) | C++20 | `native-modules/win-daemon` | Windows event hooks and scan loop |
-| [win-network](win-network/README.md) | C++20 | `native-modules/win-network` | Wintun Windows Service |
+| [win-network](win-network/README.md) | C++20 | planned (`native-modules/win-network`, not yet created) | Wintun Windows Service |
 | [mobile](mobile/README.md) | Kotlin | `apps/mobile` | Android guard, VPN and capture |
 | [desktop](desktop/README.md) | TypeScript | `apps/desktop` | Electron control panel |
 | [voice-gate](voice-gate/README.md) | TypeScript | planned | Read-aloud override gate |

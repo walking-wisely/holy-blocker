@@ -16,8 +16,9 @@ packages/domain-normalize/src/lib.rs
 ```
 
 - `normalize(domain: &str) -> Result<String, NormalizeError>` — the comparison key.
-- `RuleScope { Apex, ExactHost }` and `classify_scope(normalized: &str, psl: &PublicSuffixList,
-  shared_hosting_denylist: &[&str]) -> Option<RuleScope>` — the apex-eligibility decision.
+- `RuleScope { Apex, ExactHost }` and `classify_scope(normalized: &str, shared_hosting_denylist: &[&str]) ->
+  Option<RuleScope>` — the apex-eligibility decision. The Public Suffix List is compiled in
+  (the `psl` crate), so it is not a parameter.
 - Nothing else. No I/O, no HTTP, no FST, no DNS.
 
 Consumed by `domain-blocklist` at build time and by `net-shield` at query time. `net-shield` picks

@@ -121,7 +121,8 @@ Run 2026-08-10 before implementing this module. Claims verified against the ship
 
 The one load-bearing gap is the undefined on-disk slot layout. `BlocklistArtifact::load` defines it as
 a base directory with `current/artifact.fst` + `current/manifest.bin`, `previous/` with the same two
-files, and a `high_water_mark` file (a u64, absent ⇒ 0). Cold-start `load` verifies `current/` then
-`previous/` and fails closed to no artifact if both fail; the `version > high-water-mark` rollback
-check is the update/accept path's job (module 7 / distribution), not the cold-start loader's. Module 7
-must write exactly this layout for the two to interoperate.
+files. Cold-start `load` verifies `current/` then `previous/` and fails closed to no artifact if both
+fail. It neither reads nor writes a high-water-mark file: the `version > high-water-mark` rollback
+check, and where that value is persisted, are the update/accept path's job (module 7 /
+distribution) and are still undecided. Module 7 must write exactly this slot layout for the two to
+interoperate.

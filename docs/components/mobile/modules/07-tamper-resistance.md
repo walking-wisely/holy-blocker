@@ -27,10 +27,12 @@ Two things survive, and both are worth having:
 - **Uninstall requires deactivation first.** With an admin active, Android refuses the uninstall
   with "This app is an active device administrator and must be deactivated before uninstalling."
   This is built-in framework behaviour rather than a policy call, so the deprecation does not
-  touch it. On Android 13+ activating the admin is itself behind Restricted Settings for a
-  sideloaded app, so the *grant* needs the device PIN.
-- **`onDisableRequested()`** fires after the user confirms deactivation but before it takes
-  effect, and may return a warning string. It is the last reliable moment to record the event.
+  touch it. Restricted Settings may also gate activating the admin for an app not installed
+  through an app store (Android's CDD lists Device Admin among them from Android 15; not yet
+  confirmed on hardware here), in which case the *grant* needs the device PIN.
+- **`onDisableRequested()`** fires when the user asks to deactivate the admin, before
+  deactivation takes effect and while they can still cancel, and may return a warning string. It
+  records an attempt, not a completed deactivation.
 
 Both are built (`admin/HolyBlockerAdminReceiver`) and verified on an `android-36` emulator:
 `adb uninstall` returns `DELETE_FAILED_DEVICE_POLICY_MANAGER` while the admin is active. The

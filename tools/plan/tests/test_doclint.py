@@ -48,7 +48,43 @@ class LinkTest(unittest.TestCase):
         self.assertEqual(doclint.extract_links(text), [])
 
 
+class FenceTest(unittest.TestCase):
+    def test_shorter_inner_fence_does_not_close_a_longer_block(self):
+        text = "````\n```\n[a](a.md)\n```\n````\n[b](b.md)\n"
+        self.assertEqual(doclint.extract_links(text), [(6, "b.md")])
+
+    def test_other_marker_character_does_not_close_a_block(self):
+        text = "```\n~~~\n[a](a.md)\n```\n[b](b.md)\n"
+        self.assertEqual(doclint.extract_links(text), [(5, "b.md")])
+
+    def test_closing_fence_with_trailing_text_does_not_close(self):
+        text = "```\n``` not a close\n[a](a.md)\n```\n[b](b.md)\n"
+        self.assertEqual(doclint.extract_links(text), [(5, "b.md")])
+
+    def test_longer_closing_fence_closes(self):
+        text = "```\n[a](a.md)\n`````\n[b](b.md)\n"
+        self.assertEqual(doclint.extract_links(text), [(4, "b.md")])
+
+
+class ReferenceLinkTest(unittest.TestCase):
+    def test_reference_definitions_are_extracted_as_links(self):
+        text = "see [a][ref] and [b]\n\n[ref]: a.md\n[b]: b.md#frag \"title\"\n"
+        self.assertEqual(
+            doclint.extract_links(text), [(3, "a.md"), (4, "b.md#frag")]
+        )
+
+    def test_external_reference_definition_is_skipped(self):
+        self.assertEqual(doclint.extract_links("[x]: https://x.y\n"), [])
+
+    def test_definition_inside_a_fence_is_skipped(self):
+        self.assertEqual(doclint.extract_links("```\n[x]: a.md\n```\n"), [])
+
+
 class BrokenLinkTest(unittest.TestCase):
+    def test_missing_reference_destination_is_reported(self):
+        page = self.write("a.md", "[x][r]\n\n[r]: gone.md\n")
+        self.assertEqual(len(doclint.broken_links(page)), 1)
+
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.root = Path(self._tmp.name)
