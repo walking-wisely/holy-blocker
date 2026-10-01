@@ -114,3 +114,33 @@ evidence = ""
 acceptance = "product"
 depends_on = ["engineering.mandatory-review-gates"]
 verify = "visudo -cf <drop-in>"
+
+[[step]]
+id = "engineering.loop-check-placeholder-content"
+title = "loop check accepts placeholder section content and unterminated comments"
+status = "pending"
+evidence = ""
+kind = "bug"
+regressed_step = "engineering.loop-enforcement"
+acceptance = "code"
+verify = "python -m unittest discover -s tools/plan/tests -t ."
+
+[[step]]
+id = "engineering.loop-check-step-id-scope"
+title = "loop check accepts a step id from a manifest that does not govern the touched paths"
+status = "pending"
+evidence = ""
+kind = "bug"
+regressed_step = "engineering.loop-enforcement"
+acceptance = "code"
+verify = "python -m unittest discover -s tools/plan/tests -t ."
+
+[[step]]
+id = "engineering.loop-check-ungoverned-roots"
+title = "loop check leaves .github, CLAUDE.md and unclaimed new roots ungoverned"
+status = "pending"
+evidence = ""
+kind = "bug"
+regressed_step = "engineering.loop-enforcement"
+acceptance = "code"
+verify = "python -m unittest discover -s tools/plan/tests -t ."

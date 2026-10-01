@@ -474,3 +474,27 @@ settle that. Verify: `visudo -cf` on the drop-in and the dispatcher's own tests.
   planned ones). They have little to move.
 - A GDPR compliance audit against a lawyer's checklist. `privacy-review` (step 7)
   is a mechanical data-inventory gate, not a certification.
+
+### Bug — placeholder section content
+
+<!-- step: engineering.loop-check-placeholder-content -->
+
+`loop check` passes a body whose sections hold only `-`, `.`, a zero-width space or a bare `N/A`, and an unterminated `<!--` or code fence is not stripped. Reproduce with `check()` on a synthetic body; the fix defines a minimum for real content and closes the unterminated cases.
+
+Acceptance: `code`. Verify: `python -m unittest discover -s tools/plan/tests -t .`.
+
+### Bug — step id not tied to the governing manifest
+
+<!-- step: engineering.loop-check-step-id-scope -->
+
+`_names_step` accepts any manifest's step id, so a PR touching `tools/plan/` can name `text-policy.verdict`. `test_step_id_may_belong_to_a_different_manifest` asserts this on purpose, so the fix first decides whether a cross-package step is legitimate.
+
+Acceptance: `code`. Verify: `python -m unittest discover -s tools/plan/tests -t .`.
+
+### Bug — ungoverned roots
+
+<!-- step: engineering.loop-check-ungoverned-roots -->
+
+A diff touching only `packages/new-crate/` (unclaimed), `.github/workflows/`, or `CLAUDE.md` returns exit 0 from `loop check`. Either claim those roots in a manifest or record the narrowing in `docs/engineering/coverage.md`.
+
+Acceptance: `code`. Verify: `python -m unittest discover -s tools/plan/tests -t .`.
