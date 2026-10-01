@@ -78,3 +78,9 @@ Each of these cost real time and none is discoverable by reading the API docs.
   wording — a confirm that silently taps a `TextView` looks exactly like a confirm that does not
   work. Match on `class="android.widget.Button"`, not on text alone.
 - **The NDK may not be under `$ANDROID_HOME`** — see the multi-root trap below.
+- **AGP 9 needs Gradle 9.6 and brings its own Kotlin.** Applying `org.jetbrains.kotlin.android`
+  alongside it is a hard error, so the app module no longer applies it; the root build still
+  declares the plugin `apply false` because that is what pins the Kotlin version AGP uses (2.4.20,
+  not AGP's 2.2.10 default). `sourceSets["main"].java.srcDirs(...)` no longer feeds Kotlin
+  compilation — the generated UniFFI bindings fail as `Unresolved reference 'uniffi'` until they
+  are added through `kotlin.directories`.

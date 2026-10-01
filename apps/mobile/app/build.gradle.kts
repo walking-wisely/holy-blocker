@@ -2,7 +2,6 @@ import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
     id("com.android.application")
-    id("org.jetbrains.kotlin.android")
 }
 
 kotlin {
@@ -46,8 +45,7 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
-    sourceSets["main"].java.srcDirs("src/main/kotlin", "src/generated/kotlin")
-    sourceSets["test"].java.srcDirs("src/test/kotlin")
+    sourceSets["main"].kotlin.directories.add("src/generated/kotlin")
 }
 
 // The generated bindings are gitignored (they are build output of
