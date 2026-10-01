@@ -8,27 +8,27 @@ Thank you for your interest in contributing. This document covers everything you
 
 Before writing any code, read these two documents:
 
-1. [docs/foundation.md](docs/foundation.md) — *why* this project exists and the values that shape its design decisions
-2. [docs/architecture.md](docs/architecture.md) — the two-path blocking model and the overall component layout
+1. [docs/mission.md](docs/mission.md) — *why* this project exists and the values that shape its design decisions
+2. [docs/architecture/overview.md](docs/architecture/overview.md) — the two-path blocking model and the overall component layout
 
-The theological rationale in `foundation.md` is not incidental. It directly determines the scope of what gets blocked, how the accountability model works, and why certain trade-offs (like local-only decisions) are non-negotiable. Design suggestions that conflict with those principles will not be accepted regardless of their technical merit.
+The theological rationale in `mission.md` is not incidental. It directly determines the scope of what gets blocked, how the accountability model works, and why certain trade-offs (like local-only decisions) are non-negotiable. Design suggestions that conflict with those principles will not be accepted regardless of their technical merit.
 
 ---
 
 ## How to pick up work
 
-Each active package has a step-by-step implementation plan:
+Each component has a README that says what to read first, and a step-by-step implementation plan; [docs/components/README.md](docs/components/README.md) lists them all:
 
 | Plan | Package |
 |---|---|
-| [docs/text-policy/PLAN.md](docs/text-policy/PLAN.md) | Rust text classification engine |
-| [docs/proxy/PLAN.md](docs/proxy/PLAN.md) | Rust MITM proxy |
-| [docs/win-daemon/PLAN.md](docs/win-daemon/PLAN.md) | C++ Windows daemon |
-| [docs/machine-learning/PLAN.md](docs/machine-learning/PLAN.md) | Python ML pipeline |
-| [docs/desktop/PLAN.md](docs/desktop/PLAN.md) | Electron control panel |
-| [docs/net-shield/PLAN.md](docs/net-shield/PLAN.md) | Rust TUN packet filter |
-| [docs/image-sandbox/PLAN.md](docs/image-sandbox/PLAN.md) | Rust image classifier |
-| [docs/video-watchdog/PLAN.md](docs/video-watchdog/PLAN.md) | Rust video segment sampler |
+| [docs/components/text-policy/plan.md](docs/components/text-policy/plan.md) | Rust text classification engine |
+| [docs/components/mitm-proxy/plan.md](docs/components/mitm-proxy/plan.md) | Rust MITM proxy |
+| [docs/components/win-daemon/plan.md](docs/components/win-daemon/plan.md) | C++ Windows daemon |
+| [docs/components/machine-learning/plan.md](docs/components/machine-learning/plan.md) | Python ML pipeline |
+| [docs/components/desktop/plan.md](docs/components/desktop/plan.md) | Electron control panel |
+| [docs/components/net-shield/plan.md](docs/components/net-shield/plan.md) | Rust TUN packet filter |
+| [docs/components/image-sandbox/plan.md](docs/components/image-sandbox/plan.md) | Rust image classifier |
+| [docs/components/video-watchdog/plan.md](docs/components/video-watchdog/plan.md) | Rust video segment sampler |
 
 Each plan lists the next modules to add, their types and responsibilities, and the correct implementation order. Start with the plan, not the code.
 

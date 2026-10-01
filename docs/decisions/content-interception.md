@@ -11,6 +11,31 @@
 
 ---
 
+## Summary
+
+- Content reaches the user by two paths, and neither covers the other: the **network path** (HTTP/S through the OS stack) and the **render path** (content already painted to the screen).
+- Decision: **two layers with shared engines.** Layer 1 is the MITM proxy plus extension on the network path; Layer 2 is screen capture feeding OCR → text-policy and image ML on the render path. Capture, overlay and event hooks are thin per-platform adapters; policy lives in shared engines and never in an adapter.
+- Process injection is deferred, Windows-only, and not a layer. The other mechanisms considered (browser extension, kernel/driver interception) are weighed in the mechanism comparison.
+- Android and iOS cannot terminate TLS, so on those platforms Layer 1 degrades to DNS/SNI/IP filtering and the layer order inverts; iOS cannot run the core engines at all.
+- Tamper resistance is a separate concern per platform and is where the platforms differ most: a privileged service on Windows and macOS, plain Device Admin on Android.
+
+## Section map
+
+Read only the part you need; the per-platform sections are long.
+
+| Question | Section |
+|---|---|
+| Why two layers, and what was rejected | [Mechanism comparison](#mechanism-comparison), [Decision](#decision-two-layer-interception-with-shared-engines) |
+| What is deliberately not covered | [What is out of scope](#what-is-out-of-scope) |
+| Windows | [Windows — current state](#windows--current-state) |
+| Linux | [Linux](#linux--what-carries-over-and-what-changes) |
+| macOS, including the tamper model | [macOS](#macos--what-carries-over-and-what-changes) |
+| Android | [Android](#android--the-layer-order-inverts) |
+| iOS | [iOS](#ios--the-projects-core-cannot-run-only-the-sanctioned-path-remains) |
+| What is still undecided | [Open questions](#open-questions) |
+
+---
+
 ## Context
 
 Holy Blocker needs to intercept content before the user perceives it — across browsers,

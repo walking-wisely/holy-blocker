@@ -128,7 +128,7 @@ warns that cached artifacts silently stop matching, and why `extract.py` carries
 `--from-checkpoint` flag.
 
 The repo has already measured how badly this class of breakage bites. The full-unfreeze run
-was [replicated](../machine-learning/experiments/full-unfreeze.md) from scratch under an
+was replicated (record removed from the repo — see [machine-learning/plan.md](../machine-learning/plan.md)) from scratch under an
 identical recipe and identical seed: the two checkpoints agree on **ranking to within 0.0005
 AUC**, while their 5%-miss thresholds differ by **27%** (0.2717 against 0.1980). Two runs of
 the same recipe are already not interchangeable at the operating point.

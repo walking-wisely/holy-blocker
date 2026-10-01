@@ -108,7 +108,7 @@ the notification shade or volume panel is indistinguishable from a broken phone.
 The recents-swipe kill cannot be reproduced on the only platform available here (an `android-36`
 emulator does not kill a bound accessibility service on a swipe), so a mitigation could be neither
 verified nor exercised. It needs real One UI or HyperOS hardware; Samsung Remote Test Lab is the
-route. See [plan.md](plan.md#recents-is-blocked-on-hardware) for the full argument, and treat this
+route. See [plan.md](modules/07-tamper-resistance.md#recents-is-blocked-on-hardware) for the full argument, and treat this
 as sitting alongside the three bypasses below rather than above them — the tamper log is the
 available response.
 

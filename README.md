@@ -156,18 +156,18 @@ machine-learning/       Training and export pipeline for local image models
 docs/                   Project documentation (architecture, plans, decisions)
 ```
 
-Each active package has a step-by-step implementation plan in `docs/<package>/PLAN.md`. Read the relevant plan before starting work on a package.
+Each component has a README and a step-by-step plan under `docs/components/<package>/`; start from [docs/components/README.md](docs/components/README.md).
 
 ---
 
 ## Documentation
 
-- [Foundation](docs/foundation.md) — why this project exists and the theological rationale behind its design
-- [Architecture](docs/architecture.md) — the two-path blocking model and component layout
-- [Network Pipeline](docs/network-pipeline.md) — the five-phase network interception path
-- [Edge Daemons](docs/edge-daemons.md) — Windows and Android daemon strategy
-- [Content Classification](docs/content-classification.md) — image, OCR, and text policy decisions
-- [Evaluation and CI](docs/evaluation-and-ci.md) — how to test the blocker without sensitive corpora in the public repo
+- [Foundation](docs/mission.md) — why this project exists and the theological rationale behind its design
+- [Architecture](docs/architecture/overview.md) — the two-path blocking model and component layout
+- [Network Pipeline](docs/architecture/network-pipeline.md) — the five-phase network interception path
+- [Edge Daemons](docs/architecture/edge-daemons.md) — Windows and Android daemon strategy
+- [Content Classification](docs/architecture/content-classification.md) — image, OCR, and text policy decisions
+- [Evaluation and CI](docs/engineering/evaluation-and-ci.md) — how to test the blocker without sensitive corpora in the public repo
 - [Changelog](CHANGELOG.md) — completed project changes and infrastructure milestones
 
 ---
