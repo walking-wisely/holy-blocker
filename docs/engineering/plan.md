@@ -54,7 +54,7 @@ A repo-wide test (`tools/plan/tests/test_manifests.py`) discovers every
 `docs/components/*/plan.md` and fails if a component has no manifest or if any
 manifest does not validate against its plan, so future plans cannot silently opt out.
 
-## Step 2 — loop enforcement
+## Step 2 — loop enforcement **Done.**
 
 <!-- step: engineering.loop-enforcement -->
 
@@ -115,6 +115,12 @@ audit table, an empty review section — to stdout. This is the mechanism that p
 the artifacts in the PR instead of a transcript; it is what `gh pr create --body-file`
 should be fed. Optional in the sense that `check` does not depend on it, but without
 it the rule is a tax rather than a convenience.
+
+Built notes: `paths` is a top-level key in each `steps.toml` (empty or absent for components with
+no code yet; `tools/plan` and `.claude/skills` belong to the engineering manifest). `check` also
+rejects an empty audit or review section, ignores headings inside code fences or HTML comments, and
+fails closed on an unreadable body or an undeterminable changed-file list. `open` renders the two
+sections as comments, so an unfilled template fails the check. Dependabot PRs are skipped in CI.
 
 ### 2.4 CI
 

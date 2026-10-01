@@ -15,6 +15,8 @@
 # component is planned-not-created: packages/classifier-head/ does not exist on
 # master, so every step is pending.
 
+paths = ["packages/classifier-head", "packages/classifier-head-ffi"]
+
 [[step]]
 id = "classifier-head.head-weights-verdict"
 title = "head + weights + verdict with unit tests, no FFI"

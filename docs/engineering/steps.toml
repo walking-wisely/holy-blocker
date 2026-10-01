@@ -13,6 +13,8 @@
 # plan.md. `evidence` is one line pointing at where the step landed (commit, PR, or
 # the plan's own wording), not an argument.
 
+paths = ["tools/plan", ".claude/skills"]
+
 [[step]]
 id = "engineering.ledger-coverage"
 title = "ledger coverage — a steps.toml and plan markers for every component"
@@ -24,8 +26,8 @@ verify = "python -m unittest discover -s tools/plan/tests -t . && python -m tool
 [[step]]
 id = "engineering.loop-enforcement"
 title = "loop enforcement — a trigger rule and a machine-checked PR contract"
-status = "pending"
-evidence = ""
+status = "done"
+evidence = "tools/plan/loop.py (check, open), manifest `paths`, ci-plan loop-contract job; branch infra/loop-enforcement"
 acceptance = "code"
 depends_on = ["engineering.ledger-coverage"]
 verify = "python -m unittest discover -s tools/plan/tests -t ."

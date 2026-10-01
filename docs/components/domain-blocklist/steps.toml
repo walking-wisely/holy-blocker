@@ -11,6 +11,8 @@
 # wrong in module N" notes live in plan.md. `evidence` is one line pointing at
 # where the step landed (commit, PR, or the plan's own wording), not an argument.
 
+paths = ["packages/domain-blocklist", "packages/domain-normalize"]
+
 [[step]]
 id = "domain-blocklist.domain-normalize"
 title = "domain-normalize — shared pure crate, built first (module 0)"

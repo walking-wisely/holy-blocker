@@ -33,6 +33,25 @@ jobs:
               - "docs/engineering/plan.md"
               - "docs/**"
               - "*.md"
+              - "packages/classifier-head/**"
+              - "packages/classifier-head-ffi/**"
+              - "apps/desktop/**"
+              - "packages/domain-blocklist/**"
+              - "packages/domain-normalize/**"
+              - "packages/image-sandbox/**"
+              - "packages/image-sandbox-ffi/**"
+              - "native-modules/mac-daemon/**"
+              - "machine-learning/**"
+              - "packages/mitm-proxy/**"
+              - "apps/mobile/**"
+              - "packages/net-shield/**"
+              - "packages/net-shield-ffi/**"
+              - "packages/text-policy/**"
+              - "packages/text-policy-ffi/**"
+              - "native-modules/win-daemon/**"
+              - "native-modules/win-network/**"
+              - "tools/plan/**"
+              - ".claude/skills/**"
 
   plan-ledger:
     name: Plan ledger
@@ -61,6 +80,36 @@ jobs:
 
       - name: Lint docs navigation (links, anchors, component indexes)
         run: python -m tools.plan.doclint
+
+  loop-contract:
+    name: Loop contract
+    if: github.event_name == 'pull_request' && github.event.pull_request.user.login != 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Setup Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.12"
+
+      - name: Check the PR carries the loop's artifacts
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          printf '%s' "$PR_BODY" > "$RUNNER_TEMP/pr-body.md"
+          python -m tools.plan.loop check \
+            --body-file "$RUNNER_TEMP/pr-body.md" \
+            --base "$BASE_SHA" --head "$HEAD_SHA"
 
   secret-scan:
     name: Secret scan

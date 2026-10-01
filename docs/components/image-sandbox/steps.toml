@@ -14,6 +14,8 @@
 #
 # Steps are the numbered `## Implementation order` list, in the plan's own order.
 
+paths = ["packages/image-sandbox", "packages/image-sandbox-ffi"]
+
 [[step]]
 id = "image-sandbox.hash"
 title = "hash — perceptual hashing and Hamming distance"

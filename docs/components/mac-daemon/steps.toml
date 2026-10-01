@@ -17,6 +17,8 @@
 # scaffold and the last three sessions of the first live e2e pass are included
 # because they are plan steps with no module heading of their own.
 
+paths = ["native-modules/mac-daemon"]
+
 [[step]]
 id = "mac-daemon.package-scaffold"
 title = "SwiftPM package scaffold"
