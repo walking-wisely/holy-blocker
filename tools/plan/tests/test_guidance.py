@@ -15,6 +15,10 @@ STEP_LOOP = (ROOT / ".claude" / "skills" / "step-loop" / "SKILL.md").read_text(
     encoding="utf-8"
 )
 
+PLAN_INCEPTION = (
+    ROOT / ".claude" / "skills" / "plan-inception" / "SKILL.md"
+).read_text(encoding="utf-8")
+
 ROUTER_HEADING = "## Routing — which loop applies"
 
 
@@ -35,6 +39,16 @@ class RouterTest(unittest.TestCase):
 
     def test_step_loop_points_at_the_router(self):
         self.assertIn("Routing — which loop applies", STEP_LOOP)
+
+
+class PlanInceptionPublishTest(unittest.TestCase):
+    def test_does_not_forbid_the_worktree_or_the_pr(self):
+        self.assertNotIn("fork a worktree, or open a PR", PLAN_INCEPTION)
+
+    def test_publishes_through_the_working_rhythm(self):
+        step = PLAN_INCEPTION.split("## Step 6", 1)[1].split("\n## ", 1)[0]
+        for needle in ("Working Rhythm", "worktree", "open the PR"):
+            self.assertIn(needle, step)
 
 
 class AgentsPointerTest(unittest.TestCase):
