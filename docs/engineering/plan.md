@@ -10,6 +10,11 @@ four packages that had a manifest to every component with a `plan.md`. Steps 2�
 the follow-ups it made visible: enforcement, the CLAUDE.md status migration, and the
 CLAUDE.md/AGENTS.md divergence.
 
+This harness executes plans; it does not invent them. New plans and features are
+conceived by the `plan-inception` skill (`.claude/skills/plan-inception/SKILL.md`),
+which audits a plan's claims against the doctrine index and writes back decisions as
+ADRs before drafting `plan.md`.
+
 ## Assumption audit
 
 Run before implementation, per the repository's assumption-audit rule.
@@ -398,6 +403,54 @@ first, which is why they are listed as dependencies.
 Acceptance: `code`. Verify: `python -m unittest discover -s tools/plan/tests -t .`.
 The policy content itself was already approved in steps 6 and 7's own gate 3 — this
 step is pure wiring and needs no separate product verdict.
+
+## Steps 9–11 — owner-light operation
+
+These steps implement [decision-tiers-and-red-teaming.md](../decisions/decision-tiers-and-red-teaming.md),
+[feature-demos-and-local-e2e.md](../decisions/feature-demos-and-local-e2e.md) and
+[agent-privilege-boundary.md](../decisions/agent-privilege-boundary.md). The decision records and the
+`plan-inception` changes landed with the decisions; what remains is wiring and tooling. Steps 9 and 10
+touch `step-loop`, so both wait for step 8 to avoid editing the same file in parallel.
+
+### Step 9 — step-loop: feature-level hand-off and the local e2e gate
+
+<!-- step: engineering.step-loop-feature-gates -->
+
+Edit `.claude/skills/step-loop/SKILL.md` only.
+
+1. Replace "an `observation` step stops at a PR for a human to merge" with: observation
+   steps whose truth a scenario can observe are run by the loop; the loop stops for the owner
+   only on a product or architecture escalation, a step unverifiable on the available host, or
+   a feature being done, at which point it hands over the single demo command.
+2. Add a path-triggered gate before merge that runs the local e2e scenarios covering the
+   changed paths and records scenario and commit in the PR body. Until step 10 exists the gate
+   reads "if `tools/plan/e2e` exists".
+3. **Test** (structural, as in step 8): assert the skill contains `"e2e"`, `"demo"` and
+   `"environment not ready"`.
+
+Acceptance: `code`. Verify: `python -m unittest discover -s tools/plan/tests -t .`.
+
+### Step 10 — local e2e runner
+
+<!-- step: engineering.e2e-runner -->
+
+`tools/plan/e2e`: a path-to-scenario map, a preflight that reports `environment not ready`
+separately from a failure, and an `e2e stale` report. Scenarios themselves are per-feature and
+are not part of this step. No scenario exists yet, so the first one (a candidate is the macOS
+text path) is a separate component step created through `plan-inception`.
+
+Acceptance: `code`. Verify: `python -m unittest discover -s tools/plan/tests -t .`.
+
+### Step 11 — privileged dispatcher for local e2e
+
+<!-- step: engineering.privilege-dispatcher -->
+
+Write the dispatcher, the sudoers drop-in and the verb list per the privilege-boundary
+decision. The agent writes the files; the owner installs them. A `holy-blocker-security` review
+is required before installation, covering argument smuggling and the copy-and-verify step.
+
+Acceptance: `product`. The owner installs it and confirms the verbs behave; no diff review can
+settle that. Verify: `visudo -cf` on the drop-in and the dispatcher's own tests.
 
 ## What this does not cover
 

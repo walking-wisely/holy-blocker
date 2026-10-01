@@ -49,6 +49,27 @@ What actually gets blocked: [coverage ledger — Cross-cutting](../engineering/c
 
 This is the layer meant to drop known-unholy domains at the packet level and inspect the rest.
 
+There is no separate "whitelist-only" mode, and none is planned — requiring every site to be
+pre-approved does not scale for a person using the device for ordinary life. The only allow-side
+mechanism is the existing device-local override (`net-shield`'s `Allowlist` / `DomainFilter`
+precedence ahead of the curated blocklist), which exists to correct a false positive, not to gate
+browsing by default.
+
+## Let the user add their own sites and apps to block
+
+**Status:** not started. `net-shield`'s `DomainFilter` already models an explicit per-domain rule
+(the same mechanism the override above uses), so adding a *user-supplied* blocked domain is closer
+than it looks; blocking a named native application has no equivalent path on any platform today —
+`apps/mobile`'s AccessibilityService and `native-modules/mac-daemon`'s scanner both watch content on
+screen, not which app owns the window, and neither has a per-app allow/deny check.
+
+**Packages:** `packages/net-shield`, `packages/domain-blocklist`, `native-modules/mac-daemon`,
+`apps/mobile`, `apps/desktop`
+
+A general activity-monitoring/nudge layer (e.g. time-based prompts for high-usage apps) is a
+plausible future extension of this outcome but is explicitly deferred — this outcome is scoped to a
+user-maintained block list, not usage tracking or intervention timing.
+
 ## Block explicit imagery, in transit and on screen
 
 **Status:** in progress. Intercepted-image classification is present on `master`; on-screen imagery
