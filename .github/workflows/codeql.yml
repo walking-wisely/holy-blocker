@@ -5,6 +5,15 @@ on:
     branches:
       - master
   pull_request:
+    paths:
+      - "apps/**"
+      - "packages/**"
+      - "native-modules/**"
+      - "machine-learning/**"
+      - "tools/**"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - ".github/workflows/codeql.yml"
   schedule:
     # Weekly scan on Monday 03:00 UTC — catches newly-disclosed queries
     # on code that hasn't changed since the last push.
