@@ -1,5 +1,6 @@
 import contextlib
 import io
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -129,6 +130,56 @@ class CheckTest(unittest.TestCase):
     def test_step_id_may_belong_to_a_different_manifest(self):
         body = COMPLETE_BODY.replace("net-shield.dns", "desktop.ipc")
         self.assertEqual(check(body, ["packages/net-shield/src/lib.rs"]), [])
+
+
+class UnclaimedRootTest(unittest.TestCase):
+    def test_new_crate_no_manifest_claims_fails_even_with_a_complete_body(self):
+        problems = check(COMPLETE_BODY, ["packages/new-crate/src/lib.rs"])
+        self.assertEqual(len(problems), 1)
+        self.assertIn("packages/new-crate/src/lib.rs", problems[0])
+
+    def test_each_code_root_is_checked(self):
+        for path in ("apps/new/a.ts", "native-modules/new/a.cpp", "machine-learning/a.py"):
+            with self.subTest(path=path):
+                self.assertEqual(len(check(COMPLETE_BODY, [path])), 1)
+
+    def test_claimed_crate_is_not_reported_as_unclaimed(self):
+        self.assertEqual(check(COMPLETE_BODY, ["packages/net-shield/src/lib.rs"]), [])
+
+    def test_sibling_with_shared_prefix_is_unclaimed(self):
+        self.assertEqual(len(check(COMPLETE_BODY, ["packages/net-shield-extra/a.rs"])), 1)
+
+    def test_docs_and_root_files_are_not_code_roots(self):
+        self.assertEqual(check("", ["docs/README.md", "README.md", "LICENSE"]), [])
+
+    def test_unclaimed_file_next_to_a_claimed_one_is_still_reported(self):
+        problems = check(COMPLETE_BODY, ["packages/net-shield/a.rs", "packages/new-crate/b.rs"])
+        self.assertEqual(len(problems), 1)
+        self.assertIn("packages/new-crate/b.rs", problems[0])
+
+
+class RepoClaimsTest(unittest.TestCase):
+    def setUp(self):
+        self.manifests = loop.load_governed(Path(__file__).resolve().parents[3])
+
+    def test_process_surfaces_are_governed(self):
+        for path in (
+            ".github/workflows/ci.yml",
+            ".github/dependabot.yml",
+            "CLAUDE.md",
+            "AGENTS.md",
+            "deny.toml",
+            ".gitleaks.toml",
+        ):
+            with self.subTest(path=path):
+                self.assertTrue(loop.governing([path], self.manifests))
+
+    def test_no_tracked_code_file_is_unclaimed(self):
+        root = Path(__file__).resolve().parents[3]
+        tracked = subprocess.run(
+            ["git", "ls-files", *loop.CODE_ROOTS], cwd=root, check=True, capture_output=True, text=True
+        ).stdout.split()
+        self.assertEqual(loop.unclaimed(tracked, self.manifests), [])
 
 
 class OpenTest(unittest.TestCase):

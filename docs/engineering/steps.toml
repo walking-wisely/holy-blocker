@@ -13,7 +13,17 @@
 # plan.md. `evidence` is one line pointing at where the step landed (commit, PR, or
 # the plan's own wording), not an argument.
 
-paths = ["tools/plan", ".claude/skills"]
+paths = [
+  "tools/plan",
+  ".claude/skills",
+  ".github",
+  "CLAUDE.md",
+  "AGENTS.md",
+  "deny.toml",
+  ".gitleaks.toml",
+  ".pre-commit-config.yaml",
+  ".husky",
+]
 
 [[step]]
 id = "engineering.ledger-coverage"

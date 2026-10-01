@@ -22,6 +22,7 @@ from pathlib import Path
 from tools.plan import ledger
 
 REQUIRED_SECTIONS = ("Assumption audit", "Adversarial review")
+CODE_ROOTS = ("packages", "apps", "native-modules", "machine-learning")
 _FENCE_RE = re.compile(r"^(```|~~~).*?^\1[^\n]*$", re.S | re.M)
 _COMMENT_RE = re.compile(r"<!--.*?-->", re.S)
 _HEADING_RE = re.compile(r"^(#{1,6})[ \t]+(.*?)[ \t]*#*[ \t]*$")
@@ -66,6 +67,15 @@ def governing(changed_files: list[str], manifests: list[Governed]) -> list[Gover
     ]
 
 
+def unclaimed(changed_files: list[str], manifests: list[Governed]) -> list[str]:
+    owned = [p for m in manifests for p in m.paths]
+    return [
+        f
+        for f in changed_files
+        if f.split("/", 1)[0] in CODE_ROOTS and not any(_owns(p, f) for p in owned)
+    ]
+
+
 def _sanitize(body: str) -> str:
     body = body.replace("\r\n", "\n").replace("\r", "\n")
     return _COMMENT_RE.sub("", _FENCE_RE.sub("", body))
@@ -95,10 +105,13 @@ def _names_step(body: str, manifests: list[Governed]) -> bool:
 
 
 def check(body: str, changed_files: list[str], manifests: list[Governed]) -> list[str]:
+    problems = [
+        f"{f} is under a code root but no steps.toml claims it; add its directory to a manifest's paths"
+        for f in unclaimed(changed_files, manifests)
+    ]
     if not governing(changed_files, manifests):
-        return []
+        return problems
     body = _sanitize(body)
-    problems: list[str] = []
     if not _names_step(body, manifests):
         problems.append("PR body names no step id from any steps.toml")
     sections = _sections(body)
