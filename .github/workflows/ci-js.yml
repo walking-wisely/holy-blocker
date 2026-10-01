@@ -11,7 +11,7 @@ on:
       - "turbo.json"
   push:
     branches:
-      - main
+      - master
     paths:
       - ".github/workflows/ci-js.yml"
       - "apps/desktop/**"

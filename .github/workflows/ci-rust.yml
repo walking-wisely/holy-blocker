@@ -2,29 +2,79 @@ name: CI Rust
 
 on:
   pull_request:
-    paths:
-      - ".github/workflows/ci-rust.yml"
-      - "packages/text-policy/**"
-      - "packages/text-policy-ffi/**"
-      - "packages/mitm-proxy/**"
-      - "packages/net-shield/**"
   push:
     branches:
-      - main
-    paths:
-      - ".github/workflows/ci-rust.yml"
-      - "packages/text-policy/**"
-      - "packages/text-policy-ffi/**"
-      - "packages/mitm-proxy/**"
-      - "packages/net-shield/**"
+      - master
 
 concurrency:
   group: ci-rust-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
+  changes:
+    name: Affected crates
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      crates: ${{ steps.filter.outputs.changes }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Detect affected crates
+        id: filter
+        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        with:
+          filters: |
+            shared: &shared
+              - ".github/workflows/ci-rust.yml"
+              - "rust-toolchain.toml"
+            text-policy:
+              - *shared
+              - "packages/text-policy/**"
+            text-policy-ffi:
+              - *shared
+              - "packages/text-policy-ffi/**"
+              - "packages/text-policy/**"
+            domain-normalize:
+              - *shared
+              - "packages/domain-normalize/**"
+            domain-blocklist:
+              - *shared
+              - "packages/domain-blocklist/**"
+              - "packages/domain-normalize/**"
+            net-shield:
+              - *shared
+              - "packages/net-shield/**"
+              - "packages/domain-blocklist/**"
+              - "packages/domain-normalize/**"
+            net-shield-ffi:
+              - *shared
+              - "packages/net-shield-ffi/**"
+              - "packages/net-shield/**"
+              - "packages/domain-blocklist/**"
+              - "packages/domain-normalize/**"
+            image-sandbox:
+              - *shared
+              - "packages/image-sandbox/**"
+            image-sandbox-ffi:
+              - *shared
+              - "packages/image-sandbox-ffi/**"
+              - "packages/image-sandbox/**"
+            mitm-proxy:
+              - *shared
+              - "packages/mitm-proxy/**"
+              - "packages/text-policy/**"
+              - "packages/image-sandbox/**"
+
   rust:
-    name: Rust packages
+    name: ${{ matrix.crate }}
+    needs: changes
+    if: needs.changes.outputs.crates != '[]'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -32,11 +82,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        package:
-          - packages/text-policy
-          - packages/text-policy-ffi
-          - packages/mitm-proxy
-          - packages/net-shield
+        crate: ${{ fromJSON(needs.changes.outputs.crates) }}
+        exclude:
+          - crate: shared
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -46,13 +94,13 @@ jobs:
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # stable
         with:
-          toolchain: 1.88.0
+          toolchain: 1.90.0
 
       - name: Cache Cargo artifacts
         uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
         with:
-          workspaces: ${{ matrix.package }}
+          workspaces: packages/${{ matrix.crate }}
 
       - name: Test
-        working-directory: ${{ matrix.package }}
+        working-directory: packages/${{ matrix.crate }}
         run: cargo test --locked
