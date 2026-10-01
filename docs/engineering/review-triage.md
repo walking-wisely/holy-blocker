@@ -4,8 +4,8 @@ After a review finds something, what happens? This page answers that. `step-loop
 gate 5 used to say only "if the review finds a load-bearing gap, go back to gate 1",
 which leaves every non-blocking finding and every judgment call unspecified. This is
 the specification those words pointed at: severity tiers, a fix-attempt cap, a routing
-table, and the escalation packet format (§4) that step 8 wires into `step-loop` so it
-quotes instead of composes freehand.
+table, and the escalation packet format (§4) that `step-loop` gate 4 quotes
+so it does not compose instead of composes freehand.
 
 Severity is ranked by consequence, on the same axis `adversarial-review` already uses
 ("a guard that fails open silently outranks a crash" — `.claude/skills/adversarial-review/SKILL.md`):
@@ -34,9 +34,8 @@ not a guideline:
 MAX_FIX_ATTEMPTS = 1
 ```
 
-This document is the contract; mechanical enforcement — `step-loop` actually
-refusing a third attempt — lands when step 8 wires the routing table (§3) into the
-skill. Until then the number is binding on the loop's operator, not on the skill.
+This document is the contract; `step-loop` gate 4 names the constant and refuses a third
+attempt.
 
 One attempt exists to answer the finding; the second run verifies the fix. Anything that
 still does not clear is either a mis-framed finding or a problem the first attempt did

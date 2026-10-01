@@ -380,7 +380,7 @@ Run 2026-09-19 before writing the skill. All claims settle now; none deferred.
 | No enumerated class transmits off-device | `rg` for URLSession/NWConnection/OkHttp/URLConnection across mac-daemon, mobile, desktop sources | None. Only a loopback probe socket and the mobile VPN's by-design DNS forwarding; desktop speaks to a local pipe. Proxy debug trace logs `method`/`host`/`port` per forwarded request (`forward.rs:36`) — device-local, but itself a shallow visited-domain record | **TRUE** on inspection; the debug-level host record is filed as a finding, settles-now |
 | Audit target path is fresh | `ls docs/engineering/privacy-backlog.md` | Does not exist yet | n/a — created by the first audit-mode run (this step ships the skill that writes it, not the file itself), settles-now |
 
-### Step 8 — wire mandatory gates into step-loop
+### Step 8 — wire mandatory gates into step-loop **Done.**
 
 <!-- step: engineering.mandatory-review-gates -->
 
@@ -423,7 +423,7 @@ These steps implement [decision-tiers-and-red-teaming.md](../decisions/decision-
 `plan-inception` changes landed with the decisions; what remains is wiring and tooling. Steps 9 and 10
 touch `step-loop`, so both wait for step 8 to avoid editing the same file in parallel.
 
-### Step 9 — step-loop: feature-level hand-off and the local e2e gate
+### Step 9 — step-loop: feature-level hand-off and the local e2e gate **Done.**
 
 <!-- step: engineering.step-loop-feature-gates -->
 

@@ -31,7 +31,7 @@ change feels small.
 
 | Tier | What | Merge |
 |---|---|---|
-| Full loop (`step-loop`) | any manifest step; any file a `coverage.md` row cites; anything touching preload/IPC, TLS/CA, TUN, named pipes, capture/OCR or OS permissions | auto only if the step's `acceptance = "code"`; `observation` and `product` steps stop at the PR |
+| Full loop (`step-loop`) | any manifest step; any file a `coverage.md` row cites; anything touching preload/IPC, TLS/CA, TUN, named pipes, capture/OCR or OS permissions; every full-loop step gets the security and privacy reviews unconditionally | auto only if the step's `acceptance = "code"`; an `observation` step merges only if a scenario observed it, else it stops at the PR; `product` steps stop at the PR |
 | Loop-lite | docs-only, dependency bumps, mechanical refactor, frontend rendering | normal PR; run the package's own check and update `coverage.md` if a row moves |
 | Exempt | typo fixes; throwaway spikes that never leave the worktree | none |
 
@@ -42,8 +42,9 @@ implementation detail, and meets a feature once, when it is done, through its de
 (`docs/decisions/feature-demos-and-local-e2e.md`). Privileged steps on the dev machine go through
 the dispatcher in `docs/decisions/agent-privilege-boundary.md`, never a root shell.
 
-This router is a convention, not yet a mechanism: `docs/engineering/plan.md` step 2 adds the CI
-check that fails a PR touching governed code without the loop's artifacts.
+The router is a convention, but its output is machine-checked: the `Loop contract` CI job
+(`python -m tools.plan.loop check`) fails a PR that touches a manifest's `paths` without a step id
+and non-empty `## Assumption audit` and `## Adversarial review` sections.
 
 ## Current State
 
