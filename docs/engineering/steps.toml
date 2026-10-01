@@ -86,3 +86,30 @@ depends_on = [
     "engineering.privacy-review-skill",
 ]
 verify = "python -m unittest discover -s tools/plan/tests -t ."
+
+[[step]]
+id = "engineering.step-loop-feature-gates"
+title = "step-loop: feature-level hand-off and the local e2e gate"
+status = "pending"
+evidence = ""
+acceptance = "code"
+depends_on = ["engineering.mandatory-review-gates"]
+verify = "python -m unittest discover -s tools/plan/tests -t ."
+
+[[step]]
+id = "engineering.e2e-runner"
+title = "local e2e runner — path map, preflight, staleness report"
+status = "pending"
+evidence = ""
+acceptance = "code"
+depends_on = ["engineering.step-loop-feature-gates"]
+verify = "python -m unittest discover -s tools/plan/tests -t ."
+
+[[step]]
+id = "engineering.privilege-dispatcher"
+title = "privileged dispatcher and sudoers drop-in for local e2e"
+status = "pending"
+evidence = ""
+acceptance = "product"
+depends_on = ["engineering.mandatory-review-gates"]
+verify = "visudo -cf <drop-in>"

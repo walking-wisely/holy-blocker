@@ -27,6 +27,35 @@ The packages below are **planned but not yet created** — do not assume they ex
 
 Each active package has a step-by-step implementation plan in `docs/<package>/PLAN.md`. Read the relevant plan before starting work on a package — it lists the next modules to add, their types, and the correct implementation order.
 
+## Development Workflow — three skills, one front to back
+
+Work flows through three skills in order. They exist because a measured pattern showed
+that a fresh-context agent drops a remembered convention the moment context resets, so
+the pipeline is loaded by name rather than remembered.
+
+- **New work, no plan yet** — run the `plan-inception` skill. It turns a feature idea
+  into a decision record and an executable `plan.md`. It never decides product, faith,
+  legal, or acceptance policy itself: it classifies the plan's claims into four domains,
+  checks them against the doctrine index (`mission.md`, `docs/decisions/`,
+  `docs/product/outcomes.md` + `flows/`, `docs/engineering/coverage.md`), and escalates
+  any unowned decision to the human. Do not assume a new feature fits an existing plan
+  or that `step-loop` covers it — `step-loop` only executes plans that already exist.
+- **Execute an existing plan** — run the `step-loop` skill. It picks the next pending
+  step (`python -m tools.plan.ledger next`), audits its external claims, works in a
+  branch, implements test-first, reviews adversarially in a fresh context, and lands the
+  step per its acceptance kind.
+- **Where the owner sits.** The owner decides product questions, and architecture questions
+  that are ML, cross-platform contracts, new trust boundaries or one-way doors; the agent
+  red-tests those first (`docs/decisions/decision-tiers-and-red-teaming.md`). The owner does not
+  review code or implementation detail, and meets a feature once, when it is done, through its
+  demo (`docs/decisions/feature-demos-and-local-e2e.md`). Privileged steps on the dev machine go
+  through the dispatcher in `docs/decisions/agent-privilege-boundary.md`, never a root shell.
+- **Never skip the reviews.** Before a plan lands, and before a step lands its code, the
+  two bracketing skills run: `assumption-audit` (falsifying command per external claim,
+  before code) and `adversarial-review` (fresh-context review of the diff, after code).
+  Not running them is not a shortcut; it is the failure the whole arrangement exists to
+  prevent.
+
 Current major areas:
 
 ## Development Commands
