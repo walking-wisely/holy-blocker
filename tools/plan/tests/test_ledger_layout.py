@@ -281,3 +281,31 @@ class MigrateTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MalformedTypesTest(unittest.TestCase):
+    def _run(self, command: str, extra: str):
+        with tempfile.TemporaryDirectory() as tmp:
+            write(tmp, "steps/p.a.toml", step_file("p.a", extra=extra))
+            write(tmp, "plan.md", "")
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+                code = ledger.main([command, tmp])
+            return code, err.getvalue()
+
+    def test_non_string_group_is_reported_not_raised(self):
+        for command in ("validate", "next", "render"):
+            code, err = self._run(command, "group = 3\n")
+            self.assertEqual(code, 1, command)
+            self.assertIn("group must be a string", err)
+
+    def test_non_list_depends_on_is_reported_not_raised(self):
+        for command in ("validate", "next", "render"):
+            code, err = self._run(command, "depends_on = 5\n")
+            self.assertEqual(code, 1, command)
+            self.assertIn("depends_on must be a list of strings", err)
+
+    def test_nested_depends_on_is_reported_not_raised(self):
+        code, err = self._run("validate", "depends_on = [[1]]\n")
+        self.assertEqual(code, 1)
+        self.assertIn("depends_on must be a list of strings", err)

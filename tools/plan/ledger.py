@@ -82,6 +82,10 @@ class Step:
 
 
 def _step_from_raw(raw: dict) -> Step:
+    if not _is_string_list(raw.get("depends_on", [])):
+        raise ValueError(f"{raw.get('id')}: depends_on must be a list of strings")
+    if not isinstance(raw.get("group", ""), str):
+        raise ValueError(f"{raw.get('id')}: group must be a string")
     return Step(
         id=raw["id"],
         title=raw.get("title", ""),
@@ -202,6 +206,8 @@ def layout_problems(package_dir: Path) -> list[str]:
             problems.append(f"{path.name}: unknown key {key!r}")
         if not _is_string_list(raw.get("depends_on", [])):
             problems.append(f"{path.name}: depends_on must be a list of strings")
+        if not isinstance(raw.get("group", ""), str):
+            problems.append(f"{path.name}: group must be a string")
         if "id" not in raw:
             problems.append(f"{path.name}: no id")
         elif raw["id"] != path.stem:
@@ -473,7 +479,12 @@ def main(argv: list[str] | None = None) -> int:
             for path in written:
                 print(path)
             continue
-        steps = load_manifest(package)
+        try:
+            steps = load_manifest(package)
+        except ValueError as err:
+            print(f"{package}: {err}", file=sys.stderr)
+            failures += 1
+            continue
         if args.command == "next":
             step, reason = next_plan(steps)
             print(f"### {package.name}\n")
