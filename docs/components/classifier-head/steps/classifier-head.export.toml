@@ -2,3 +2,4 @@ id = "classifier-head.export"
 title = "export side (module 6) — embedding-only backbone export, sidecar identity, holy-blocker-export-head"
 status = "pending"
 evidence = ""
+depends_on = ["classifier-head.head-weights-verdict"]

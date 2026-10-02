@@ -2,8 +2,9 @@
 
 A package keeps one file per step under steps/<step-id>.toml, plus package.toml for
 the code roots it governs. A step file is the only record of a step's status; plan.md
-stays prose, carries one ``<!-- step: id -->`` marker per step so the two cannot
-drift, and fixes the order steps are offered in. Narrative, gotchas, and war stories
+stays prose. Steps are offered in an order computed from ``depends_on`` and the
+optional ``group`` label; a ``<!-- step: id -->`` marker is optional and never affects
+order, but a marker that names no step is an error. Narrative, gotchas, and war stories
 belong in plan.md, never in a step file.
 
 Usage:
@@ -45,6 +46,7 @@ DEFAULT_KIND = "feature"
 VALID_DIFFICULTY = ("normal", "hard")
 DEFAULT_DIFFICULTY = "normal"
 MARKER_RE = re.compile(r"<!--\s*step:\s*([A-Za-z0-9._-]+)\s*-->")
+GROUP_RE = re.compile(r"[a-z0-9-]+")
 SAFE_ID_RE = re.compile(r"[A-Za-z0-9._-]+")
 STEPS_DIR = "steps"
 PACKAGE_FILE = "package.toml"
@@ -60,6 +62,7 @@ STEP_KEYS = (
     "kind",
     "regressed_step",
     "difficulty",
+    "group",
 )
 
 
@@ -75,9 +78,14 @@ class Step:
     kind: str = DEFAULT_KIND
     regressed_step: str = ""
     difficulty: str = DEFAULT_DIFFICULTY
+    group: str = ""
 
 
 def _step_from_raw(raw: dict) -> Step:
+    if not _is_string_list(raw.get("depends_on", [])):
+        raise ValueError(f"{raw.get('id')}: depends_on must be a list of strings")
+    if not isinstance(raw.get("group", ""), str):
+        raise ValueError(f"{raw.get('id')}: group must be a string")
     return Step(
         id=raw["id"],
         title=raw.get("title", ""),
@@ -89,6 +97,7 @@ def _step_from_raw(raw: dict) -> Step:
         kind=raw.get("kind", DEFAULT_KIND),
         regressed_step=raw.get("regressed_step", ""),
         difficulty=raw.get("difficulty", DEFAULT_DIFFICULTY),
+        group=raw.get("group", ""),
     )
 
 
@@ -114,15 +123,40 @@ def load_manifest(package_dir: Path) -> list[Step]:
     steps_dir = package_dir / STEPS_DIR
     if not steps_dir.is_dir():
         data = _read_toml(package_dir / LEGACY_FILE)
-        return [_step_from_raw(raw) for raw in data.get("step", [])]
-    steps = [_step_from_raw(_read_toml(path)) for path in sorted(steps_dir.glob("*.toml"))]
-    return _in_plan_order(steps, package_dir / "plan.md")
+        return order_steps([_step_from_raw(raw) for raw in data.get("step", [])])
+    return order_steps(
+        [_step_from_raw(_read_toml(path)) for path in sorted(steps_dir.glob("*.toml"))]
+    )
 
 
-def _in_plan_order(steps: list[Step], plan: Path) -> list[Step]:
-    markers = extract_markers(plan.read_text(encoding="utf-8")) if plan.exists() else []
-    position = {marker: index for index, marker in reversed(list(enumerate(markers)))}
-    return sorted(steps, key=lambda step: (position.get(step.id, len(markers)), step.id))
+def order_steps(steps: list[Step]) -> list[Step]:
+    """Topological order over depends_on; ready steps go by (group, id), ungrouped last.
+
+    The result depends only on the edges and labels, never on input order. Steps in a
+    cycle follow every acyclic step, sorted the same way, so validate can report them.
+    """
+    by_id = {step.id: step for step in steps}
+
+    def key(step: Step) -> tuple[bool, str, str]:
+        return (not step.group, step.group, step.id)
+
+    waiting = {
+        step.id: {dep for dep in step.depends_on if dep in by_id and dep != step.id}
+        for step in steps
+    }
+    ordered: list[Step] = []
+    while waiting:
+        ready = [by_id[i] for i, deps in waiting.items() if not deps]
+        if not ready:
+            ready = [by_id[i] for i in waiting]
+            ordered.extend(sorted(ready, key=key))
+            break
+        chosen = min(ready, key=key)
+        ordered.append(chosen)
+        del waiting[chosen.id]
+        for deps in waiting.values():
+            deps.discard(chosen.id)
+    return ordered
 
 
 def load_paths(package_dir: Path) -> tuple[str, ...]:
@@ -172,6 +206,8 @@ def layout_problems(package_dir: Path) -> list[str]:
             problems.append(f"{path.name}: unknown key {key!r}")
         if not _is_string_list(raw.get("depends_on", [])):
             problems.append(f"{path.name}: depends_on must be a list of strings")
+        if not isinstance(raw.get("group", ""), str):
+            problems.append(f"{path.name}: group must be a string")
         if "id" not in raw:
             problems.append(f"{path.name}: no id")
         elif raw["id"] != path.stem:
@@ -274,6 +310,8 @@ def validate(steps: list[Step], markers: list[str]) -> list[str]:
             problems.append(f"{step.id}: invalid kind {step.kind!r}")
         if step.difficulty not in VALID_DIFFICULTY:
             problems.append(f"{step.id}: invalid difficulty {step.difficulty!r}")
+        if step.group and not GROUP_RE.fullmatch(step.group):
+            problems.append(f"{step.id}: invalid group {step.group!r}")
         if step.regressed_step and step.regressed_step not in ids:
             problems.append(f"{step.id}: unknown regressed_step {step.regressed_step!r}")
     problems.extend(_dependency_problems(steps))
@@ -286,9 +324,6 @@ def validate(steps: list[Step], markers: list[str]) -> list[str]:
             problems.append(f"duplicate marker: {marker}")
         if marker not in seen:
             problems.append(f"marker {marker}: no manifest entry")
-    for step in steps:
-        if step.id not in counts:
-            problems.append(f"{step.id}: no <!-- step: {step.id} --> marker in plan.md")
     return problems
 
 
@@ -444,7 +479,12 @@ def main(argv: list[str] | None = None) -> int:
             for path in written:
                 print(path)
             continue
-        steps = load_manifest(package)
+        try:
+            steps = load_manifest(package)
+        except ValueError as err:
+            print(f"{package}: {err}", file=sys.stderr)
+            failures += 1
+            continue
         if args.command == "next":
             step, reason = next_plan(steps)
             print(f"### {package.name}\n")

@@ -44,9 +44,9 @@ class ValidateTest(unittest.TestCase):
         steps = [ledger.Step("p.a", "a", "at-pr", "PR #12")]
         self.assertEqual(self._validate(steps, ["p.a"]), [])
 
-    def test_manifest_entry_without_marker(self):
+    def test_manifest_entry_without_marker_is_valid(self):
         steps = [ledger.Step("p.a", "a", "pending", "")]
-        self.assertTrue(any("no <!-- step" in p for p in self._validate(steps, [])))
+        self.assertEqual(self._validate(steps, []), [])
 
     def test_marker_without_manifest_entry(self):
         steps = [ledger.Step("p.a", "a", "pending", "")]
@@ -332,3 +332,54 @@ class MissingPathTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class OrderStepsTest(unittest.TestCase):
+    def _ids(self, steps):
+        return [s.id for s in ledger.order_steps(steps)]
+
+    def _step(self, step_id, group="", deps=()):
+        return ledger.Step(step_id, "t", "pending", "", depends_on=tuple(deps), group=group)
+
+    def test_dependency_precedes_dependent_despite_id(self):
+        steps = [self._step("p.a", deps=["p.z"]), self._step("p.z")]
+        self.assertEqual(self._ids(steps), ["p.z", "p.a"])
+
+    def test_ready_steps_sort_by_group_then_id(self):
+        steps = [self._step("p.a", "b"), self._step("p.z", "a"), self._step("p.m", "a")]
+        self.assertEqual(self._ids(steps), ["p.m", "p.z", "p.a"])
+
+    def test_ungrouped_sort_after_grouped(self):
+        steps = [self._step("p.a"), self._step("p.z", "g")]
+        self.assertEqual(self._ids(steps), ["p.z", "p.a"])
+
+    def test_group_sorts_by_code_point(self):
+        steps = [self._step("p.a", "b"), self._step("p.b", "a")]
+        self.assertEqual(self._ids(steps), ["p.b", "p.a"])
+
+    def test_input_order_is_irrelevant(self):
+        steps = [self._step("p.c"), self._step("p.a"), self._step("p.b", deps=["p.c"])]
+        self.assertEqual(self._ids(steps), self._ids(list(reversed(steps))))
+
+    def test_cycle_members_are_kept(self):
+        steps = [self._step("p.a", deps=["p.b"]), self._step("p.b", deps=["p.a"]), self._step("p.c")]
+        self.assertEqual(self._ids(steps), ["p.c", "p.a", "p.b"])
+
+    def test_dangling_dependency_does_not_drop_the_step(self):
+        self.assertEqual(self._ids([self._step("p.a", deps=["p.ghost"])]), ["p.a"])
+
+
+class GroupValidationTest(unittest.TestCase):
+    def test_valid_group(self):
+        steps = [ledger.Step("p.a", "a", "pending", "", group="ledger-2")]
+        self.assertEqual(ledger.validate(steps, []), [])
+
+    def test_uppercase_group_is_invalid(self):
+        steps = [ledger.Step("p.a", "a", "pending", "", group="Ledger")]
+        self.assertTrue(any("invalid group" in p for p in ledger.validate(steps, [])))
+
+    def test_empty_default_is_valid(self):
+        self.assertEqual(ledger.validate([ledger.Step("p.a", "a", "pending", "")], []), [])
+
+    def test_cross_component_dependency_is_an_error(self):
+        steps = [ledger.Step("p.a", "a", "pending", "", depends_on=("other.x",))]
+        self.assertTrue(any("unknown dependency" in p for p in ledger.validate(steps, [])))

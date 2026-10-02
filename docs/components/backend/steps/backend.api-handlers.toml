@@ -3,3 +3,4 @@ title = "api handlers.go + middleware.go — handlers, bearer auth, logging, rat
 status = "pending"
 evidence = ""
 verify = "cd backend && go test ./..."
+depends_on = ["backend.invite-model-store"]

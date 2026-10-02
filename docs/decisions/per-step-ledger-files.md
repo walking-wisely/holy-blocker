@@ -6,7 +6,7 @@
 | **Date** | 2026-10-02 |
 | **Owner** | Ivan Dutov |
 | **Supersedes** | — |
-| **Superseded by** | — |
+| **Superseded by** | Decisions 3 and 4 and the "derive `done`" rejection, by [ledger-order-and-derived-status.md](ledger-order-and-derived-status.md) |
 
 Tier: architecture, decided by the owner. It meets none of the escalation triggers in
 [decision-tiers-and-red-teaming.md](decision-tiers-and-red-teaming.md) (no ML, no

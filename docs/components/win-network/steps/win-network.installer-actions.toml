@@ -2,3 +2,4 @@ id = "win-network.installer-actions"
 title = "installer_actions — install/uninstall helpers"
 status = "pending"
 evidence = ""
+depends_on = ["win-network.service-host"]

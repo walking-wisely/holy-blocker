@@ -2,3 +2,4 @@ id = "frontend.privacy"
 title = "Privacy.tsx"
 status = "pending"
 evidence = ""
+depends_on = ["frontend.scaffold"]

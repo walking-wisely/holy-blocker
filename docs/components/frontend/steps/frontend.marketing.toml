@@ -2,3 +2,4 @@ id = "frontend.marketing"
 title = "Landing page (/) and Download.tsx"
 status = "pending"
 evidence = ""
+depends_on = ["frontend.scaffold"]

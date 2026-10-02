@@ -602,14 +602,76 @@ name the new layout.
 
 Acceptance: `code`. Verify: `python -m unittest discover -s tools/plan/tests -t . && python -m tools.plan.ledger validate docs/components/*/ docs/engineering`.
 
-### Status written once, no committed tables
+### Computed order and derived status
 
-<!-- step: engineering.derived-state-guard -->
+[ledger-order-and-derived-status.md](../decisions/ledger-order-and-derived-status.md) supersedes
+the order and status decisions of [per-step-ledger-files.md](../decisions/per-step-ledger-files.md)
+and replaces the old `engineering.derived-state-guard` step, whose guard test is folded into
+`engineering.ledger-derived-status`. After it, a step PR adds files and writes no shared state,
+and `ledger next` order and every status are functions of the edges, labels and git history.
 
-Drop the `**Done.**` strike-through requirement from `CLAUDE.md` and `step-loop`, so a step's
-status lives only in its step file. Add a test that fails when a rendered ledger table (the
-`| Step | Kind | Status | Evidence |` header) appears in any tracked file, and that fails when a
-step file carries narrative beyond `evidence`'s one line.
+| Claim | Falsifier | Observed | Verdict |
+|---|---|---|---|
+| A step already declares prerequisites with cycle and dangling checks | `grep -n depends_on tools/plan/ledger.py` | `STEP_KEYS`, `_dependency_problems`, `_cycles` | **HOLDS** |
+| Squash merges keep every commit body | `gh api repos/{owner}/{repo} --jq .squash_merge_commit_message` | `COMMIT_MESSAGES` | **HOLDS** |
+| A step line is the final trailer of a squash commit | `git log master -1 --format=%b` | `Co-authored-by:` lines follow the body | **FALSE** — match a `Step:` line anywhere in the message |
+| Three steps on master are `at-pr` with merged PRs | `grep -l 'status = "at-pr"' docs/engineering/steps/*.toml` and `gh pr list --state merged` | four steps, PRs #103–#106, all merged | **FALSE** — four, not three |
+| Every CI job that would derive status has history | `grep -n fetch-depth .github/workflows/ci-plan.yml` | only some jobs set `fetch-depth: 0` | **FALSE** — the reader must fail on a shallow repository, and any job that derives status sets the depth |
+| Repo auto-merge is enabled | `gh api repos/{owner}/{repo} --jq .allow_auto_merge` | `false` | **FALSE** — a repository setting; left to the owner and not a dependency of any step here |
+
+Decision tiers: the order and status choices are architecture, owner-decided, red-team tier 1
+(one lens, bypass). `group`, the `landed` key and the `steps/<id>.md` layout are implementation.
+
+<!-- step: engineering.ledger-graph-order -->
+
+~~`ledger next` and `ledger render` order steps topologically over `depends_on`, taking the smallest `(group, id)` among steps that are ready together, ungrouped last. Add the optional `group` key to the step schema. Markers stop being required by `validate` and stop affecting order; a marker that names no step still fails. Before the marker order is dropped, record `ledger next` for every package, and where the computed answer differs, add the `depends_on` edge that restores it, so no plan's next step changes silently. `group` must match `[a-z0-9-]+` and sorts after nothing ungrouped; a `depends_on` edge to another component's step is a validation error.~~ **Done.**
+
+Acceptance: `code`. Verify: `python -m unittest discover -s tools/plan/tests -t . && python -m tools.plan.ledger validate docs/components/*/ docs/engineering`.
+
+<!-- step: engineering.step-prose-files -->
+
+A step's specification lives in `steps/<step-id>.md` beside its `.toml`. `validate` accepts a
+step that has a marker in `plan.md` or a body file, and flags a stray `.md` with no step. The
+`plan-inception` and `step-loop` skills and `CLAUDE.md` tell a new plan to write step files and
+keep `plan.md` to the overview, rationale and audit tables. Existing plans are not rewritten.
+
+Acceptance: `code`. Verify: `python -m unittest discover -s tools/plan/tests -t . && python -m tools.plan.ledger validate docs/components/*/ docs/engineering`.
+
+<!-- step: engineering.ledger-derived-status -->
+
+Remove `status` and `evidence` from the step schema and compute the state from git as the decision
+records: `done`, `in-flight`, `merged`, `pending`. The step line is `Step: <id>` at the start of a
+commit-message line, matched by set membership; a revert subtracts a landing; `done` needs a
+commit that touched the step's files or governed paths and wins over `in-flight`; in-flight reads
+open PRs and checked-out worktrees only. `ledger next` reports "blocked on unobserved <id>". The
+reader, validator and migration land in one PR, with a test that rejects `status` and `evidence`
+after the cut. Migration writes a one-time `landed = "<sha>"` into
+every step already done, resolved from the evidence it holds, and the four stale `at-pr` steps
+resolve to `done` from their merge commits. `ledger` fails loudly on a shallow repository, with a test, and any CI job that derives status
+sets `fetch-depth: 0`. The reader checks every `landed` sha is an ancestor of the base.
+`step-loop` makes its worktree's first commit an empty one carrying the step line, as the claim. Drop the
+`**Done.**` strike-through requirement from `CLAUDE.md` and `step-loop`, and add a test that fails
+when a rendered ledger table (the `| Step | Kind | Status | Evidence |` header) appears in a
+tracked file.
+
+Acceptance: `code`. Verify: `python -m unittest discover -s tools/plan/tests -t . && python -m tools.plan.ledger validate docs/components/*/ docs/engineering`.
+
+<!-- step: engineering.step-line-gate -->
+
+`loop check` requires a `Step: <id>` line in a commit message when the diff touches a governed
+path, naming a step that governs that path, rejects a PR whose commits name more than one distinct
+step, rejects `landed` on a step file not already on the base, and calls the same layout validation `ledger validate`
+uses so the two cannot disagree.
+
+Acceptance: `code`. Verify: `python -m unittest discover -s tools/plan/tests -t .`.
+
+<!-- step: engineering.concurrent-landing-check -->
+
+A deterministic test builds a scratch git repository and lands two branches that each add a
+step, in both orders, with squash-style commits, and asserts there is no merge conflict, that the
+computed order is identical either way, and that each step reads `done` only after its commit is on
+the base and `in-flight` before. It is the regression check for the property this section exists to
+provide.
 
 Acceptance: `code`. Verify: `python -m unittest discover -s tools/plan/tests -t .`.
 

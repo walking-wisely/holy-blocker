@@ -2,3 +2,4 @@ id = "desktop.policy-view"
 title = "PolicyView — protection mode, thresholds, and accountability partner config"
 status = "pending"
 evidence = ""
+depends_on = ["desktop.stats-store"]

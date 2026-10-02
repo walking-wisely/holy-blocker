@@ -2,3 +2,4 @@ id = "video-watchdog.segment"
 title = "segment — segment type detection"
 status = "pending"
 evidence = ""
+depends_on = ["video-watchdog.tee"]

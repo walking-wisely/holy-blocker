@@ -94,13 +94,6 @@ class LoadStepsTest(unittest.TestCase):
 
 
 class LoadStepsToleranceTest(unittest.TestCase):
-    def test_non_utf8_plan_does_not_abort_the_scan(self):
-        package = _write_package(Path(tempfile.mkdtemp()), "p", [
-            {"id": "p.a", "title": "a", "status": "pending"},
-        ])
-        (package / "plan.md").write_bytes(b"\xff\xfe not utf-8")
-        self.assertEqual(todos.load_steps(package, "p"), [])
-
     def test_non_iterable_depends_on_does_not_abort_the_scan(self):
         package = Path(tempfile.mkdtemp())
         (package / "steps").mkdir()

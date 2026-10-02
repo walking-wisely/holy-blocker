@@ -2,3 +2,4 @@ id = "voice-gate.rate-checker"
 title = "rate-checker.ts — words-per-minute ceiling"
 status = "pending"
 evidence = ""
+depends_on = ["voice-gate.verse-picker"]

@@ -2,3 +2,4 @@ id = "voice-gate.liveness-classifier"
 title = "liveness-classifier.ts — injected ONNX anti-spoofing runtime"
 status = "pending"
 evidence = ""
+depends_on = ["voice-gate.verse-picker"]

@@ -2,3 +2,4 @@ id = "image-sandbox.db"
 title = "db — SQLite hash lookup"
 status = "pending"
 evidence = ""
+depends_on = ["image-sandbox.hash"]
