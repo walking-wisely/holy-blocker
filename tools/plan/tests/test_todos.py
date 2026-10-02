@@ -1,3 +1,4 @@
+import contextlib
 import io
 import sys
 import tempfile
@@ -105,6 +106,18 @@ class LoadStepsToleranceTest(unittest.TestCase):
         (package / "steps").mkdir()
         (package / "steps" / "p.a.toml").write_text('id = "p.a"\nstatus = "pending"\ndepends_on = 3\n')
         self.assertEqual(todos.load_steps(package, "p"), [])
+
+
+class LoadStepsWarningTest(unittest.TestCase):
+    def test_a_broken_package_is_reported_on_stderr(self):
+        package = Path(tempfile.mkdtemp())
+        (package / "steps").mkdir()
+        (package / "steps" / "x.a.toml").write_text('id = "x.a"\n')
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            self.assertEqual(todos.load_steps(package, "x"), [])
+        self.assertIn("x", stderr.getvalue())
+        self.assertIn("unreadable", stderr.getvalue())
 
 
 class FormatBlockerFlagTest(unittest.TestCase):

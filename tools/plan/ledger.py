@@ -142,17 +142,36 @@ def layout_problems(package_dir: Path) -> list[str]:
     problems: list[str] = []
     if (package_dir / LEGACY_FILE).exists():
         problems.append(f"legacy {LEGACY_FILE}: run `python -m tools.plan.ledger migrate {package_dir}`")
+    package_file = package_dir / PACKAGE_FILE
+    if package_file.exists():
+        try:
+            package = _read_toml(package_file)
+        except (tomllib.TOMLDecodeError, UnicodeDecodeError) as err:
+            problems.append(f"{PACKAGE_FILE}: invalid TOML: {err}")
+        else:
+            for key in sorted(set(package) - {"paths"}):
+                problems.append(f"{PACKAGE_FILE}: unknown key {key!r}")
+            if not _is_string_list(package.get("paths", [])):
+                problems.append(f"{PACKAGE_FILE}: paths must be a list of strings")
     steps_dir = package_dir / STEPS_DIR
     if not steps_dir.is_dir():
         return problems
-    for path in sorted(steps_dir.glob("*.toml")):
+    for path in sorted(steps_dir.iterdir()):
+        if path.is_symlink():
+            problems.append(f"{path.name}: symlink in {STEPS_DIR}/")
+            continue
+        if path.is_dir() or path.suffix != ".toml":
+            problems.append(f"{path.name}: not a step file; {STEPS_DIR}/ holds only <id>.toml")
+            continue
         try:
             raw = _read_toml(path)
-        except tomllib.TOMLDecodeError as err:
+        except (tomllib.TOMLDecodeError, UnicodeDecodeError) as err:
             problems.append(f"{path.name}: invalid TOML: {err}")
             continue
         for key in sorted(set(raw) - set(STEP_KEYS)):
             problems.append(f"{path.name}: unknown key {key!r}")
+        if not _is_string_list(raw.get("depends_on", [])):
+            problems.append(f"{path.name}: depends_on must be a list of strings")
         if "id" not in raw:
             problems.append(f"{path.name}: no id")
         elif raw["id"] != path.stem:
@@ -160,27 +179,48 @@ def layout_problems(package_dir: Path) -> list[str]:
     return problems
 
 
+def _is_string_list(value: object) -> bool:
+    return isinstance(value, list) and all(isinstance(item, str) for item in value)
+
+
 def _toml_value(value: object) -> str:
     if isinstance(value, (list, tuple)):
-        return "[" + ", ".join(json.dumps(item, ensure_ascii=False) for item in value) + "]"
-    return json.dumps(value, ensure_ascii=False)
+        return "[" + ", ".join(_toml_value(item) for item in value) + "]"
+    return json.dumps(value, ensure_ascii=False).replace("\x7f", "\\u007f")
 
 
 def migrate(package_dir: Path) -> list[Path]:
-    """Convert a legacy steps.toml into per-step files and package.toml."""
+    """Convert a legacy steps.toml into per-step files and package.toml.
+
+    Everything is rendered and re-parsed before any file is written, so a step that
+    would not round-trip aborts the migration with the legacy file untouched.
+    """
     package_dir = Path(package_dir)
     legacy = package_dir / LEGACY_FILE
     text = legacy.read_text(encoding="utf-8")
     data = tomllib.loads(text)
-    steps_dir = package_dir / STEPS_DIR
     raws = data.get("step", [])
-    unsafe = [raw["id"] for raw in raws if not SAFE_ID_RE.fullmatch(raw["id"]) or raw["id"] in (".", "..")]
+    ids = [raw["id"] for raw in raws]
+    unsafe = [i for i in ids if not SAFE_ID_RE.fullmatch(i) or i in (".", "..")]
     if unsafe:
         raise ValueError(f"step ids that are not safe file names: {', '.join(unsafe)}")
-    targets = [steps_dir / f"{raw['id']}.toml" for raw in raws]
-    clashes = [path for path in targets if path.exists()]
-    if clashes:
-        raise FileExistsError(", ".join(str(path) for path in clashes))
+    folded = [i.casefold() for i in ids]
+    repeated = sorted({i for i, f in zip(ids, folded) if folded.count(f) > 1})
+    if repeated:
+        raise ValueError(f"duplicate step ids, ignoring case: {', '.join(repeated)}")
+
+    rendered: list[tuple[Path, str]] = []
+    steps_dir = package_dir / STEPS_DIR
+    for raw in raws:
+        expected = {key: raw[key] for key in STEP_KEYS if key in raw}
+        try:
+            body = "".join(f"{key} = {_toml_value(value)}\n" for key, value in expected.items())
+            parsed = tomllib.loads(body)
+        except (TypeError, tomllib.TOMLDecodeError) as err:
+            raise ValueError(f"step {raw['id']!r} would not round-trip: {err}") from err
+        if parsed != expected:
+            raise ValueError(f"step {raw['id']!r} would not round-trip")
+        rendered.append((steps_dir / f"{raw['id']}.toml", body))
 
     header: list[str] = []
     for line in text.splitlines():
@@ -193,14 +233,18 @@ def migrate(package_dir: Path) -> list[Path]:
     if data.get("paths"):
         items = "".join(f"  {json.dumps(path)},\n" for path in data["paths"])
         body = f"paths = [\n{items}]\n"
+        if tomllib.loads(body).get("paths") != data["paths"]:
+            raise ValueError("paths would not round-trip")
     package_text = "\n".join(header) + ("\n\n" if header and body else "\n" if header else "") + body
 
+    clashes = [path for path, _ in rendered if path.exists()]
+    if clashes:
+        raise FileExistsError(", ".join(str(path) for path in clashes))
     steps_dir.mkdir(parents=True, exist_ok=True)
     written: list[Path] = []
-    for raw, target in zip(raws, targets):
-        lines = [f"{key} = {_toml_value(raw[key])}" for key in STEP_KEYS if key in raw]
-        target.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        written.append(target)
+    for path, content in rendered:
+        path.write_text(content, encoding="utf-8")
+        written.append(path)
     if package_text:
         (package_dir / PACKAGE_FILE).write_text(package_text, encoding="utf-8")
         written.append(package_dir / PACKAGE_FILE)

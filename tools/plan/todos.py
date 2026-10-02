@@ -54,7 +54,8 @@ def load_steps(package_dir: Path, package: str) -> list[ledger.Step]:
     """A package's steps, or none when its manifest is missing or unparsable."""
     try:
         return ledger.load_manifest(package_dir)
-    except (OSError, ValueError, KeyError, TypeError):
+    except (OSError, ValueError, KeyError, TypeError) as err:
+        print(f"{package}: step manifest unreadable: {err!r}", file=sys.stderr)
         return []
 
 

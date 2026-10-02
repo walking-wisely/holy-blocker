@@ -115,6 +115,37 @@ class LayoutProblemsTest(unittest.TestCase):
             write(tmp, "steps/p.a.toml", 'status = "pending"\n')
             self.assertTrue(any("no id" in p for p in ledger.layout_problems(Path(tmp))))
 
+    def test_package_toml_unknown_key_is_a_problem(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            write(tmp, "package.toml", 'pahts = ["x"]\n')
+            write(tmp, "steps/p.a.toml", step_file("p.a"))
+            self.assertTrue(any("package.toml" in p and "pahts" in p for p in ledger.layout_problems(Path(tmp))))
+
+    def test_stray_entries_in_steps_are_problems(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            write(tmp, "steps/p.a.toml", step_file("p.a"))
+            write(tmp, "steps/notes.md", "x")
+            write(tmp, "steps/p.a.toml.bak", "x")
+            write(tmp, "steps/sub/p.b.toml", step_file("p.b"))
+            problems = " ".join(ledger.layout_problems(Path(tmp)))
+            for name in ("notes.md", "p.a.toml.bak", "sub"):
+                self.assertIn(name, problems)
+
+    def test_symlinked_step_file_is_a_problem(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            real = write(tmp, "elsewhere.toml", step_file("p.a"))
+            (Path(tmp) / "steps").mkdir()
+            (Path(tmp) / "steps" / "p.a.toml").symlink_to(real)
+            self.assertTrue(any("symlink" in p for p in ledger.layout_problems(Path(tmp))))
+
+    def test_string_where_a_list_belongs_is_a_problem(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            write(tmp, "package.toml", 'paths = "x"\n')
+            write(tmp, "steps/p.a.toml", step_file("p.a", extra='depends_on = "p.b"\n'))
+            problems = ledger.layout_problems(Path(tmp))
+            self.assertTrue(any("paths" in p and "list" in p for p in problems))
+            self.assertTrue(any("depends_on" in p and "list" in p for p in problems))
+
     def test_validate_command_reports_layout_problems(self):
         with tempfile.TemporaryDirectory() as tmp:
             write(tmp, "steps/p.other.toml", step_file("p.a"))
@@ -214,6 +245,35 @@ class MigrateTest(unittest.TestCase):
                 code = ledger.main(["migrate", tmp])
             self.assertEqual(code, 1)
             self.assertIn("cannot migrate", stderr.getvalue())
+
+    def _assert_refused(self, text, exc=ValueError):
+        with tempfile.TemporaryDirectory() as tmp:
+            write(tmp, "steps.toml", text)
+            with self.assertRaises(exc):
+                ledger.migrate(Path(tmp))
+            self.assertTrue(Path(tmp, "steps.toml").exists())
+            self.assertFalse(Path(tmp, "steps").exists())
+            self.assertFalse(Path(tmp, "package.toml").exists())
+
+    def test_refuses_duplicate_ids(self):
+        self._assert_refused(
+            '[[step]]\nid = "p.a"\nstatus = "pending"\n[[step]]\nid = "p.a"\nstatus = "done"\n'
+        )
+
+    def test_refuses_ids_that_differ_only_in_case(self):
+        self._assert_refused(
+            '[[step]]\nid = "p.A"\nstatus = "pending"\n[[step]]\nid = "p.a"\nstatus = "done"\n'
+        )
+
+    def test_refuses_a_value_that_would_not_round_trip(self):
+        self._assert_refused('[[step]]\nid = "p.a"\nstatus = "pending"\nevidence = 2020-01-01\n')
+
+    def test_delete_character_in_a_title_round_trips(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            write(tmp, "steps.toml", '[[step]]\nid = "p.a"\ntitle = "x\\u007fy"\nstatus = "pending"\n')
+            before = ledger.load_manifest(Path(tmp))
+            ledger.migrate(Path(tmp))
+            self.assertEqual(ledger.load_manifest(Path(tmp)), before)
 
     def test_migrate_command_converts_the_given_directories(self):
         with tempfile.TemporaryDirectory() as tmp:
