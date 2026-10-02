@@ -533,3 +533,11 @@ A diff touching only `packages/new-crate/` (unclaimed), `.github/workflows/`, or
 Resolution: the engineering manifest claims `.github`, `CLAUDE.md`, `AGENTS.md`, `deny.toml`, `.gitleaks.toml`, `.pre-commit-config.yaml` and `.husky`, and `loop check` fails any changed file under `packages/`, `apps/`, `native-modules/` or `machine-learning/` that no manifest claims. `loop check` also judges a PR against the union of the base and head manifests, so a PR cannot release a path by editing or deleting the manifest that claims it, and it lists both sides of a rename. A PR that retires a path on purpose still carries the contract for the files under it, because the base claim stays in force. Left unclaimed on purpose: `docs/**` (docs-only is loop-lite) and root files that are neither policy nor code (`README.md`, `LICENSE`, `biome.json`, `.vscode/`), and root build files such as `package.json`, lockfiles and `rust-toolchain.toml`, because dependency bumps are loop-lite. `docs/**` edits that touch `steps.toml` or `plan.md` are still checked by `doclint` and `ledger validate`, not by `loop check`.
 
 Acceptance: `code`. Verify: `python -m unittest discover -s tools/plan/tests -t .`.
+
+### Loop route and empty-diff guard
+
+<!-- step: engineering.loop-route -->
+
+The router in `CLAUDE.md` asks the agent to classify a request by feel, but `loop check` enforces by manifest `paths`, so a change under a governed path can be filed as loop-lite and fail CI. `loop route <paths>` (or `--base`/`--head` for a diff) prints the governing manifests, their pending step ids and a verdict (`step-required`, `claim-required`, `no-governing-manifest`, `nothing-to-route`), and the router runs it before choosing a tier. `loop check --base` also fails when the diff is empty, because it would otherwise pass vacuously before the first commit.
+
+Acceptance: `code`. Verify: `python -m unittest discover -s tools/plan/tests -t .`.

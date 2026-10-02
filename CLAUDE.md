@@ -9,7 +9,11 @@ Holy Blocker is an on-device content blocking project. Keep the privacy and loca
 ## Routing — which loop applies
 
 Classify every request **before touching code**, and say the classification in one line. A request
-rarely names its loop; the agent picks it. Follow the first branch that matches:
+rarely names its loop; the agent picks it. For any request that touches files, run
+`python -m tools.plan.loop route <paths>` first: `step-required` means a step id is mandatory
+(branch 2, 3 or 4 below; add the step if none is pending), `claim-required` means a manifest must
+claim the path, and only `no-governing-manifest` leaves the tier table's loose tiers available.
+Follow the first branch that matches:
 
 1. **Nothing covers it, and it adds a capability, changes product behaviour, or makes an
    architecture choice** → run `plan-inception`. It writes a decision record and a `plan.md`, and
