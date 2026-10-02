@@ -172,3 +172,11 @@ kind = "bug"
 regressed_step = "engineering.loop-enforcement"
 acceptance = "code"
 verify = "python -m unittest discover -s tools/plan/tests -t ."
+
+[[step]]
+id = "engineering.context-budget-gate"
+title = "step-loop context-budget gate and difficulty field"
+status = "at-pr"
+evidence = "PR pending"
+acceptance = "code"
+verify = "python -m unittest discover -s tools/plan/tests -t ."
