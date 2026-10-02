@@ -1,0 +1,4 @@
+id = "mac-daemon.package-scaffold"
+title = "SwiftPM package scaffold"
+status = "done"
+evidence = "Layer 1 implementation order 1 **Done.**; Package.swift on master"

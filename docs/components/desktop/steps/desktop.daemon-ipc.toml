@@ -1,0 +1,4 @@
+id = "desktop.daemon-ipc"
+title = "daemon-ipc — named pipe client with the reconnect loop"
+status = "done"
+evidence = "apps/desktop/src/main/daemon-ipc.ts + __tests__/daemon-ipc.test.ts on master (commit 606b9b3, PR #40)"

@@ -1,0 +1,4 @@
+id = "win-daemon.scan-loop"
+title = "scan_loop — debounce and state machine"
+status = "pending"
+evidence = ""

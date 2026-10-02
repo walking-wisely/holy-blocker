@@ -1,0 +1,4 @@
+id = "mobile.tamper-log"
+title = "Tamper log — append-only guard-state record"
+status = "done"
+evidence = "implementation order 9 **Done.**; policy/TamperLog.kt and TamperLogStore.kt on master (commit 2cd44fb, PR #79)"

@@ -1,0 +1,4 @@
+id = "machine-learning.eval"
+title = "eval.py — evaluate and report; tests/test_eval.py"
+status = "done"
+evidence = "implementation order 3 **Done.**; machine-learning/src/holy_blocker_ml/eval.py and tests/test_eval.py on master (commit c2ab1a1, PR #8)"

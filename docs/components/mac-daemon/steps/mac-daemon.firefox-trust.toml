@@ -1,0 +1,4 @@
+id = "mac-daemon.firefox-trust"
+title = "Firefox NSS trust — FirefoxTrust.swift (module 6)"
+status = "done"
+evidence = "Layer 1 implementation order 7 **Retired as a coverage step**; Sources/MacDaemon/FirefoxTrust.swift on master"

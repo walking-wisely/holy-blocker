@@ -1,0 +1,4 @@
+id = "mobile.policy-core"
+title = "Policy core (TextPolicy, TextAssembler, ScanGate) with JVM unit tests"
+status = "done"
+evidence = "implementation order 1 **Done.**; policy/TextPolicy.kt, TextAssembler.kt, ScanGate.kt on master (commit 48792fa, PR #61)"

@@ -1,0 +1,4 @@
+id = "image-sandbox.classifier"
+title = "classifier — ONNX inference behind a feature flag"
+status = "done"
+evidence = "implementation order 4 **Done** as classifier.rs; src/classifier.rs on master (commit 885e890, PR #85)"

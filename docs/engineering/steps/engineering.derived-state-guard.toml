@@ -1,0 +1,7 @@
+id = "engineering.derived-state-guard"
+title = "status written once; no committed derived tables"
+status = "pending"
+evidence = ""
+acceptance = "code"
+depends_on = ["engineering.per-step-ledger"]
+verify = "python -m unittest discover -s tools/plan/tests -t ."

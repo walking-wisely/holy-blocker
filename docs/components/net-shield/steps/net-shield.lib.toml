@@ -1,0 +1,4 @@
+id = "net-shield.lib"
+title = "lib — public re-exports and the NetShield struct shell"
+status = "done"
+evidence = "implementation order 3 **Done.**; src/lib.rs on master"

@@ -1,0 +1,4 @@
+id = "mobile.ffi-device-e2e"
+title = "Build the .so (NDK) and validate on a device — first end-to-end run"
+status = "done"
+evidence = "implementation order 4 **Done.**; scripts/build-ffi.sh and scripts/smoke-test.sh on master (commit 48792fa, PR #61)"

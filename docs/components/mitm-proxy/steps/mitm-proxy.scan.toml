@@ -1,0 +1,4 @@
+id = "mitm-proxy.scan"
+title = "scan — policy hook types and stub contracts"
+status = "done"
+evidence = "implementation order 4 **Done.**; src/scan.rs on master (commit 44aa3f3, PR #2)"

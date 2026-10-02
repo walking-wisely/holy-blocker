@@ -1,0 +1,4 @@
+id = "machine-learning.pytest-config"
+title = "pytest config — dev dependency and [tool.pytest.ini_options]"
+status = "done"
+evidence = "implementation order 1 **Done.**; machine-learning/pyproject.toml pytest config on master (commit c2ab1a1, PR #8)"

@@ -1,0 +1,4 @@
+id = "mitm-proxy.text-policy"
+title = "text-policy wiring — real PolicyEngine calls in scan.rs"
+status = "done"
+evidence = "implementation order 6 **Done.**; text-policy path dep in src/scan.rs on master (commit 89b4919, PR #5)"

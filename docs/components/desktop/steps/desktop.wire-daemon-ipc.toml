@@ -1,0 +1,4 @@
+id = "desktop.wire-daemon-ipc"
+title = "wire DaemonIpc into ipc-handlers for live status and events"
+status = "done"
+evidence = "main.ts constructs DaemonIpc and calls registerIpcHandlers(daemonIpc) on master (commit 606b9b3, PR #40)"

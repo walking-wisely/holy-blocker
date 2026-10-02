@@ -1,0 +1,7 @@
+id = "engineering.bug-kind-ledger"
+title = "bug kind and regression links in the ledger schema"
+status = "done"
+evidence = "PR #66, commit 74a64ef on master"
+acceptance = "code"
+depends_on = ["engineering.ledger-coverage"]
+verify = "python -m unittest discover -s tools/plan/tests -t ."

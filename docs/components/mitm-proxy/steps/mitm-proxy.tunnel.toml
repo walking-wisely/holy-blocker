@@ -1,0 +1,4 @@
+id = "mitm-proxy.tunnel"
+title = "tunnel — HTTP/1.1 loop over decrypted HTTPS with phase 3/4/5 hook call sites"
+status = "done"
+evidence = "implementation order 3 **Done.**; src/tunnel.rs on master (commit 44aa3f3, PR #2)"

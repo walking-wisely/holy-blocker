@@ -1,0 +1,4 @@
+id = "mitm-proxy.protection-mode"
+title = "ProtectionMode — mode-aware verdict mapping and runtime switching"
+status = "done"
+evidence = "implementation order 7 **Done.**; ProtectionMode in src/scan.rs and src/main.rs on master (commit 3213888, PR #39)"

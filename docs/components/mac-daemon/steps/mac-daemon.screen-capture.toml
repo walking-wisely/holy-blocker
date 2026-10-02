@@ -1,0 +1,4 @@
+id = "mac-daemon.screen-capture"
+title = "ScreenCapture — ScreenCaptureKit frame source (module 8)"
+status = "done"
+evidence = "Module 8 built, 20 tests; Sources/MacDaemon/ScreenCapture.swift on master (commit 5a5a145); live PNG check still unobserved"

@@ -1,0 +1,4 @@
+id = "image-sandbox.measured-geometry"
+title = "measured threshold, size floor, and tile-max geometry"
+status = "done"
+evidence = "implementation order 6 **Done.**; src/preprocess.rs and src/sandbox.rs constants on master, pinned by tests/tile_parity.rs (commit 74723cd, PR #87)"

@@ -1,0 +1,6 @@
+id = "engineering.review-triage-policy"
+title = "review triage policy — severity tiers, fix-attempt cap, escalation packet"
+status = "done"
+evidence = "PR #67, commit 5e1e22c on master; docs/engineering/review-triage.md"
+acceptance = "product"
+verify = "python -m unittest discover -s tools/plan/tests -t ."

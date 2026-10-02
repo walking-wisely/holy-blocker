@@ -1,0 +1,4 @@
+id = "win-daemon.ipc"
+title = "ipc — named pipe server"
+status = "pending"
+evidence = ""

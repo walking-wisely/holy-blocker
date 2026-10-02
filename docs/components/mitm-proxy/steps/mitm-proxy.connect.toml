@@ -1,0 +1,4 @@
+id = "mitm-proxy.connect"
+title = "connect — HTTPS CONNECT handler replacing the 501 branch"
+status = "done"
+evidence = "implementation order 2 **Done.**; src/connect.rs on master (commit 44aa3f3, PR #2)"

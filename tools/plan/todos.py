@@ -1,6 +1,6 @@
 """Discover pending steps across all worktrees.
 
-Scans every git worktree for ``steps.toml`` files under ``docs/components/*/``
+Scans every git worktree for step manifests under ``docs/components/*/``
 and ``docs/engineering/``, then reports pending steps with execution context:
 which worktree, which branch, the worktree's health state, and the step's
 manifest metadata.
@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import argparse
 import subprocess
-import tomllib
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -27,8 +26,6 @@ from pathlib import Path
 from tools.plan import ledger, state
 
 
-ENGINEERING_DIR = "docs/engineering"
-COMPONENTS_GLOB = "docs/components/*"
 BUG_MARKER = "[bug]"
 
 
@@ -49,39 +46,17 @@ class Todo:
 
 
 def discover_manifests(root: Path) -> list[tuple[Path, str]]:
-    """All ``steps.toml`` paths under a worktree root, with their package label."""
-    found: list[tuple[Path, str]] = []
-
-    eng = root / ENGINEERING_DIR / "steps.toml"
-    if eng.exists():
-        found.append((eng, "engineering"))
-
-    for p in sorted(root.glob(COMPONENTS_GLOB + "/steps.toml")):
-        found.append((p, p.parent.name))
-
-    return found
+    """All package directories with a step manifest under a worktree root, with their label."""
+    return [(package, package.name) for package in ledger.discover(root)]
 
 
-def load_steps(manifest_path: Path, package: str) -> list[ledger.Step]:
-    """Parse a ``steps.toml`` into ``ledger.Step`` instances."""
+def load_steps(package_dir: Path, package: str) -> list[ledger.Step]:
+    """A package's steps, or none when its manifest is missing or unparsable."""
     try:
-        data = tomllib.loads(manifest_path.read_text(encoding="utf-8"))
-    except (FileNotFoundError, PermissionError, tomllib.TOMLDecodeError):
+        return ledger.load_manifest(package_dir)
+    except (OSError, ValueError, KeyError, TypeError) as err:
+        print(f"{package}: step manifest unreadable: {err!r}", file=sys.stderr)
         return []
-    return [
-        ledger.Step(
-            id=raw.get("id", f"{package}.unknown"),
-            title=raw.get("title", ""),
-            status=raw.get("status", "pending"),
-            evidence=raw.get("evidence", ""),
-            acceptance=raw.get("acceptance", ledger.DEFAULT_ACCEPTANCE),
-            depends_on=tuple(raw.get("depends_on", ())),
-            verify=raw.get("verify", ""),
-            kind=raw.get("kind", ledger.DEFAULT_KIND),
-            regressed_step=raw.get("regressed_step", ""),
-        )
-        for raw in data.get("step", [])
-    ]
 
 
 def classify_worktree(worktree: state.Worktree, cwd: str, base: str) -> state.Classified:
@@ -124,8 +99,8 @@ def collect(cwd: str, base: str = "master") -> list[Todo]:
         verdict = verdicts.get(wt.path)
         if verdict is None:
             continue
-        for manifest_path, package in discover_manifests(root):
-            for step in load_steps(manifest_path, package):
+        for package_dir, package in discover_manifests(root):
+            for step in load_steps(package_dir, package):
                 todos.append(Todo(
                     step_id=step.id,
                     title=step.title,

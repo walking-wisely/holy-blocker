@@ -1,0 +1,8 @@
+id = "engineering.loop-check-step-id-scope"
+title = "loop check accepts a step id from a manifest that does not govern the touched paths"
+status = "pending"
+evidence = ""
+acceptance = "code"
+verify = "python -m unittest discover -s tools/plan/tests -t ."
+kind = "bug"
+regressed_step = "engineering.loop-enforcement"

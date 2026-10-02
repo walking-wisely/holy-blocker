@@ -1,0 +1,4 @@
+id = "mac-daemon.overlay"
+title = "Overlay — borderless NSWindow cover (module 10)"
+status = "done"
+evidence = "Module 10 **Done**, both halves, 27 tests; Overlay.swift/OverlayWindow.swift on master (commit 780c0d3); the visual is still unverified"

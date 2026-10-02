@@ -1,0 +1,4 @@
+id = "mobile.split-screen"
+title = "Split-screen window resolution"
+status = "done"
+evidence = "implementation order 8 **Done** for split screen; SettingsGuard window resolution on master (commit 20ebe86, PR #77); recents deferred on OEM hardware"

@@ -1,0 +1,5 @@
+id = "backend.invite-service"
+title = "internal/invite service.go — generate, confirm, cancel, remove-partner, poll"
+status = "pending"
+evidence = ""
+verify = "cd backend && go test ./..."

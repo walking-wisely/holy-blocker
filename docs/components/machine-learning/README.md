@@ -13,7 +13,7 @@ Python evaluation and export pipeline for the frozen image backbone that `image-
 ## Files here
 
 - [`plan.md`](plan.md) — Corpus decision, baseline evaluation, modules, build order
-- [`steps.toml`](steps.toml) — Step ledger
+- [`steps/`](steps/) — Step ledger, one file per step
 
 ## Read for
 

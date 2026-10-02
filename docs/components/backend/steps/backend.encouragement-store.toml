@@ -1,0 +1,5 @@
+id = "backend.encouragement-store"
+title = "internal/encouragement store.go — queue helpers (enqueue, list-pending, ack)"
+status = "pending"
+evidence = ""
+verify = "cd backend && go test ./..."

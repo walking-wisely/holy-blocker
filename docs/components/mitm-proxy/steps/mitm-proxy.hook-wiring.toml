@@ -1,0 +1,4 @@
+id = "mitm-proxy.hook-wiring"
+title = "phase 4 image stub and phase 5 tee stub wired into tunnel"
+status = "done"
+evidence = "implementation order 5 **Done.**; image/video hook call sites in src/tunnel.rs on master"

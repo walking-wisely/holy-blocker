@@ -1,0 +1,4 @@
+id = "desktop.voice-adapter"
+title = "voice-adapter-electron — VoiceAdapter over IPC and override:attempt wiring"
+status = "pending"
+evidence = ""

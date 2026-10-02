@@ -1,0 +1,4 @@
+id = "domain-blocklist.liveness"
+title = "liveness — DNS-only revalidation with a TTL cache (module 3)"
+status = "done"
+evidence = "implementation order 5 **Done, minus the real DNS client** (built in cli); src/liveness/ on master (commit dd8627e)"

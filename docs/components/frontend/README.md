@@ -13,7 +13,7 @@ Public React SPA at holyblocker.app: marketing pages and the partner flow, talki
 ## Files here
 
 - [`plan.md`](plan.md) — Responsibilities, stack, route map, pages, config, build order
-- [`steps.toml`](steps.toml) — Step ledger
+- [`steps/`](steps/) — Step ledger, one file per step
 
 ## Read for
 

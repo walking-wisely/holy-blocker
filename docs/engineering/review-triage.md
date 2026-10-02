@@ -47,7 +47,7 @@ loop's own bias is to make the review go away; the cap is the guard against that
 | Tier | Route |
 |---|---|
 | **Blocking** | Fix within the cap, then re-review. The re-review is the same fresh-context review re-run against the fix. Nothing with an open Blocking finding merges. |
-| **Non-blocking** | Filed as a `kind = "bug"` step in the package's `steps.toml`, with `regressed_step` set when the finding is a regression against an already-`done` step. Never fixed inline unless it is a same-file, same-test-suite change to the current diff. |
+| **Non-blocking** | Filed as a `kind = "bug"` step in the package's `steps/` directory, with `regressed_step` set when the finding is a regression against an already-`done` step. Never fixed inline unless it is a same-file, same-test-suite change to the current diff. |
 | **Judgment call** | Never resolved by the loop. Always escalated — the escalation packet below, verbatim. |
 
 ## 4. Escalation packet format
@@ -73,3 +73,5 @@ tightens from observed outcomes instead of staying a fixed guess.
 | 2026-10-02 | `loop-contract` runs the checker from the PR head, so a PR can edit its own gate; CODEOWNERS coverage of `tools/plan/**`, `docs/**/steps.toml`, `.github/**` unconfirmed | escalated | pending | guardrail or enforcement is a risk-tolerance call |
 | 2026-10-02 | steps 8 and 9 marked done on gates that are only prose in `SKILL.md`, with no e2e runner | escalated | pending | whether `acceptance = "code"` is the right claim for documented-only capability |
 | 2026-10-02 | Dependabot PRs skip the contract check even on governed paths | escalated | pending | intentional skip versus coverage is a risk-tolerance call |
+| 2026-10-02 | `loop check` does not run the stem-equals-id and legacy-beside-new checks that `ledger validate` runs, so a PR's gate and the ledger CI job can disagree | escalated | pending | whether the contract check should enforce layout itself or rely on `plan-ledger` is an enforcement-scope call |
+| 2026-10-02 | `ledger migrate` puts every leading comment, including one written for the first step, into `package.toml` and drops comments between later steps | escalated | pending | no real manifest is affected; whether per-step comments are worth preserving is a convention call |

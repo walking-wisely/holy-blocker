@@ -1,0 +1,6 @@
+id = "engineering.privacy-review-skill"
+title = "privacy-review skill — data-class inventory gate"
+status = "done"
+evidence = "PR #65, commit df0313b on master; .claude/skills/privacy-review"
+acceptance = "product"
+verify = "python -m unittest discover -s tools/plan/tests -t ."

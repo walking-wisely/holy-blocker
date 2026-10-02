@@ -1,0 +1,4 @@
+id = "domain-blocklist.gates"
+title = "gates — the publish gates (module 5)"
+status = "done"
+evidence = "implementation order 3 **Done.**; src/gates.rs on master (commit b48c0f1)"

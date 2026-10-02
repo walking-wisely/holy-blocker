@@ -1,0 +1,4 @@
+id = "win-network.wintun-adapter"
+title = "wintun_adapter — driver install and adapter lifecycle"
+status = "done"
+evidence = "implementation order 2 **Done.**; src/wintun_adapter.cpp on master (commit ac3485d, PR #14)"

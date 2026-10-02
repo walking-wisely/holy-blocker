@@ -1,0 +1,4 @@
+id = "mac-daemon.proxy-supervisor"
+title = "ProxySupervisor — run and monitor the Rust proxy (module 5)"
+status = "done"
+evidence = "Layer 1 implementation order 6 **Done.**; Sources/MacDaemon/ProxySupervisor.swift on master"

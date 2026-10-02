@@ -1,0 +1,6 @@
+id = "engineering.reaper-landed-detection"
+title = "worktree reaper detects landed content and stacked PRs from git facts"
+status = "at-pr"
+evidence = "PR #104"
+acceptance = "code"
+verify = "python -m unittest discover -s tools/plan/tests -t ."

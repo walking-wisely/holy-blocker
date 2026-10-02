@@ -1,0 +1,4 @@
+id = "text-policy.evaluator"
+title = "evaluator — score to verdict"
+status = "done"
+evidence = "pure fn, all bands tested; implementation order 3"

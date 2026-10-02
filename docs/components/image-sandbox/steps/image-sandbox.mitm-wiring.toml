@@ -1,0 +1,4 @@
+id = "image-sandbox.mitm-wiring"
+title = "wire ImageSandbox into mitm-proxy at the Phase 4 hook"
+status = "done"
+evidence = "implementation order 5 **Done.**; Phase 4 hook in packages/mitm-proxy/src/scan.rs on master (commit 885e890, PR #85)"

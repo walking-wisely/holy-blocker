@@ -1,0 +1,4 @@
+id = "frontend.api-client"
+title = "api/client.ts + api/invites.ts — typed wrappers for all partner endpoints"
+status = "pending"
+evidence = ""

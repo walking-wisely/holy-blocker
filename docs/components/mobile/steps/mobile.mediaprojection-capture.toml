@@ -1,0 +1,4 @@
+id = "mobile.mediaprojection-capture"
+title = "MediaProjection capture"
+status = "done"
+evidence = "implementation order 12 **Done for capture**; ScreenCapture.kt + FrameGate.kt (policy/) + FrameSink.kt + ScreenCaptureService.kt under apps/mobile/app/src/main/kotlin/com/holyblocker/mobile/ on master (commit b44dbff, PR #86); analysis is step 13"

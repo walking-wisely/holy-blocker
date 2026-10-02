@@ -13,7 +13,7 @@ Override mechanism: to disable protection the user reads a scripture passage alo
 ## Files here
 
 - [`plan.md`](plan.md) — Architecture, VoiceAdapter interface, modules, testing, build order
-- [`steps.toml`](steps.toml) — Step ledger
+- [`steps/`](steps/) — Step ledger, one file per step
 
 ## Read for
 

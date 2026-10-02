@@ -1,0 +1,22 @@
+# Thin step ledger for machine-learning. Source of truth for whether each build step exists.
+#
+#   python -m tools.plan.ledger validate docs/components/machine-learning
+#   python -m tools.plan.ledger render   docs/components/machine-learning
+#
+# `done` means the step's implementation exists on master. It does NOT mean the
+# route is covered: live and observational verification lives in
+# docs/engineering/coverage.md, never here.
+#
+# Do not put narrative here. Gotchas, wrong-constant war stories, and "measured
+# wrong in module N" notes live in plan.md. `evidence` is one line pointing at
+# where the step landed (commit, PR, or the plan's own wording), not an argument.
+#
+# Steps are the plan's `## Implementation order` items, in the plan's own order.
+# That list describes the fine-tuning pipeline, which is not on master; only the
+# smaller baseline evaluation harness in the plan's `Baseline evaluation (v0)`
+# section is. Steps 1 and 3 map to files that exist in that harness, which is the
+# package's starting point rather than the pipeline the list describes.
+
+paths = [
+  "machine-learning",
+]

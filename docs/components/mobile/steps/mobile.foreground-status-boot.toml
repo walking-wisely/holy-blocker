@@ -1,0 +1,4 @@
+id = "mobile.foreground-status-boot"
+title = "Foreground service + restart-on-boot"
+status = "done"
+evidence = "implementation order 10 **Done.**; policy/GuardStatus.kt, GuardStatusService.kt, BootReceiver.kt on master (commit 914f128, PR #80)"

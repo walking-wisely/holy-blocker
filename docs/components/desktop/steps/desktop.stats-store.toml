@@ -1,0 +1,4 @@
+id = "desktop.stats-store"
+title = "stats-store — event persistence and install timestamp, plus stats:get-summary"
+status = "pending"
+evidence = ""

@@ -1,0 +1,4 @@
+id = "mitm-proxy.integration-tests"
+title = "end-to-end integration tests over real TCP listeners"
+status = "done"
+evidence = "implementation order 10 **Done.**; tests/proxy_integration.rs and reqwest dev-dep on master (commit e9a3be1, PR #4)"

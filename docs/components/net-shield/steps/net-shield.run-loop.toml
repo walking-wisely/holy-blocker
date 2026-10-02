@@ -1,0 +1,4 @@
+id = "net-shield.run-loop"
+title = "run loop — wire NetShield::run to the full loop"
+status = "done"
+evidence = "implementation order 5 **Done.**; src/lib.rs on master"

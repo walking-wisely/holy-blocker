@@ -1,0 +1,4 @@
+id = "mitm-proxy.tls"
+title = "tls — certificate generation and two-leg TLS setup"
+status = "done"
+evidence = "implementation order 1 **Done.**; src/tls.rs and TLS deps in Cargo.toml on master (commit 44aa3f3, PR #2)"

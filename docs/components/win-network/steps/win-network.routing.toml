@@ -1,0 +1,4 @@
+id = "win-network.routing"
+title = "routing — Windows routing table management"
+status = "done"
+evidence = "implementation order 3 **Done.**; src/routing.cpp on master (commit ac3485d, PR #14)"

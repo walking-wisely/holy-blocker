@@ -1,0 +1,4 @@
+id = "mac-daemon.accessibility-text"
+title = "AccessibilityText — AX text extraction (module 12)"
+status = "done"
+evidence = "Module 12 **Done**, 22 tests; Sources/MacDaemon/AccessibilityText.swift on master (commit edc2e20)"

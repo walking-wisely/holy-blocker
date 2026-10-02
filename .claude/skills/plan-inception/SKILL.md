@@ -9,7 +9,7 @@ description: >
   plans that already exist, so new work must pass through here first.
   Triggers on "new feature", "add a feature", "plan this out", "build X from
   scratch", "what would it take to do Y", "write the plan for", or any task where
-  there is no plan.md / no steps.toml yet for the thing being asked.
+  there is no plan.md / no `steps/` directory yet for the thing being asked.
 ---
 
 # Plan inception

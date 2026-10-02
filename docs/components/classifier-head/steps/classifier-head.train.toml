@@ -1,0 +1,4 @@
+id = "classifier-head.train"
+title = "train — the backward pass, behind a feature"
+status = "pending"
+evidence = ""

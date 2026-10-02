@@ -1,0 +1,4 @@
+id = "mitm-proxy.tls-cold-miss"
+title = "optimize TlsState::server_config cold miss with a shared leaf KeyPair"
+status = "done"
+evidence = "implementation order 9 **Done.**; shared leaf key in src/tls.rs on master (commit e9a3be1, PR #4)"

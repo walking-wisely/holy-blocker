@@ -1,0 +1,4 @@
+id = "text-policy.policy"
+title = "policy — top-level entry point"
+status = "done"
+evidence = "end-to-end raw text to Verdict; implementation order 4"

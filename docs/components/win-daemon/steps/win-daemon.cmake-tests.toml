@@ -1,0 +1,4 @@
+id = "win-daemon.cmake-tests"
+title = "CMakeLists GoogleTest and tests target"
+status = "pending"
+evidence = ""

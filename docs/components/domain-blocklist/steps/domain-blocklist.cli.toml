@@ -1,0 +1,4 @@
+id = "domain-blocklist.cli"
+title = "cli — the pipeline entry point (module 7)"
+status = "done"
+evidence = "implementation order 7 **Done** with follow-ups; src/main.rs on master (commit 8801230, PR #24)"

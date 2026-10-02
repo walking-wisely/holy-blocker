@@ -1,0 +1,4 @@
+id = "text-policy.ffi"
+title = "FFI surface — UniFFI wrapper (sibling crate packages/text-policy-ffi)"
+status = "done"
+evidence = "packages/text-policy-ffi; Kotlin + Swift bindings generated; implementation order 5"

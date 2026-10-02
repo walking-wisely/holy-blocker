@@ -14,7 +14,7 @@ Electron + React control panel: daemon status, block log, settings, tray, and th
 
 - [`plan.md`](plan.md) — Modules to add, tray integration, build order
 - [`sync-plan.md`](sync-plan.md) — Desktop ↔ backend sync design
-- [`steps.toml`](steps.toml) — Step ledger
+- [`steps/`](steps/) — Step ledger, one file per step
 
 ## Read for
 

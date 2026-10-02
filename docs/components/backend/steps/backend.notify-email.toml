@@ -1,0 +1,5 @@
+id = "backend.notify-email"
+title = "internal/notify email.go — SMTP client wrapper and template rendering"
+status = "pending"
+evidence = ""
+verify = "cd backend && go test ./..."

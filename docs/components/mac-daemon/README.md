@@ -19,7 +19,7 @@ Swift daemon for macOS. Layer 1: system proxy and CA trust for the MITM proxy. L
 - [`layer-2-limits.md`](layer-2-limits.md) — What Layer 2 does not cover on macOS
 - [`backlog.md`](backlog.md) — Open defects and unobserved coverage
 - [`signing-identity.md`](signing-identity.md) — Runbook for the dev signing certificate
-- [`steps.toml`](steps.toml) — Step ledger
+- [`steps/`](steps/) — Step ledger, one file per step
 
 ## Read for
 

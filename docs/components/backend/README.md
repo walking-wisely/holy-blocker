@@ -14,7 +14,7 @@ Go service for the partner-accountability flow: invites and notifications only. 
 ## Files here
 
 - [`plan.md`](plan.md) — Data model, API, rate limits, email templates, config, implementation order
-- [`steps.toml`](steps.toml) — Step ledger
+- [`steps/`](steps/) — Step ledger, one file per step
 
 ## Read for
 

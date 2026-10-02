@@ -1,0 +1,4 @@
+id = "domain-blocklist.sources"
+title = "sources — per-source fetch and parse (module 1)"
+status = "done"
+evidence = "implementation order 4 **Done, minus the real HTTP client** (built in cli); src/sources/ on master (commit 1010a0c)"

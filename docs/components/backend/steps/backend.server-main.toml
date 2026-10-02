@@ -1,0 +1,5 @@
+id = "backend.server-main"
+title = "cmd/server main.go — wiring, config loading, graceful shutdown"
+status = "pending"
+evidence = ""
+verify = "cd backend && go test ./..."

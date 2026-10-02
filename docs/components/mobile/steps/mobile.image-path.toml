@@ -1,0 +1,5 @@
+id = "mobile.image-path"
+title = "The image path — classifier-head + LiteRT backbone + provisioning"
+status = "pending"
+evidence = ""
+depends_on = ["mobile.mediaprojection-capture"]

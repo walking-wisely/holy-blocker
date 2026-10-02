@@ -1,0 +1,6 @@
+id = "engineering.per-step-ledger"
+title = "one file per ledger step, one loader, order from plan.md"
+status = "done"
+evidence = "tools/plan/ledger.py (load_manifest, layout_problems, migrate, discover) and every manifest migrated; branch infra/ledger-files; lands at merge of this PR"
+acceptance = "code"
+verify = "python -m unittest discover -s tools/plan/tests -t . && python -m tools.plan.ledger validate docs/components/*/ docs/engineering"

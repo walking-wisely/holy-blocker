@@ -1,0 +1,4 @@
+id = "image-sandbox.sandbox"
+title = "sandbox — decision entry point"
+status = "done"
+evidence = "implementation order 3 **Done**; src/sandbox.rs on master (commit 885e890, PR #85)"

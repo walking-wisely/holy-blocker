@@ -1,0 +1,7 @@
+id = "engineering.loop-enforcement"
+title = "loop enforcement — a trigger rule and a machine-checked PR contract"
+status = "done"
+evidence = "tools/plan/loop.py (check, open), manifest `paths`, ci-plan loop-contract job; branch infra/loop-enforcement"
+acceptance = "code"
+depends_on = ["engineering.ledger-coverage"]
+verify = "python -m unittest discover -s tools/plan/tests -t ."

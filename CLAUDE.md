@@ -18,7 +18,7 @@ Follow the first branch that matches:
 1. **Nothing covers it, and it adds a capability, changes product behaviour, or makes an
    architecture choice** → run `plan-inception`. It writes a decision record and a `plan.md`, and
    never implements. Do not assume a new feature fits an existing plan.
-2. **It matches a step marker** (`<!-- step: ... -->`) in a `docs/components/**/steps.toml`, or the
+2. **It matches a step marker** (`<!-- step: ... -->`) in a `docs/components/**/steps/*.toml`, or the
    request is "next step" / "continue X" → run `step-loop`. Find the step with
    `python -m tools.plan.ledger next docs/components/<component>`, or across every worktree with
    `python -m tools.plan.todos`.
@@ -27,7 +27,7 @@ Follow the first branch that matches:
    test suite as the change in hand is made inline.
 4. **No step matches, but the change moves a row in `docs/engineering/coverage.md`** → add the step
    first (through `plan-inception` if it needs a decision, otherwise directly in the component's
-   `plan.md` and `steps.toml`), then run `step-loop`.
+   `plan.md` and a new `steps/<id>.toml`), then run `step-loop`.
 5. **Anything else** → classify it with the tier table below.
 
 If two tiers both fit, take the stricter one and say so. Never pick a looser tier because the
@@ -299,7 +299,7 @@ Branches are never deleted by the reaper — that decision is left to a human.
 
 ### Pending-step discovery
 
-Scan every worktree for `steps.toml` manifests and report pending steps alongside each
+Scan every worktree for step manifests and report pending steps alongside each
 worktree's health state:
 
 ```
@@ -310,7 +310,7 @@ python -m tools.plan.todos --blockers    # only worktrees with issues (dirty, op
 
 ### Per-package step ledger
 
-Validate that a package's `steps.toml` is consistent with its `plan.md`, render the step
+Validate that a package's `steps/` files are consistent with its `plan.md`, render the step
 table, or find the next actionable step:
 
 ```
