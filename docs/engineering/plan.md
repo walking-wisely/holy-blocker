@@ -683,3 +683,141 @@ Once no worktree or open PR carries a `steps.toml`, delete the transitional read
 `migrate` command. `python -m tools.plan.todos --all` run across worktrees shows none left.
 
 Acceptance: `code`. Verify: `python -m unittest discover -s tools/plan/tests -t .`.
+
+## Session model and harness
+
+Decision: [session-model-and-harness.md](../decisions/session-model-and-harness.md). Read it, and its
+"Escalated to the owner" list, before starting any step. Only `engineering.weekly-report` is free of
+prerequisites. The rest wait, through `depends_on`, on `engineering.ledger-derived-status`,
+`engineering.step-prose-files` and the e2e steps 10a–10c, all pending.
+
+Test layers: every step is unit-tested against a temporary git repository or synthetic transcripts; none needs
+a device. The first real observation is the proving-ground feature, which is a separate plan-inception.
+
+### Weekly report
+
+<!-- step: engineering.weekly-report -->
+
+`python -m tools.plan.report`: PRs merged, time to merge from `gh`, worktrees open and how many have no PR,
+bug steps with `regressed_step`, and merged PRs with no `Step:` line. A metric with no source prints `no data`,
+never `0`. Prints to stdout; commits nothing; reads no transcripts.
+
+**Risks.** A metric that reads zero when its source is missing hides the gap; `gh` read access may be absent on
+this machine's account. Time to merge is meaningless for stacked PRs.
+
+Acceptance: `code`. Verify: `python -m unittest discover -s tools/plan/tests -t .`.
+
+### Transcript digest
+
+<!-- step: engineering.transcript-digest -->
+
+`python -m tools.plan.digest`: counts and an allowlisted text view of local session transcripts, under every
+precondition in decision 9: fail closed on any image or base64 marker and on subagent files, text-only
+allowlist, usage deduplicated by message id and summed across subagent files, scratchpad output mode 0600,
+deletion after use. Adds a digest row to `.claude/skills/privacy-review/references/data-classes.md`. The owner
+may drop this step at approval.
+
+**Risks.** A marker scan misses an image encoded another way; the digest is read by a model session, so a miss
+leaves the device; usage dedupe is wrong if a message id repeats across sessions.
+
+Acceptance: `code`. Verify: `python -m unittest discover -s tools/plan/tests -t .`.
+
+### Session-assessment skill
+
+<!-- step: engineering.session-assessment-skill -->
+
+`.claude/skills/session-assessment/SKILL.md`: reads only the digest and targeted slices of non-excluded sessions,
+returns about 20 lines and at most three proposed changes, with the directions and the four-week taper rule from
+the decision. Never commits its output. The owner may drop this step at approval.
+
+**Risks.** Transcript text can steer the reading session; three sessions a week may carry no signal.
+
+Acceptance: `code`. Verify: `python -m unittest discover -s tools/plan/tests -t .`.
+
+### The brief
+
+<!-- step: engineering.brief -->
+
+`python -m tools.plan.brief <step-id>` and `brief --check <sha>`, per decision 2: pointers and commands, the
+next session type, a non-zero exit on any broken input. A `## Audit commands` section in `steps/<id>.md` is the
+source of the audit pointers. Nothing is committed by the tool.
+
+**Risks.** A brief that carries a conclusion lets the implementer skip a check; the next-session rule disagrees
+with the owner's reading; a missing spec reads as an empty audit.
+
+Acceptance: `code`. Verify: `python -m unittest discover -s tools/plan/tests -t .`.
+
+### Phase exits
+
+<!-- step: engineering.phase-exits -->
+
+`python -m tools.plan.exit <done|blocked|failed> <reason-code>`: validates the closed reason vocabulary in
+decision 3 and writes the `Phase-exit:` trailer on the last real commit, or prints the report when there is no
+code. Teaches `ledger` and `todos` to read the trailer. `loop check` accepts a draft PR with real commits and
+rejects free text in the trailer.
+
+**Risks.** Trailers are free text and forgeable; a blocked branch with commits becomes one more stranded
+worktree, so `todos` must show its age.
+
+Acceptance: `code`. Verify: `python -m unittest discover -s tools/plan/tests -t .`.
+
+### step-loop phases
+
+<!-- step: engineering.step-loop-phases -->
+
+Rewrite `.claude/skills/step-loop/SKILL.md` as phases that each start cold, one per session type, each opening
+with `tools.plan.brief` and closing with a `tools.plan.exit`. The review phase starts from the step's `## Risks`
+and keeps the catalogue as a floor. Update `tools/plan/tests/test_step_loop_gates.py` so it asserts the new
+structure and still asserts the unconditional security and privacy reviews. The old loop stays usable until this
+lands; the structural test fails if a phase has no exit.
+
+**Risks.** Splitting the loop drops a gate nobody notices; the context gate moves to the wrong phase; the audit
+runs twice and costs more than it finds.
+
+Acceptance: `code`. Verify: `python -m unittest discover -s tools/plan/tests -t .`.
+
+### Risk section
+
+<!-- step: engineering.risk-section -->
+
+`plan-inception` requires a `## Risks` section in every step spec; `doclint` and `ledger validate` fail an empty
+or placeholder one. The plan session shows the list in the plan PR.
+
+**Risks.** A boilerplate list passes the checker; a model-written list shares the plan's blind spots, which is why
+the catalogue floor and the red-team stay.
+
+Acceptance: `code`. Verify: `python -m unittest discover -s tools/plan/tests -t .`.
+
+### Loop-check owner locks
+
+<!-- step: engineering.loop-check-owner-locks -->
+
+Per decision 5: `loop check` fails when a step's `acceptance` differs between base and head, when
+`demos/*/cases.toml` differs from base on a PR that does not add the demo, and when CODEOWNERS loses a line; CI
+runs the checker from the base revision. Adds the CODEOWNERS entries for `/tools/plan/`, `/.claude/`, `/demos/`,
+`/docs/decisions/`. The plan states that none of this is enforced until the owner enables branch protection.
+
+**Risks.** The checker run from base cannot see a new check the head adds, so adding a check needs a two-PR
+landing; a legitimate `acceptance` change is blocked and needs an owner path.
+
+Acceptance: `code`. Verify: `python -m unittest discover -s tools/plan/tests -t .`.
+
+### Demo confirmation
+
+<!-- step: engineering.demo-confirm -->
+
+`python -m tools.plan.e2e confirm <scenario-id>`: refuses without a TTY, writes a note on the covered-path tree
+hash under `refs/notes/hb-e2e/<scenario-id>` with the closed payload from the contract. `todos` derives
+`awaiting-demo` and its age; a tree-identical rebase keeps the confirmation and any change to a covered path
+drops it. No per-step confirmation exists.
+
+**Risks.** A forged note unblocks nothing that matters but looks like evidence; the age is the only pressure that
+stops finished features waiting on the owner forever.
+
+Acceptance: `code`. Verify: `python -m unittest discover -s tools/plan/tests -t .`.
+
+### Deferred, with no step
+
+The launcher, hooks and permission template, the browser launcher, review selection and the proving-ground
+feature are specified as constraints in decision 10 and wait for one real feature to pass through the steps above.
+A step is added to this plan for each only by a new `plan-inception` run after that.

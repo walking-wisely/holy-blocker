@@ -1,0 +1,8 @@
+id = "engineering.demo-confirm"
+title = "one owner confirmation per feature demo, bound to the covered-path tree hash, with a derived awaiting-owner state"
+status = "pending"
+evidence = ""
+acceptance = "code"
+depends_on = ["engineering.e2e-runner", "engineering.e2e-surfacing", "engineering.ledger-derived-status"]
+verify = "python -m unittest discover -s tools/plan/tests -t ."
+group = "session-model"

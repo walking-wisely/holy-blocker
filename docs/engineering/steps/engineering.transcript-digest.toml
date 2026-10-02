@@ -1,0 +1,8 @@
+id = "engineering.transcript-digest"
+title = "local session-transcript digest with deduplicated usage and content stripping"
+status = "pending"
+evidence = ""
+acceptance = "code"
+depends_on = ["engineering.phase-exits"]
+verify = "python -m unittest discover -s tools/plan/tests -t ."
+group = "session-model"
