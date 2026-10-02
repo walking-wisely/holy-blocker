@@ -572,3 +572,52 @@ Acceptance: `code`. Verify: `python -m unittest discover -s tools/plan/tests -t 
 The router in `CLAUDE.md` asks the agent to classify a request by feel, but `loop check` enforces by manifest `paths`, so a change under a governed path can be filed as loop-lite and fail CI. `loop route <paths>` (or `--base`/`--head` for a diff) prints the governing manifests, their pending step ids and a verdict (`step-required`, `claim-required`, `no-governing-manifest`, `nothing-to-route`), and the router runs it before choosing a tier. `loop check --base` also fails when the diff is empty, because it would otherwise pass vacuously before the first commit.
 
 Acceptance: `code`. Verify: `python -m unittest discover -s tools/plan/tests -t .`.
+
+## Steps 12–14 — per-step ledger files
+
+Decision: [per-step-ledger-files.md](../decisions/per-step-ledger-files.md).
+
+### Assumption audit
+
+| Claim | Falsifier | Observed | Verdict |
+|---|---|---|---|
+| Every step PR conflicts in `steps.toml` | two branches in a scratch repo each flip a different `pending` step in `mac-daemon/steps.toml`, then `git merge` | merged cleanly | **FALSE** — the conflict is appends and same-step edits, not status flips |
+| Two branches appending a step to the same `steps.toml` conflict | same scratch repo, each branch appends a `[[step]]` | `CONFLICT (content)` | **HOLDS** |
+| `steps.toml` is the hot file | `git log master --since=2026-09-01 --no-merges --name-only` counted per path | `docs/engineering/steps.toml` 13, `docs/engineering/plan.md` 13, `CLAUDE.md` 9 | **HOLDS**, and `plan.md` is as hot as the manifest |
+| Nothing but the ledger reads `steps.toml` | `grep -rn steps.toml tools .github .claude` | `ledger.py`, `todos.py`, `loop.py`, `ci-plan.yml`, four test files, two skills | **FALSE** — three readers each parse it themselves; all move together |
+
+### Per-step files
+
+<!-- step: engineering.per-step-ledger -->
+
+Move every `steps.toml` to `steps/<step-id>.toml` plus a `package.toml` holding `paths`.
+`ledger.py` owns the one loader; `todos.py` and `loop.py` call it instead of parsing TOML
+themselves. Steps are ordered by marker position in `plan.md`. `validate` fails when a file
+stem differs from its `id`, when a legacy `steps.toml` sits beside the new layout, or when a
+step file has unknown keys. A transitional reader keeps legacy manifests visible to `todos`
+across other worktrees and to `loop check --base`, and `ledger migrate <dir>` converts a legacy
+manifest, keeping the comments above each step. Every existing manifest is migrated in the
+same PR, and `ci-plan.yml` path filters, `CLAUDE.md`, the two skills and the component docs
+name the new layout.
+
+Acceptance: `code`. Verify: `python -m unittest discover -s tools/plan/tests -t . && python -m tools.plan.ledger validate docs/components/*/ docs/engineering`.
+
+### Status written once, no committed tables
+
+<!-- step: engineering.derived-state-guard -->
+
+Drop the `**Done.**` strike-through requirement from `CLAUDE.md` and `step-loop`, so a step's
+status lives only in its step file. Add a test that fails when a rendered ledger table (the
+`| Step | Kind | Status | Evidence |` header) appears in any tracked file, and that fails when a
+step file carries narrative beyond `evidence`'s one line.
+
+Acceptance: `code`. Verify: `python -m unittest discover -s tools/plan/tests -t .`.
+
+### Remove the legacy reader
+
+<!-- step: engineering.legacy-steps-toml-removal -->
+
+Once no worktree or open PR carries a `steps.toml`, delete the transitional reader and the
+`migrate` command. `python -m tools.plan.todos --all` run across worktrees shows none left.
+
+Acceptance: `code`. Verify: `python -m unittest discover -s tools/plan/tests -t .`.
