@@ -1,0 +1,8 @@
+id = "engineering.weekly-report"
+title = "weekly harness report from PR, git and worktree artifacts; no data prints as no data"
+status = "pending"
+evidence = ""
+acceptance = "code"
+depends_on = []
+verify = "python -m unittest discover -s tools/plan/tests -t ."
+group = "session-model"
