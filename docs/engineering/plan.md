@@ -533,3 +533,11 @@ A diff touching only `packages/new-crate/` (unclaimed), `.github/workflows/`, or
 Resolution: the engineering manifest claims `.github`, `CLAUDE.md`, `AGENTS.md`, `deny.toml`, `.gitleaks.toml`, `.pre-commit-config.yaml` and `.husky`, and `loop check` fails any changed file under `packages/`, `apps/`, `native-modules/` or `machine-learning/` that no manifest claims. `loop check` also judges a PR against the union of the base and head manifests, so a PR cannot release a path by editing or deleting the manifest that claims it, and it lists both sides of a rename. A PR that retires a path on purpose still carries the contract for the files under it, because the base claim stays in force. Left unclaimed on purpose: `docs/**` (docs-only is loop-lite) and root files that are neither policy nor code (`README.md`, `LICENSE`, `biome.json`, `.vscode/`), and root build files such as `package.json`, lockfiles and `rust-toolchain.toml`, because dependency bumps are loop-lite. `docs/**` edits that touch `steps.toml` or `plan.md` are still checked by `doclint` and `ledger validate`, not by `loop check`.
 
 Acceptance: `code`. Verify: `python -m unittest discover -s tools/plan/tests -t .`.
+
+### Worktree reaper — landed content and stacked PRs
+
+<!-- step: engineering.reaper-landed-detection -->
+
+The reaper judges "merged" from ancestry and one PR lookup, so branches whose work landed under a new SHA (squash, rebase) and PRs stacked on a parent branch are never reapable, and a worktree whose directory is gone crashes `report`. The fix answers each question from git facts: a branch is `landed` when `git merge-tree --write-tree` of it into the base yields the base's tree, a merged PR counts when every stacked hop ends at the base, and unreapable rows report the merge's conflicts or residual files. Branches are still never deleted.
+
+Acceptance: `code`. Verify: `python -m unittest discover -s tools/plan/tests -t .`.
