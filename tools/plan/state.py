@@ -17,7 +17,8 @@ from __future__ import annotations
 import json
 import os
 import subprocess
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import dataclass, replace
 
 
 @dataclass(frozen=True)
@@ -25,6 +26,7 @@ class Worktree:
     path: str
     head: str
     branch: str | None
+    prunable: bool = False
 
 
 @dataclass(frozen=True)
@@ -51,7 +53,7 @@ class Row:
     ignored_state: bool = False
 
 
-REAPABLE = ("merged", "abandoned")
+REAPABLE = ("merged", "abandoned", "landed")
 # Ignored paths under these top-level names are build output or package caches:
 # regenerable, so removing them with the worktree is fine. Anything else ignored
 # (a `.env`, a local database) is state, and the reaper leaves it alone.
@@ -68,6 +70,7 @@ def parse_worktrees(text: str) -> list[Worktree]:
     for block in text.strip().split("\n\n"):
         path = head = None
         branch: str | None = None
+        prunable = False
         for line in block.splitlines():
             if line.startswith("worktree "):
                 path = line[len("worktree "):]
@@ -77,8 +80,10 @@ def parse_worktrees(text: str) -> list[Worktree]:
                 branch = line[len("branch refs/heads/"):]
             elif line.startswith("detached"):
                 branch = None
+            elif line.startswith("prunable"):
+                prunable = True
         if path is not None:
-            out.append(Worktree(path=path, head=head or "", branch=branch))
+            out.append(Worktree(path=path, head=head or "", branch=branch, prunable=prunable))
     return out
 
 
@@ -139,17 +144,35 @@ def matching_pr(worktree: Worktree, pull_request: PullRequest | None, base: str)
     return pull_request
 
 
+def reaches_base(pull_request: PullRequest, base: str, lookup: Callable[[str], PullRequest | None]) -> bool:
+    """True when the PR, and every stacked PR it targets in turn, merged and the
+    chain ends at `base`."""
+    seen: set[str] = set()
+    current: PullRequest | None = pull_request
+    while current is not None and current.state == "MERGED":
+        if current.base == base:
+            return True
+        if current.base in seen:
+            return False
+        seen.add(current.base)
+        current = lookup(current.base)
+    return False
+
+
 def classify(
     worktree: Worktree,
     pull_request: PullRequest | None,
     ahead: int,
     local_only: int,
     dirty: bool,
+    landed: bool = False,
 ) -> Classified:
     if worktree.branch is None:
         return Classified("detached", "detached HEAD; no branch to reap by")
     if dirty:
         return Classified("dirty", "uncommitted changes in the worktree")
+    if landed and (pull_request is None or pull_request.state != "OPEN"):
+        return Classified("landed", "merging the branch into the base changes nothing")
     if local_only:
         return Classified("local-only", "commits not on any remote; push or delete deliberately")
     if pull_request is not None:
@@ -227,6 +250,28 @@ def count_local_only(branch: str, cwd: str) -> int:
     """Commits reachable from `branch` but from no remote — never-pushed work."""
     out = _git(["rev-list", "--count", branch, "--not", "--remotes"], cwd).strip()
     return int(out or "0")
+
+
+def residual_files(base: str, branch: str, cwd: str) -> list[str] | None:
+    """Files a merge of `branch` into `base` would still change; None on conflict."""
+    result = subprocess.run(
+        ["git", "merge-tree", "--write-tree", "--no-messages", base, branch],
+        cwd=cwd, capture_output=True, text=True,
+    )
+    if result.returncode == 1:
+        return None
+    result.check_returncode()
+    merged = result.stdout.splitlines()[0]
+    return _git(["diff", "--name-only", base, merged], cwd).splitlines()
+
+
+def content_landed(base: str, branch: str, cwd: str) -> bool:
+    """True when merging `branch` into `base` would change nothing.
+
+    Unlike ancestry, this survives squash merges, rebases and cherry-picks. A
+    conflict, or any change the merge would still make, is not landed.
+    """
+    return residual_files(base, branch, cwd) == []
 
 
 def pr_for_branch(branch: str, cwd: str) -> PullRequest | None:
