@@ -441,14 +441,47 @@ Edit `.claude/skills/step-loop/SKILL.md` only.
 
 Acceptance: `code`. Verify: `python -m unittest discover -s tools/plan/tests -t .`.
 
-### Step 10 — local e2e runner
+### Step 10 — local e2e: contract, runner, surfacing
+
+Specified by [e2e-scenario-contract.md](../decisions/e2e-scenario-contract.md); read its decisions 1–7 and its
+"What this does not cover" first. Scenarios themselves are per-feature. The first one is
+`mobile.e2e-android-scenario` in `docs/components/mobile/plan.md`, which depends on the contract
+and runner below.
+
+Test layers: the manifest parser, exit-code mapping, tree-hash and note logic are unit tests with a
+temporary git repository. Nothing here needs an emulator. Only the Android scenario step is observed
+on a device.
+
+#### Step 10a — the scenario contract
+
+<!-- step: engineering.e2e-contract -->
+
+`tools/plan/e2e/manifest.py`: load and validate `demos/*/scenario.toml` (fields per decision 1),
+and a `doclint` check that `covers` is closed under `cargo metadata` path dependencies and names the
+scenario's own script and seed paths. No runner yet.
+
+Acceptance: `code`. Verify: `python -m unittest discover -s tools/plan/tests -t .`.
+
+#### Step 10b — the runner
 
 <!-- step: engineering.e2e-runner -->
 
-`tools/plan/e2e`: a path-to-scenario map, a preflight that reports `environment not ready`
-separately from a failure, and an `e2e stale` report. Scenarios themselves are per-feature and
-are not part of this step. No scenario exists yet, so the first one (a candidate is the macOS
-text path) is a separate component step created through `plan-inception`.
+`tools/plan/e2e`: select scenarios by `covers` against a diff and print the uncovered-path count; run
+preflight (exit `2` only for a declared capability, after trying to fix it); run the scenario and decide
+the pass from exit `0` plus the blocked and permitted assertion counts; refuse to record on a dirty
+covered tree; record the note on the covered-path tree hash with host class and artifact digest;
+capture stdout and emit only the final line (decisions 2–4 and 7).
+
+Acceptance: `code`. Verify: `python -m unittest discover -s tools/plan/tests -t .`.
+
+#### Step 10c — surfacing and the PR check
+
+<!-- step: engineering.e2e-surfacing -->
+
+`e2e stale` over the notes; `tools.plan.todos` lists stale scenarios; `step-loop` gate 0 and gate 6
+call `e2e stale`; `loop check` requires a `<scenario-id> @ <tree-hash>` line whose note exists for the
+PR head when a governed path with a covering scenario changed (decisions 3 and 5). Edits
+`.claude/skills/step-loop/SKILL.md`, so it waits for no other step that edits that file.
 
 Acceptance: `code`. Verify: `python -m unittest discover -s tools/plan/tests -t .`.
 
@@ -491,10 +524,51 @@ Acceptance: `code`. Verify: `python -m unittest discover -s tools/plan/tests -t 
 
 Acceptance: `code`. Verify: `python -m unittest discover -s tools/plan/tests -t .`.
 
-### Bug — ungoverned roots
+### Bug — ungoverned roots **Done.**
 
 <!-- step: engineering.loop-check-ungoverned-roots -->
 
 A diff touching only `packages/new-crate/` (unclaimed), `.github/workflows/`, or `CLAUDE.md` returns exit 0 from `loop check`. Either claim those roots in a manifest or record the narrowing in `docs/engineering/coverage.md`.
+
+Resolution: the engineering manifest claims `.github`, `CLAUDE.md`, `AGENTS.md`, `deny.toml`, `.gitleaks.toml`, `.pre-commit-config.yaml` and `.husky`, and `loop check` fails any changed file under `packages/`, `apps/`, `native-modules/` or `machine-learning/` that no manifest claims. `loop check` also judges a PR against the union of the base and head manifests, so a PR cannot release a path by editing or deleting the manifest that claims it, and it lists both sides of a rename. A PR that retires a path on purpose still carries the contract for the files under it, because the base claim stays in force. Left unclaimed on purpose: `docs/**` (docs-only is loop-lite) and root files that are neither policy nor code (`README.md`, `LICENSE`, `biome.json`, `.vscode/`), and root build files such as `package.json`, lockfiles and `rust-toolchain.toml`, because dependency bumps are loop-lite. `docs/**` edits that touch `steps.toml` or `plan.md` are still checked by `doclint` and `ledger validate`, not by `loop check`.
+
+Acceptance: `code`. Verify: `python -m unittest discover -s tools/plan/tests -t .`.
+
+### Context-budget gate **Done.**
+
+<!-- step: engineering.context-budget-gate -->
+
+Sessions that run a step past roughly 100k tokens degrade, and the remembered rule to hand off
+is what drops first. `python -m tools.plan.context` adapts `~/.claude/hooks/context-nudge.sh`: it
+sums `input_tokens + cache_creation_input_tokens + cache_read_input_tokens` of the last
+main-thread assistant line in a transcript (sidechain and synthetic lines are skipped, and a zero total is no data) and compares it to an absolute 100,000-token threshold, not a
+percentage of the window. With no path it finds `$CLAUDE_CODE_SESSION_ID.jsonl` in any directory under
+`~/.claude/projects/`; a set id with no matching file is exit 2, and only an unset id falls back
+to the newest `.jsonl` for the current directory or the main checkout. Exit 0 is under, 1
+is over, 2 is no readable transcript.
+
+`step-loop` gate 2a runs it after the worktree exists and before implementation. Over the
+threshold the loop writes a handoff brief (step id, branch, worktree, next action) and stops. A
+step with `difficulty = "hard"` skips the gate; the ledger accepts `normal` (default) or `hard`,
+and `ledger next` prints a non-default value.
+
+Narrowing: without `CLAUDE_CODE_SESSION_ID` the fallback measures the newest transcript, which may be another session's, and a subagent inherits its parent's id so it measures the parent, which is why the gate runs from the main loop session only. The count is the last assistant message's input side, so a session whose transcript
+is not under `~/.claude/projects/` reads as exit 2, and the gate does not stop.
+
+Acceptance: `code`. Verify: `python -m unittest discover -s tools/plan/tests -t .`.
+
+### Worktree reaper — landed content and stacked PRs
+
+<!-- step: engineering.reaper-landed-detection -->
+
+The reaper judges "merged" from ancestry and one PR lookup, so branches whose work landed under a new SHA (squash, rebase) and PRs stacked on a parent branch are never reapable, and a worktree whose directory is gone crashes `report`. The fix answers each question from git facts: a branch is `landed` when `git merge-tree --write-tree` of it into the base yields the base's tree, a merged PR counts when every stacked hop ends at the base, and unreapable rows report the merge's conflicts or residual files. Branches are still never deleted.
+
+Acceptance: `code`. Verify: `python -m unittest discover -s tools/plan/tests -t .`.
+
+### Loop route and empty-diff guard
+
+<!-- step: engineering.loop-route -->
+
+The router in `CLAUDE.md` asks the agent to classify a request by feel, but `loop check` enforces by manifest `paths`, so a change under a governed path can be filed as loop-lite and fail CI. `loop route <paths>` (or `--base`/`--head` for a diff) prints the governing manifests, their pending step ids and a verdict (`step-required`, `claim-required`, `no-governing-manifest`, `nothing-to-route`), and the router runs it before choosing a tier. `loop check --base` also fails when the diff is empty, because it would otherwise pass vacuously before the first commit.
 
 Acceptance: `code`. Verify: `python -m unittest discover -s tools/plan/tests -t .`.

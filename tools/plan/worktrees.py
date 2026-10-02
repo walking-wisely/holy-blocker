@@ -10,8 +10,11 @@ already merged or whose branch carries nothing unique.
     python -m tools.plan.worktrees reap --yes
     python -m tools.plan.worktrees reap --yes --force   # also removed: ignored state
 
-Branches are never deleted: a squash merge leaves git unable to tell a merged
-branch from an unmerged one, so that call stays with a human.
+A branch with no merged PR is reaped as `landed` only when merging it into the
+base would change nothing (``state.content_landed``), which holds across squash
+merges and rebases.
+
+Branches are never deleted: that call stays with a human.
 """
 
 from __future__ import annotations
@@ -19,6 +22,7 @@ from __future__ import annotations
 import argparse
 import subprocess
 import sys
+from dataclasses import replace
 
 from tools.plan import state
 
@@ -26,24 +30,36 @@ from tools.plan import state
 def build_rows(cwd: str, base: str) -> list[state.Row]:
     rows: list[state.Row] = []
     for worktree in state.list_worktrees(cwd):
+        if worktree.prunable:
+            rows.append(
+                state.Row(worktree.path, worktree.branch, "prunable", "directory is gone; `git worktree prune` clears it")
+            )
+            continue
         dirty = state.is_dirty(worktree.path)
         ignored_state = not dirty and not state.is_disposable_ignored(state.ignored_entries(worktree.path))
+        ahead = 0
+        residual: list[str] | None = []
         if worktree.branch is None:
             classified = state.classify(worktree, None, 0, 0, dirty)
         else:
             ahead = state.count_between(base, worktree.branch, cwd)
             local_only = state.count_local_only(worktree.branch, cwd)
             try:
-                pull_request = state.matching_pr(
-                    worktree, state.pr_for_branch(worktree.branch, cwd), base
-                )
+                found = state.pr_for_branch(worktree.branch, cwd)
+                if found and found.base != base and state.reaches_base(
+                    found, base, lambda branch: state.pr_for_branch(branch, cwd)
+                ):
+                    found = replace(found, base=base)
+                pull_request = state.matching_pr(worktree, found, base)
             except (subprocess.CalledProcessError, FileNotFoundError):
                 rows.append(state.Row(worktree.path, worktree.branch, "unknown", "gh could not report PR state"))
                 continue
-            classified = state.classify(worktree, pull_request, ahead, local_only, dirty)
-        rows.append(
-            state.Row(worktree.path, worktree.branch, classified.verdict, classified.reason, ignored_state)
-        )
+            residual = state.residual_files(base, worktree.branch, cwd) if ahead else []
+            classified = state.classify(worktree, pull_request, ahead, local_only, dirty, landed=residual == [])
+        reason = classified.reason
+        if not state.reapable(classified) and ahead:
+            reason += "; merge conflicts" if residual is None else f"; merge would change {len(residual)} file(s)"
+        rows.append(state.Row(worktree.path, worktree.branch, classified.verdict, reason, ignored_state))
     return rows
 
 

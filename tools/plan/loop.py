@@ -16,12 +16,14 @@ import argparse
 import re
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
 from tools.plan import ledger
 
 REQUIRED_SECTIONS = ("Assumption audit", "Adversarial review")
+CODE_ROOTS = ("packages", "apps", "native-modules", "machine-learning")
 _FENCE_RE = re.compile(r"^(```|~~~).*?^\1[^\n]*$", re.S | re.M)
 _COMMENT_RE = re.compile(r"<!--.*?-->", re.S)
 _HEADING_RE = re.compile(r"^(#{1,6})[ \t]+(.*?)[ \t]*#*[ \t]*$")
@@ -32,6 +34,14 @@ class Governed:
     package: str
     paths: tuple[str, ...]
     step_ids: tuple[str, ...]
+    pending_step_ids: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class Route:
+    changed: tuple[str, ...]
+    governing: tuple[tuple[Governed, tuple[str, ...]], ...]
+    unclaimed: tuple[str, ...]
 
 
 def load_governed(root: Path) -> list[Governed]:
@@ -43,14 +53,40 @@ def load_governed(root: Path) -> list[Governed]:
         if not manifest.exists():
             continue
         package = manifest.parent
+        steps = ledger.load_manifest(package)
         governed.append(
             Governed(
                 package=package.relative_to(root).as_posix(),
                 paths=ledger.load_paths(package),
-                step_ids=tuple(step.id for step in ledger.load_manifest(package)),
+                step_ids=tuple(step.id for step in steps),
+                pending_step_ids=tuple(step.id for step in steps if step.status == "pending"),
             )
         )
     return governed
+
+
+def load_governed_at(root: Path, rev: str) -> list[Governed]:
+    archive = subprocess.run(
+        ["git", "archive", "--end-of-options", rev, "docs"], cwd=root, check=True, capture_output=True
+    ).stdout
+    with tempfile.TemporaryDirectory() as tmp:
+        subprocess.run(["tar", "-x", "-C", tmp], input=archive, check=True)
+        return load_governed(Path(tmp))
+
+
+def merge_governed(head: list[Governed], base: list[Governed]) -> list[Governed]:
+    merged = {m.package: m for m in head}
+    for m in base:
+        kept = merged.get(m.package)
+        if kept is None:
+            merged[m.package] = m
+            continue
+        merged[m.package] = Governed(
+            package=m.package,
+            paths=tuple(dict.fromkeys(kept.paths + m.paths)),
+            step_ids=tuple(dict.fromkeys(kept.step_ids + m.step_ids)),
+        )
+    return list(merged.values())
 
 
 def _owns(path: str, changed: str) -> bool:
@@ -64,6 +100,45 @@ def governing(changed_files: list[str], manifests: list[Governed]) -> list[Gover
         for m in manifests
         if any(_owns(p, f) for p in m.paths for f in changed_files)
     ]
+
+
+def unclaimed(changed_files: list[str], manifests: list[Governed]) -> list[str]:
+    owned = [p for m in manifests for p in m.paths]
+    return [
+        f
+        for f in changed_files
+        if f.split("/", 1)[0] in CODE_ROOTS and not any(_owns(p, f) for p in owned)
+    ]
+
+
+def route(changed_files: list[str], manifests: list[Governed]) -> Route:
+    governing_files = tuple(
+        (m, tuple(f for f in changed_files if any(_owns(p, f) for p in m.paths)))
+        for m in governing(changed_files, manifests)
+    )
+    return Route(
+        changed=tuple(changed_files),
+        governing=governing_files,
+        unclaimed=tuple(unclaimed(changed_files, manifests)),
+    )
+
+
+def render_route(result: Route) -> str:
+    lines = []
+    for manifest, files in result.governing:
+        lines.append(f"governed {manifest.package}: {', '.join(files)}")
+        pending = ", ".join(manifest.pending_step_ids) or "none"
+        lines.append(f"  pending steps: {pending}")
+    lines.extend(f"unclaimed {path}" for path in result.unclaimed)
+    verdicts = []
+    if result.unclaimed:
+        verdicts.append("claim-required")
+    if result.governing:
+        verdicts.append("step-required")
+    if not verdicts:
+        verdicts.append("no-governing-manifest" if result.changed else "nothing-to-route")
+    lines.append(f"verdict: {', '.join(verdicts)}")
+    return "\n".join(lines) + "\n"
 
 
 def _sanitize(body: str) -> str:
@@ -95,10 +170,13 @@ def _names_step(body: str, manifests: list[Governed]) -> bool:
 
 
 def check(body: str, changed_files: list[str], manifests: list[Governed]) -> list[str]:
+    problems = [
+        f"{f} is under a code root but no steps.toml claims it; add it to a manifest's paths"
+        for f in unclaimed(changed_files, manifests)
+    ]
     if not governing(changed_files, manifests):
-        return []
+        return problems
     body = _sanitize(body)
-    problems: list[str] = []
     if not _names_step(body, manifests):
         problems.append("PR body names no step id from any steps.toml")
     sections = _sections(body)
@@ -129,13 +207,22 @@ def _changed_files(args: argparse.Namespace) -> list[str]:
     if args.changed_files:
         text = Path(args.changed_files).read_text(encoding="utf-8")
     else:
-        text = subprocess.run(
-            ["git", "diff", "--name-only", f"{args.base}...{args.head}"],
+        out = subprocess.run(
+            [
+                "git",
+                "diff",
+                "-z",
+                "--name-only",
+                "--no-renames",
+                "--end-of-options",
+                f"{args.base}...{args.head}",
+            ],
             cwd=args.root,
             check=True,
             capture_output=True,
             text=True,
         ).stdout
+        return [path for path in out.split("\0") if path]
     return [line.strip() for line in text.splitlines() if line.strip()]
 
 
@@ -150,10 +237,40 @@ def _cmd_check(args: argparse.Namespace) -> int:
     except (OSError, subprocess.CalledProcessError) as err:
         print(f"cannot determine changed files: {err}", file=sys.stderr)
         return 1
-    problems = check(body, changed, load_governed(args.root))
+    if args.base and not changed:
+        print(f"no changed files between {args.base} and {args.head}; commit before checking", file=sys.stderr)
+        return 1
+    governed = load_governed(args.root)
+    if args.base:
+        try:
+            governed = merge_governed(governed, load_governed_at(args.root, args.base))
+        except (OSError, subprocess.CalledProcessError) as err:
+            print(f"cannot load base manifests: {err}", file=sys.stderr)
+            return 1
+    problems = check(body, changed, governed)
     for problem in problems:
         print(problem, file=sys.stderr)
     return 1 if problems else 0
+
+
+def _cmd_route(args: argparse.Namespace) -> int:
+    if args.base:
+        try:
+            changed = _changed_files(args)
+        except (OSError, subprocess.CalledProcessError) as err:
+            print(f"cannot determine changed files: {err}", file=sys.stderr)
+            return 1
+    else:
+        changed = [path.strip("/") for path in args.paths]
+    governed = load_governed(args.root)
+    if args.base:
+        try:
+            governed = merge_governed(governed, load_governed_at(args.root, args.base))
+        except (OSError, subprocess.CalledProcessError) as err:
+            print(f"cannot load base manifests: {err}", file=sys.stderr)
+            return 1
+    print(render_route(route(changed, governed)), end="")
+    return 0
 
 
 def _cmd_open(args: argparse.Namespace) -> int:
@@ -178,6 +295,13 @@ def main(argv: list[str] | None = None) -> int:
     source.add_argument("--base")
     check_cmd.add_argument("--head", default="HEAD")
     check_cmd.set_defaults(run=_cmd_check)
+
+    route_cmd = sub.add_parser("route")
+    route_cmd.add_argument("paths", nargs="*")
+    route_cmd.add_argument("--root", default=".")
+    route_cmd.add_argument("--base")
+    route_cmd.add_argument("--head", default="HEAD")
+    route_cmd.set_defaults(run=_cmd_route, changed_files=None)
 
     open_cmd = sub.add_parser("open")
     open_cmd.add_argument("step_id")

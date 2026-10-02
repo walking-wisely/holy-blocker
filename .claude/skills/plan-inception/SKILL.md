@@ -150,12 +150,17 @@ runs headless as a regression check and with `--interactive` as the owner's demo
 proved at the unit, integration and e2e layers; anything an e2e scenario can observe should
 not rely on `acceptance = "observation"`.
 
-## Step 6 — Hand to the loop
+## Step 6 — Publish the plan, then hand to the loop
 
-The plan-inception skill stops here. It does **not** implement. Once `validate`
-passes and `next` reports a step, the work belongs to `step-loop` (audit its external
-claims per-step, worktree, test-first, adversarial review, merge). Do not run the
-loop's gates from inside this skill — that is the loop's job, in a fresh context.
+The decision records, index rows and `plan.md` this skill writes are docs, and they follow
+the repository's Working Rhythm in `CLAUDE.md` like any other change: write them in their
+own worktree, and once `validate` and `doclint` pass, commit, push and open the PR in one
+pass without asking. The only exception is a request to hold the change before it goes out.
+
+The skill stops there. It does **not** implement. Once `validate` passes and `next` reports
+a step, the work belongs to `step-loop` (audit its external claims per-step, test-first,
+adversarial review, merge). Do not run the loop's gates from inside this skill — that is the
+loop's job, in a fresh context.
 
 ## What this skill must not do
 
@@ -164,4 +169,5 @@ loop's gates from inside this skill — that is the loop's job, in a fresh conte
 - Promote an `Unverified` engineering claim to `Covered` in `coverage.md` by
   argument — only an observation does that.
 - Write `plan.md` before the escalated decisions are written back to the index.
-- Implement, fork a worktree, or open a PR. This skill conceives; `step-loop` builds.
+- Implement. This skill conceives and publishes the plan as a docs PR; `step-loop` builds.
+- Hold the plan back from a PR to wait for permission. The owner reviews decisions in the PR.

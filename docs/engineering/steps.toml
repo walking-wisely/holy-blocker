@@ -13,7 +13,17 @@
 # plan.md. `evidence` is one line pointing at where the step landed (commit, PR, or
 # the plan's own wording), not an argument.
 
-paths = ["tools/plan", ".claude/skills"]
+paths = [
+  "tools/plan",
+  ".claude/skills",
+  ".github",
+  "CLAUDE.md",
+  "AGENTS.md",
+  "deny.toml",
+  ".gitleaks.toml",
+  ".pre-commit-config.yaml",
+  ".husky",
+]
 
 [[step]]
 id = "engineering.ledger-coverage"
@@ -98,12 +108,30 @@ depends_on = ["engineering.mandatory-review-gates"]
 verify = "python -m unittest discover -s tools/plan/tests -t ."
 
 [[step]]
-id = "engineering.e2e-runner"
-title = "local e2e runner — path map, preflight, staleness report"
+id = "engineering.e2e-contract"
+title = "e2e scenario contract — manifest schema and covers-closure lint"
 status = "pending"
 evidence = ""
 acceptance = "code"
 depends_on = ["engineering.step-loop-feature-gates"]
+verify = "python -m unittest discover -s tools/plan/tests -t ."
+
+[[step]]
+id = "engineering.e2e-runner"
+title = "local e2e runner — selection, preflight, runner-decided pass, git-note record"
+status = "pending"
+evidence = ""
+acceptance = "code"
+depends_on = ["engineering.e2e-contract"]
+verify = "python -m unittest discover -s tools/plan/tests -t ."
+
+[[step]]
+id = "engineering.e2e-surfacing"
+title = "e2e staleness surfaced in todos and the step loop, and checked on the PR"
+status = "pending"
+evidence = ""
+acceptance = "code"
+depends_on = ["engineering.e2e-runner"]
 verify = "python -m unittest discover -s tools/plan/tests -t ."
 
 [[step]]
@@ -138,9 +166,33 @@ verify = "python -m unittest discover -s tools/plan/tests -t ."
 [[step]]
 id = "engineering.loop-check-ungoverned-roots"
 title = "loop check leaves .github, CLAUDE.md and unclaimed new roots ungoverned"
-status = "pending"
-evidence = ""
+status = "at-pr"
+evidence = "PR #103"
 kind = "bug"
 regressed_step = "engineering.loop-enforcement"
+acceptance = "code"
+verify = "python -m unittest discover -s tools/plan/tests -t ."
+
+[[step]]
+id = "engineering.context-budget-gate"
+title = "step-loop context-budget gate and difficulty field"
+status = "at-pr"
+evidence = "PR #106"
+acceptance = "code"
+verify = "python -m unittest discover -s tools/plan/tests -t ."
+
+[[step]]
+id = "engineering.reaper-landed-detection"
+title = "worktree reaper detects landed content and stacked PRs from git facts"
+status = "at-pr"
+evidence = "PR #104"
+acceptance = "code"
+verify = "python -m unittest discover -s tools/plan/tests -t ."
+
+[[step]]
+id = "engineering.loop-route"
+title = "loop route resolves the governing manifest and pending steps from paths"
+status = "at-pr"
+evidence = "PR #105"
 acceptance = "code"
 verify = "python -m unittest discover -s tools/plan/tests -t ."
