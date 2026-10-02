@@ -1,0 +1,4 @@
+id = "mac-daemon.agent-render-loop"
+title = "agent render loop — real NSApplication run loop (e2e session 5)"
+status = "done"
+evidence = "e2e session 5 **Done**, 313 tests; Sources/MacDaemon/AgentRenderLoop.swift on master (commit 7355a19, PR #100)"

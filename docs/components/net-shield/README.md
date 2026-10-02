@@ -14,7 +14,7 @@ Rust packet-level filter: domain/IP trie, SNI parser, Wintun path, and the DNS p
 ## Files here
 
 - [`plan.md`](plan.md) — Current state, modules, build order, references
-- [`steps.toml`](steps.toml) — Step ledger
+- [`steps/`](steps/) — Step ledger, one file per step
 
 ## Read for
 

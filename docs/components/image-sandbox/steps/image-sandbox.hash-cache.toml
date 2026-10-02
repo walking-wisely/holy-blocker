@@ -1,0 +1,4 @@
+id = "image-sandbox.hash-cache"
+title = "hash.rs + db.rs as a short-circuit cache"
+status = "pending"
+evidence = ""

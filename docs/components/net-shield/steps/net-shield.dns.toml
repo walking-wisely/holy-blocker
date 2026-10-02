@@ -1,0 +1,4 @@
+id = "net-shield.dns"
+title = "dns — DNS path (dns, udp, dns_shield)"
+status = "done"
+evidence = "implementation order 6 **Done.**; src/dns.rs, src/udp.rs, src/dns_shield.rs on master"

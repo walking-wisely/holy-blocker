@@ -1,0 +1,4 @@
+id = "mac-daemon.proxy-configuration"
+title = "ProxyConfiguration — apply and restore system proxy (module 4)"
+status = "done"
+evidence = "Layer 1 implementation order 5 **Done**; Sources/MacDaemon/ProxyConfiguration.swift on master"

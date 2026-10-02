@@ -1,0 +1,4 @@
+id = "win-network.ipc-server"
+title = "ipc_server — named pipe command server"
+status = "done"
+evidence = "implementation order 4 **Done.**; src/ipc_server.cpp on master (commit ac3485d, PR #14)"

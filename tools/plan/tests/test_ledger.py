@@ -298,8 +298,9 @@ class WriteTodoTest(unittest.TestCase):
     def test_render_write_flag_writes_file_and_suppresses_stdout(self):
         with tempfile.TemporaryDirectory() as tmp:
             package = Path(tmp)
-            (package / "steps.toml").write_text(
-                '[[step]]\nid = "p.a"\ntitle = "a"\nstatus = "pending"\n',
+            (package / "steps").mkdir()
+            (package / "steps" / "p.a.toml").write_text(
+                'id = "p.a"\ntitle = "a"\nstatus = "pending"\n',
                 encoding="utf-8",
             )
             (package / "plan.md").write_text("<!-- step: p.a -->", encoding="utf-8")

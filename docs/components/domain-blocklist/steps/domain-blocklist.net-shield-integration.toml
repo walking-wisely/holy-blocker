@@ -1,0 +1,4 @@
+id = "domain-blocklist.net-shield-integration"
+title = "net-shield integration — precedence table and shared normalize (module 6)"
+status = "done"
+evidence = "implementation order 8 **Done.**; packages/net-shield/src/blocklist.rs on master (commit bc713c8, PR #23)"

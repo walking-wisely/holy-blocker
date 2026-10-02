@@ -1,0 +1,4 @@
+id = "mac-daemon.network-services"
+title = "NetworkServices — service and proxy-setting parsers (module 3)"
+status = "done"
+evidence = "Layer 1 implementation order 3 **Done.**; Sources/MacDaemon/NetworkServices.swift on master"

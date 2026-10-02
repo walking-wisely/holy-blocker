@@ -1,0 +1,4 @@
+id = "mitm-proxy.benchmarks"
+title = "Criterion benchmark suite and the [lib] target"
+status = "done"
+evidence = "implementation order 8 **Done.**; benches/ and [lib] in Cargo.toml on master (commit e9a3be1, PR #4)"

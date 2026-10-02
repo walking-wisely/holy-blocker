@@ -1,0 +1,4 @@
+id = "domain-blocklist.fst-build"
+title = "fst_build — the on-device artifact (module 4)"
+status = "done"
+evidence = "implementation order 6 **Done.**; src/fst_build.rs on master (commit eada2be, PR #22)"

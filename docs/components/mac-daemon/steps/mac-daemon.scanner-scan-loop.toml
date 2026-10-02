@@ -1,0 +1,4 @@
+id = "mac-daemon.scanner-scan-loop"
+title = "Scanner and ScanLoop — interface and scheduler (module 9)"
+status = "done"
+evidence = "Layer 2 implementation order 3 **Done.**, 62 tests; Scanner.swift/ScanLoop.swift on master (commit 0523a74)"

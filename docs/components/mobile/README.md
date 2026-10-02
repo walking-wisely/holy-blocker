@@ -17,7 +17,7 @@ Android app: AccessibilityService text path, DNS VPN, MediaProjection capture, t
 - [`modules/`](modules/) — One spec per module: 01 policy through 09 the-image-path
 - [`gotchas.md`](gotchas.md) — Platform traps learned on device
 - [`backlog.md`](backlog.md) — Open defects and deferred hardware-blocked items
-- [`steps.toml`](steps.toml) — Step ledger
+- [`steps/`](steps/) — Step ledger, one file per step
 
 ## Read for
 

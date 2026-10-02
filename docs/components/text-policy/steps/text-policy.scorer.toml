@@ -1,0 +1,4 @@
+id = "text-policy.scorer"
+title = "scorer — match to score"
+status = "done"
+evidence = "pure fn, fully tested; implementation order 2"

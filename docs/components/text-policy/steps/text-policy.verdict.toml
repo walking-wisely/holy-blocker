@@ -1,0 +1,4 @@
+id = "text-policy.verdict"
+title = "verdict — action, verdict, and evidence types"
+status = "done"
+evidence = "types only, no logic; module 1"

@@ -46,13 +46,8 @@ class Route:
 
 def load_governed(root: Path) -> list[Governed]:
     root = Path(root)
-    packages = sorted((root / "docs" / "components").glob("*/steps.toml"))
-    packages.append(root / "docs" / "engineering" / "steps.toml")
     governed = []
-    for manifest in packages:
-        if not manifest.exists():
-            continue
-        package = manifest.parent
+    for package in ledger.discover(root):
         steps = ledger.load_manifest(package)
         governed.append(
             Governed(
@@ -171,14 +166,14 @@ def _names_step(body: str, manifests: list[Governed]) -> bool:
 
 def check(body: str, changed_files: list[str], manifests: list[Governed]) -> list[str]:
     problems = [
-        f"{f} is under a code root but no steps.toml claims it; add it to a manifest's paths"
+        f"{f} is under a code root but no package.toml claims it; add it to a manifest's paths"
         for f in unclaimed(changed_files, manifests)
     ]
     if not governing(changed_files, manifests):
         return problems
     body = _sanitize(body)
     if not _names_step(body, manifests):
-        problems.append("PR body names no step id from any steps.toml")
+        problems.append("PR body names no step id from any step manifest")
     sections = _sections(body)
     for title in REQUIRED_SECTIONS:
         content = sections.get(title.lower())

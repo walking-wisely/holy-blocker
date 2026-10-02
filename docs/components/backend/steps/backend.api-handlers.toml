@@ -1,0 +1,5 @@
+id = "backend.api-handlers"
+title = "api handlers.go + middleware.go — handlers, bearer auth, logging, rate limiting"
+status = "pending"
+evidence = ""
+verify = "cd backend && go test ./..."

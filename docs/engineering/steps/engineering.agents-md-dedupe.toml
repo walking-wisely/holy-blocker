@@ -1,0 +1,6 @@
+id = "engineering.agents-md-dedupe"
+title = "one guidance file, not two — reconcile AGENTS.md with CLAUDE.md"
+status = "done"
+evidence = "AGENTS.md reduced to a pointer at CLAUDE.md; tools/plan/tests/test_guidance.py"
+acceptance = "code"
+verify = "python -m unittest discover -s tools/plan/tests -t ."

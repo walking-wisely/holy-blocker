@@ -435,6 +435,19 @@ class LoadTest(unittest.TestCase):
             self.assertEqual(found["a"].step_ids, ("a.one",))
             self.assertEqual(found["b"].paths, ())
 
+    def test_reads_the_per_step_layout(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp) / "docs" / "components" / "a"
+            (d / "steps").mkdir(parents=True)
+            (d / "package.toml").write_text('paths = ["packages/a"]\n', encoding="utf-8")
+            (d / "steps" / "a.one.toml").write_text(
+                'id = "a.one"\nstatus = "pending"\n', encoding="utf-8"
+            )
+            (d / "plan.md").write_text("<!-- step: a.one -->", encoding="utf-8")
+            [found] = loop.load_governed(Path(tmp))
+            self.assertEqual(found.paths, ("packages/a",))
+            self.assertEqual(found.pending_step_ids, ("a.one",))
+
     def test_repo_manifests_load(self):
         root = Path(__file__).resolve().parents[3]
         governed = loop.load_governed(root)

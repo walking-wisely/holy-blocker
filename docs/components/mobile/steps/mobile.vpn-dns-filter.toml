@@ -1,0 +1,4 @@
+id = "mobile.vpn-dns-filter"
+title = "VpnService DNS filter"
+status = "done"
+evidence = "implementation order 11 **Done for DNS**; NetworkGuard.kt (policy/) + NetworkGuardService.kt + BlocklistStore.kt under apps/mobile/app/src/main/kotlin/com/holyblocker/mobile/ on master (commit a7909cb, PR #84); SNI/IP is step 14"

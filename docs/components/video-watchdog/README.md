@@ -12,7 +12,7 @@ Async HLS/DASH segment sampler that feeds sampled frames to the image classifier
 ## Files here
 
 - [`plan.md`](plan.md) — Modules and build order
-- [`steps.toml`](steps.toml) — Step ledger
+- [`steps/`](steps/) — Step ledger, one file per step
 
 ## Read for
 

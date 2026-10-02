@@ -1,0 +1,4 @@
+id = "mobile.settings-guard"
+title = "SettingsGuard — back out of the guarded settings screens"
+status = "done"
+evidence = "implementation order 5 **Done.** for the AOSP profile; policy/SettingsGuard.kt on master (commit c71662c, PR #64); Xiaomi profile still to add"

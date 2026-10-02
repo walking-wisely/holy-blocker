@@ -1,0 +1,4 @@
+id = "mobile.screenguard-overlay-onboarding"
+title = "ScreenGuardService + OverlayController + onboarding"
+status = "done"
+evidence = "implementation order 3 **Done.**; ScreenGuardService.kt, OverlayController.kt, MainActivity.kt on master (commit 48792fa, PR #61)"

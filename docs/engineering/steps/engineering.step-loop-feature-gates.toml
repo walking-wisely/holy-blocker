@@ -1,0 +1,7 @@
+id = "engineering.step-loop-feature-gates"
+title = "step-loop: feature-level hand-off and the local e2e gate"
+status = "done"
+evidence = "step-loop gate 6 e2e gate and demo hand-off; tools/plan/tests/test_step_loop_gates.py; branch infra/loop-enforcement"
+acceptance = "code"
+depends_on = ["engineering.mandatory-review-gates"]
+verify = "python -m unittest discover -s tools/plan/tests -t ."

@@ -1,0 +1,4 @@
+id = "mac-daemon.signed-bundle"
+title = "signed bundle and launchd split (module 0)"
+status = "done"
+evidence = "Module 0 **Done**; AppBundle/LaunchdJob/CodeSigning on master (commit cada2c3)"

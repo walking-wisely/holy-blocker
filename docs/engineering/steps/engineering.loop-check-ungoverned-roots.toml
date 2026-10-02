@@ -1,0 +1,8 @@
+id = "engineering.loop-check-ungoverned-roots"
+title = "loop check leaves .github, CLAUDE.md and unclaimed new roots ungoverned"
+status = "at-pr"
+evidence = "PR #103"
+acceptance = "code"
+verify = "python -m unittest discover -s tools/plan/tests -t ."
+kind = "bug"
+regressed_step = "engineering.loop-enforcement"

@@ -34,7 +34,7 @@ How the codebase is built, tested, and maintained. Audience: contributors.
 Architecture Decision Records — one file per significant discrete choice. Records what was decided, why, and what was rejected. Never deleted, only superseded.
 
 ### [`components/`](components/)
-One folder per component, indexed in [`components/README.md`](components/README.md). Each has its own `README.md` (code location, status, decisions, what to read for which task), a `plan.md` (build order and step markers), a `steps.toml` ledger, and, for large components, a `modules/` folder with one specification per module. Start from the index, not from a plan.
+One folder per component, indexed in [`components/README.md`](components/README.md). Each has its own `README.md` (code location, status, decisions, what to read for which task), a `plan.md` (build order and step markers), a `steps/` ledger (one file per step), and, for large components, a `modules/` folder with one specification per module. Start from the index, not from a plan.
 
 ### [`status/`](status/)
 Per-package current state, one file per package, named `<area>-<package>.md`. This is where "what exists and what is verified" lives; `CLAUDE.md` carries only a one-line summary and a link.

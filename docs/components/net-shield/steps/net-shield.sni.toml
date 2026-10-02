@@ -1,0 +1,4 @@
+id = "net-shield.sni"
+title = "sni — TLS ClientHello SNI extraction"
+status = "done"
+evidence = "implementation order 2 **Done.**; src/sni.rs on master"

@@ -27,9 +27,11 @@ jobs:
             plan:
               - ".github/workflows/ci-plan.yml"
               - "tools/plan/**"
-              - "docs/components/**/steps.toml"
+              - "docs/components/**/steps/*.toml"
+              - "docs/components/**/package.toml"
               - "docs/components/**/plan.md"
-              - "docs/engineering/steps.toml"
+              - "docs/engineering/steps/*.toml"
+              - "docs/engineering/package.toml"
               - "docs/engineering/plan.md"
               - "docs/**"
               - "*.md"

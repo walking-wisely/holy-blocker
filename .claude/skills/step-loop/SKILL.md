@@ -16,7 +16,7 @@ One unit of work, five gates, in order. The loop exists because each gate was
 already a skill or a convention that a session had to remember, and remembering
 is what drops when context resets.
 
-State is **derived, never stored**: a step's status is `steps.toml`, and whether
+State is **derived, never stored**: a step's status is its `steps/<id>.toml`, and whether
 its branch landed is git and `gh` — never a file the loop writes. A written
 status goes stale and forks per branch.
 
@@ -70,7 +70,7 @@ and write a handoff brief instead, then tell the owner to continue in a fresh se
 Print the brief to the terminal or write it to the session scratchpad. Never commit it, and
 never include transcript content.
 
-Skip the gate only when the step carries `difficulty = "hard"` in `steps.toml` (`ledger next`
+Skip the gate only when the step carries `difficulty = "hard"` in its step file (`ledger next`
 prints it). Exit 2 means no transcript could be read; say so and continue.
 
 ## 3. Implement, test-first
@@ -101,7 +101,7 @@ Apply the two rules: reproduce or label, and cite or omit. Then triage every fin
 | Tier | Route |
 |---|---|
 | Blocking | One fix attempt (`MAX_FIX_ATTEMPTS = 1`), one commit per finding, then re-run the finding's own reproduction against the fix and re-run the review. Still open after that attempt: stop, do not try a third time, and escalate. Nothing with an open Blocking finding merges. |
-| Non-blocking | File a `kind = "bug"` step in the package's `steps.toml`, with `regressed_step` set when it regresses a `done` step. Fix inline only if it is a same-file, same-test-suite change to the current diff. |
+| Non-blocking | File a `kind = "bug"` step in the package's `steps/` directory, with `regressed_step` set when it regresses a `done` step. Fix inline only if it is a same-file, same-test-suite change to the current diff. |
 | Judgment call | Never resolve it. Escalate. |
 
 When anything escalates, report using the escalation packet from `review-triage.md` §4,
@@ -120,7 +120,7 @@ that finds the step's premise false sends the step back to gate 1.
 - Move any coverage row the change alters in `docs/engineering/coverage.md` in
   the same PR. `Unverified` becomes `Covered` by an observation, never by an
   argument.
-- Mark the step done in `plan.md`, and set `status`/`evidence` in `steps.toml`
+- Mark the step done in `plan.md`, and set `status`/`evidence` in `steps/<id>.toml`
   to the commit or PR that landed it. `validate` must pass.
 
 ## 6. Finish and merge by acceptance kind

@@ -1,0 +1,4 @@
+id = "mac-daemon.text-policy-ffi"
+title = "TextPolicyFFI — the Rust policy engine over UniFFI (module 16)"
+status = "done"
+evidence = "Module 16 **Done**, verified live; commit 6691a6d (PR #95)"

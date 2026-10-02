@@ -1,0 +1,12 @@
+# Thin step ledger for voice-gate. Source of truth for whether each build step exists.
+#
+#   python -m tools.plan.ledger validate docs/components/voice-gate
+#   python -m tools.plan.ledger render   docs/components/voice-gate
+#
+# `done` means the step's implementation exists on master. It does NOT mean the
+# route is covered: live and observational verification lives in
+# docs/engineering/coverage.md, never here.
+#
+# Do not put narrative here. Gotchas, wrong-constant war stories, and "measured
+# wrong in module N" notes live in plan.md. `evidence` is one line pointing at
+# where the step landed (commit, PR, or the plan's own wording), not an argument.

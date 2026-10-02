@@ -1,0 +1,18 @@
+# Thin step ledger for win-network. Source of truth for whether each build step exists.
+#
+#   python -m tools.plan.ledger validate docs/components/win-network
+#   python -m tools.plan.ledger render   docs/components/win-network
+#
+# `done` means the step's implementation exists on master. It does NOT mean the
+# route is covered: live and observational verification lives in
+# docs/engineering/coverage.md, never here.
+#
+# Do not put narrative here. Gotchas, wrong-constant war stories, and "measured
+# wrong in module N" notes live in plan.md. `evidence` is one line pointing at
+# where the step landed (commit, PR, or the plan's own wording), not an argument.
+#
+# Steps are the plan's `## Implementation order` items, in its own order.
+
+paths = [
+  "native-modules/win-network",
+]

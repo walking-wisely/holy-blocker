@@ -14,7 +14,7 @@ Rust text engine: normalize, lexicon, scorer, evaluator, policy. Consumed over U
 ## Files here
 
 - [`plan.md`](plan.md) — Current state, modules, build order
-- [`steps.toml`](steps.toml) — Step ledger
+- [`steps/`](steps/) — Step ledger, one file per step
 
 ## Read for
 

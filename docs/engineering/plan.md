@@ -596,7 +596,7 @@ themselves. Steps are ordered by marker position in `plan.md`. `validate` fails 
 stem differs from its `id`, when a legacy `steps.toml` sits beside the new layout, or when a
 step file has unknown keys. A transitional reader keeps legacy manifests visible to `todos`
 across other worktrees and to `loop check --base`, and `ledger migrate <dir>` converts a legacy
-manifest, keeping the comments above each step. Every existing manifest is migrated in the
+manifest, keeping its header comment in `package.toml`. Every existing manifest is migrated in the
 same PR, and `ci-plan.yml` path filters, `CLAUDE.md`, the two skills and the component docs
 name the new layout.
 

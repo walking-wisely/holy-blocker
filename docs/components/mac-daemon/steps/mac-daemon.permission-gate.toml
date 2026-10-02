@@ -1,0 +1,4 @@
+id = "mac-daemon.permission-gate"
+title = "PermissionGate — TCC state and the account model (module 7)"
+status = "done"
+evidence = "Module 7 built, 38 tests; Sources/MacDaemon/PermissionGate.swift on master (commit cada2c3); real grant/revocation still unobserved (coverage.md)"

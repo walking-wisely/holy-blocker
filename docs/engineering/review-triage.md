@@ -47,7 +47,7 @@ loop's own bias is to make the review go away; the cap is the guard against that
 | Tier | Route |
 |---|---|
 | **Blocking** | Fix within the cap, then re-review. The re-review is the same fresh-context review re-run against the fix. Nothing with an open Blocking finding merges. |
-| **Non-blocking** | Filed as a `kind = "bug"` step in the package's `steps.toml`, with `regressed_step` set when the finding is a regression against an already-`done` step. Never fixed inline unless it is a same-file, same-test-suite change to the current diff. |
+| **Non-blocking** | Filed as a `kind = "bug"` step in the package's `steps/` directory, with `regressed_step` set when the finding is a regression against an already-`done` step. Never fixed inline unless it is a same-file, same-test-suite change to the current diff. |
 | **Judgment call** | Never resolved by the loop. Always escalated — the escalation packet below, verbatim. |
 
 ## 4. Escalation packet format

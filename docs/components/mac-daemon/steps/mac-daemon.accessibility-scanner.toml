@@ -1,0 +1,4 @@
+id = "mac-daemon.accessibility-scanner"
+title = "AccessibilityScanner — first real Scanner (e2e session 4)"
+status = "done"
+evidence = "e2e session 4 **Done**, 25 tests; Sources/MacDaemon/AccessibilityScanner.swift on master (commit d9dd92b, PR #99)"

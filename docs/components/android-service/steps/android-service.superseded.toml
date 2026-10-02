@@ -1,0 +1,4 @@
+id = "android-service.superseded"
+title = "superseded by apps/mobile — do not build against this plan"
+status = "done"
+evidence = "replacement plan docs/components/mobile/plan.md; work shipped as apps/mobile on master"

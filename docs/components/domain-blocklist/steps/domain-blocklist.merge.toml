@@ -1,0 +1,4 @@
+id = "domain-blocklist.merge"
+title = "merge — normalize, scope, union, provenance, categories (module 2)"
+status = "done"
+evidence = "implementation order 2 **Done.**; src/merge.rs on master (commit 9533c25)"

@@ -1,0 +1,4 @@
+id = "mac-daemon.catrust"
+title = "CATrust — root CA in the System keychain (module 2)"
+status = "done"
+evidence = "Layer 1 implementation order 4 **Done.**, verified live; Sources/MacDaemon/CATrust.swift on master"

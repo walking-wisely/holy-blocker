@@ -1,0 +1,4 @@
+id = "net-shield.tun"
+title = "tun — PacketSink dispatch and Wintun TunAdapter"
+status = "done"
+evidence = "implementation order 4 **Done.**; src/tun.rs on master"

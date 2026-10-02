@@ -1,0 +1,4 @@
+id = "mac-daemon.live-e2e"
+title = "live e2e verification (e2e session 6)"
+status = "pending"
+evidence = "not on master; the live pass evidence lives on branch feat/mac-daemon-live-e2e-pass (coverage.md)"

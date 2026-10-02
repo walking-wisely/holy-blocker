@@ -13,7 +13,7 @@ The classifier head (embedding → score → verdict) in Rust behind UniFFI, sha
 ## Files here
 
 - [`plan.md`](plan.md) — Cut point, weights format, parity-fixture rules, modules, build order
-- [`steps.toml`](steps.toml) — Step ledger
+- [`steps/`](steps/) — Step ledger, one file per step
 
 ## Read for
 

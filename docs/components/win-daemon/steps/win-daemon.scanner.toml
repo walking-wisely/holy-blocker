@@ -1,0 +1,4 @@
+id = "win-daemon.scanner"
+title = "scanner — scan interface and NullScanner stub"
+status = "pending"
+evidence = ""

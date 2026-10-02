@@ -1,0 +1,4 @@
+id = "win-network.cmake-scaffold"
+title = "scaffold CMakeLists.txt and fake_win32 shim"
+status = "done"
+evidence = "implementation order 1 **Done.**; native-modules/win-network/CMakeLists.txt on master (commit ac3485d, PR #14)"

@@ -1,6 +1,6 @@
 # Components
 
-One folder per component. Open the component's `README.md` first: it names the code location, the status page, the decisions it rests on, and which file to read for which kind of task. The `plan.md` beside it is the build order and carries the step markers that `steps.toml` tracks; large plans keep each module's specification under `modules/`.
+One folder per component. Open the component's `README.md` first: it names the code location, the status page, the decisions it rests on, and which file to read for which kind of task. The `plan.md` beside it is the build order and carries the step markers that the files in `steps/` track; large plans keep each module's specification under `modules/`.
 
 Which step is next, for any component:
 

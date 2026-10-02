@@ -1,0 +1,26 @@
+# Thin step ledger for the engineering harness. Source of truth for whether each
+# build step exists.
+#
+#   python -m tools.plan.ledger validate docs/engineering
+#   python -m tools.plan.ledger render   docs/engineering
+#
+# Statuses: `pending` — not settled. `at-pr` — settled through every gate, branch
+# open at a PR, not yet on master. `done` — the step's implementation exists on
+# master; it does NOT mean the route is covered, verification lives in
+# docs/engineering/coverage.md, never here.
+#
+# Do not put narrative here. Gotchas and wrong-constant war stories live in
+# plan.md. `evidence` is one line pointing at where the step landed (commit, PR, or
+# the plan's own wording), not an argument.
+
+paths = [
+  "tools/plan",
+  ".claude/skills",
+  ".github",
+  "CLAUDE.md",
+  "AGENTS.md",
+  "deny.toml",
+  ".gitleaks.toml",
+  ".pre-commit-config.yaml",
+  ".husky",
+]

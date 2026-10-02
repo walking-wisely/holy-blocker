@@ -14,7 +14,7 @@ Image classification path: decode → tile → ONNX → max → verdict, called 
 ## Files here
 
 - [`plan.md`](plan.md) — Current state, modules, build order, the screen path
-- [`steps.toml`](steps.toml) — Step ledger
+- [`steps/`](steps/) — Step ledger, one file per step
 
 ## Read for
 

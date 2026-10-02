@@ -1,0 +1,4 @@
+id = "desktop.ipc-handlers"
+title = "ipc-handlers — extract handlers and add daemon:get-events with an empty ring buffer"
+status = "done"
+evidence = "apps/desktop/src/main/ipc-handlers.ts on master (commit 606b9b3, PR #40)"

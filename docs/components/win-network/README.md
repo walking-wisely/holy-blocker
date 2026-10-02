@@ -12,7 +12,7 @@ Privileged Windows Service that installs and manages the Wintun adapter used by 
 ## Files here
 
 - [`plan.md`](plan.md) — Responsibility boundary, architecture, modules, testing, build system, build order
-- [`steps.toml`](steps.toml) — Step ledger
+- [`steps/`](steps/) — Step ledger, one file per step
 
 ## Read for
 

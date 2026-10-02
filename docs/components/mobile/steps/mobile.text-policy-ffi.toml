@@ -1,0 +1,4 @@
+id = "mobile.text-policy-ffi"
+title = "text-policy-ffi UniFFI crate + NativeTextPolicy adapter"
+status = "done"
+evidence = "implementation order 2 **Done.**; packages/text-policy-ffi and policy/NativeTextPolicy.kt on master (commit 48792fa, PR #61)"

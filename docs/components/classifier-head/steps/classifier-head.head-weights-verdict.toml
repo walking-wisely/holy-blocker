@@ -1,0 +1,4 @@
+id = "classifier-head.head-weights-verdict"
+title = "head + weights + verdict with unit tests, no FFI"
+status = "pending"
+evidence = ""

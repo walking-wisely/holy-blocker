@@ -1,0 +1,4 @@
+id = "net-shield.radix"
+title = "radix — domain trie and IP CIDR filter"
+status = "done"
+evidence = "implementation order 1 **Done.**; src/radix.rs on master"

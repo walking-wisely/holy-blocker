@@ -1,0 +1,5 @@
+id = "backend.invite-model-store"
+title = "internal/invite model.go + store.go — SQLite schema and CRUD helpers"
+status = "pending"
+evidence = ""
+verify = "cd backend && go test ./..."

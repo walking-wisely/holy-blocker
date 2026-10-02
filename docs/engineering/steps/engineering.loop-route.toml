@@ -1,0 +1,6 @@
+id = "engineering.loop-route"
+title = "loop route resolves the governing manifest and pending steps from paths"
+status = "at-pr"
+evidence = "PR #105"
+acceptance = "code"
+verify = "python -m unittest discover -s tools/plan/tests -t ."

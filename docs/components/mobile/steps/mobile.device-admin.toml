@@ -1,0 +1,4 @@
+id = "mobile.device-admin"
+title = "Device Admin — uninstall friction and onDisableRequested warning"
+status = "done"
+evidence = "implementation order 6 **Done.**; admin/HolyBlockerAdminReceiver.kt on master (commit 43a2c84, PR #66)"

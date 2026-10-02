@@ -1,0 +1,4 @@
+id = "mac-daemon.privileged-command"
+title = "PrivilegedCommand — the process-execution edge (module 1)"
+status = "done"
+evidence = "Layer 1 implementation order 2 **Done.**; Sources/MacDaemon/PrivilegedCommand.swift on master"

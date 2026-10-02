@@ -14,7 +14,7 @@ C++20 Windows daemon: WinEvent hooks and message loop today; capture, OCR and IP
 ## Files here
 
 - [`plan.md`](plan.md) — Current state, modules, build order
-- [`steps.toml`](steps.toml) — Step ledger
+- [`steps/`](steps/) — Step ledger, one file per step
 
 ## Read for
 

@@ -1,6 +1,6 @@
 """Repo-wide guard: every component plan is covered by a valid step manifest.
 
-A component that grows a plan.md but no steps.toml is invisible to
+A component that grows a plan.md but no step manifest is invisible to
 ``ledger next`` and drifts back into hand-maintained prose. This test fails that
 case, and fails any manifest whose steps and plan markers disagree.
 """
@@ -27,26 +27,30 @@ class ManifestCoverageTest(unittest.TestCase):
         missing = [
             child.name
             for child in self._component_dirs()
-            if not (child / "steps.toml").exists()
+            if not ledger.has_manifest(child)
         ]
-        self.assertEqual(missing, [], f"components with no steps.toml: {missing}")
+        self.assertEqual(missing, [], f"components with no step manifest: {missing}")
 
     def test_every_manifest_validates_against_its_plan(self):
         problems: list[str] = []
         for child in self._component_dirs():
-            manifest = child / "steps.toml"
-            if not manifest.exists():
+            if not ledger.has_manifest(child):
                 continue
             plan = (child / "plan.md").read_text(encoding="utf-8")
             steps = ledger.load_manifest(child)
-            for problem in ledger.validate(steps, ledger.extract_markers(plan)):
+            found = ledger.layout_problems(child) + ledger.validate(
+                steps, ledger.extract_markers(plan)
+            )
+            for problem in found:
                 problems.append(f"{child.name}: {problem}")
         self.assertEqual(problems, [], "\n".join(problems))
 
     def test_engineering_manifest_validates(self):
         plan = (ENGINEERING / "plan.md").read_text(encoding="utf-8")
         steps = ledger.load_manifest(ENGINEERING)
-        problems = ledger.validate(steps, ledger.extract_markers(plan))
+        problems = ledger.layout_problems(ENGINEERING) + ledger.validate(
+            steps, ledger.extract_markers(plan)
+        )
         self.assertEqual(problems, [], "\n".join(problems))
 
 
@@ -56,7 +60,7 @@ if __name__ == "__main__":
 
 class ManifestPathsTest(unittest.TestCase):
     def _manifests(self) -> list[Path]:
-        return sorted(COMPONENTS.glob("*/steps.toml")) + [ENGINEERING / "steps.toml"]
+        return [package / ledger.PACKAGE_FILE for package in ledger.discover(ROOT)]
 
     def test_paths_are_relative_and_inside_the_repo(self):
         for manifest in self._manifests():

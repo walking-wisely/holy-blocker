@@ -1,0 +1,4 @@
+id = "mobile.empty-harvest"
+title = "The empty harvest — isAccessibilityTool fix"
+status = "done"
+evidence = "implementation order 7 **Done.**; accessibility_service_config.xml isAccessibilityTool on master (commit 7e6c0ca, PR #76)"

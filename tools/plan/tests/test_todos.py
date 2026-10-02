@@ -1,5 +1,6 @@
 import io
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from textwrap import dedent
@@ -32,59 +33,63 @@ _STEPS_TOML = _steps_toml([
 ])
 
 
+def _write_package(root: Path, rel: str, steps: list[dict]) -> Path:
+    package = root / rel
+    (package / "steps").mkdir(parents=True, exist_ok=True)
+    for step in steps:
+        body = "\n".join(f'{k} = "{v}"' for k, v in step.items()) + "\n"
+        (package / "steps" / f"{step['id']}.toml").write_text(body)
+    return package
+
+
 class DiscoverManifestsTest(unittest.TestCase):
     def test_finds_engineering_and_components(self):
-        tmp_path = Path("/tmp/todos-manifest-test")
-        eng = tmp_path / "docs/engineering"
-        comp = tmp_path / "docs/components/x"
-        eng.mkdir(parents=True, exist_ok=True)
-        comp.mkdir(parents=True, exist_ok=True)
-        (eng / "steps.toml").write_text("")
-        (comp / "steps.toml").write_text("")
+        tmp_path = Path(tempfile.mkdtemp())
+        _write_package(tmp_path, "docs/engineering", [])
+        _write_package(tmp_path, "docs/components/x", [])
         found = todos.discover_manifests(tmp_path)
-        labels = [label for _, label in found]
-        self.assertIn("engineering", labels)
-        self.assertIn("x", labels)
+        self.assertEqual(sorted(label for _, label in found), ["engineering", "x"])
 
-    def test_skips_missing_steps_toml(self):
-        tmp_path = Path("/tmp/todos-skip-test")
-        (tmp_path / "docs/components/y").mkdir(parents=True, exist_ok=True)
+    def test_skips_a_component_with_no_manifest(self):
+        tmp_path = Path(tempfile.mkdtemp())
+        (tmp_path / "docs/components/y").mkdir(parents=True)
+        self.assertEqual(todos.discover_manifests(tmp_path), [])
+
+    def test_finds_a_legacy_manifest_in_another_worktree(self):
+        tmp_path = Path(tempfile.mkdtemp())
+        legacy = tmp_path / "docs/components/old"
+        legacy.mkdir(parents=True)
+        (legacy / "steps.toml").write_text(_STEPS_TOML)
         found = todos.discover_manifests(tmp_path)
-        self.assertFalse(any(label == "y" for _, label in found))
+        self.assertEqual([label for _, label in found], ["old"])
+        self.assertEqual(len(todos.load_steps(found[0][0], "old")), 3)
 
 
 class LoadStepsTest(unittest.TestCase):
-    def test_parses_valid_toml(self):
-        tmp_path = Path("/tmp/todos-load-test")
-        p = tmp_path / "steps.toml"
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(_STEPS_TOML)
-        steps = todos.load_steps(p, "p")
-        self.assertEqual(len(steps), 3)
-        self.assertEqual(steps[0].id, "p.one")
-        self.assertEqual(steps[0].status, "done")
-        self.assertEqual(steps[1].status, "pending")
-        self.assertEqual(steps[0].kind, "feature")
+    def test_parses_step_files(self):
+        package = _write_package(Path(tempfile.mkdtemp()), "p", [
+            {"id": "p.one", "title": "first", "status": "done", "evidence": "pr #1"},
+            {"id": "p.two", "title": "second", "status": "pending"},
+        ])
+        steps = {s.id: s for s in todos.load_steps(package, "p")}
+        self.assertEqual(steps["p.one"].status, "done")
+        self.assertEqual(steps["p.two"].status, "pending")
+        self.assertEqual(steps["p.one"].kind, "feature")
 
-    def test_reads_kind_from_manifest(self):
-        tmp_path = Path("/tmp/todos-kind-test")
-        p = tmp_path / "steps.toml"
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(_steps_toml([
+    def test_reads_kind_from_step_file(self):
+        package = _write_package(Path(tempfile.mkdtemp()), "p", [
             {"id": "p.bug", "title": "a bug", "status": "pending", "kind": "bug"},
-        ]))
-        steps = todos.load_steps(p, "p")
-        self.assertEqual(steps[0].kind, "bug")
+        ])
+        self.assertEqual(todos.load_steps(package, "p")[0].kind, "bug")
 
-    def test_returns_empty_on_missing_file(self):
-        self.assertEqual(todos.load_steps(Path("/nonexistent/steps.toml"), "x"), [])
+    def test_returns_empty_on_missing_directory(self):
+        self.assertEqual(todos.load_steps(Path("/nonexistent/pkg"), "x"), [])
 
     def test_returns_empty_on_bad_toml(self):
-        tmp_path = Path("/tmp/todos-bad-test")
-        p = tmp_path / "steps.toml"
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text("not toml {{{")
-        self.assertEqual(todos.load_steps(p, "x"), [])
+        package = Path(tempfile.mkdtemp())
+        (package / "steps").mkdir()
+        (package / "steps" / "x.a.toml").write_text("not toml {{{")
+        self.assertEqual(todos.load_steps(package, "x"), [])
 
 
 class FormatBlockerFlagTest(unittest.TestCase):

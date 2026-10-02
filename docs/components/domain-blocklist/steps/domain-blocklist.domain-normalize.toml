@@ -1,0 +1,4 @@
+id = "domain-blocklist.domain-normalize"
+title = "domain-normalize — shared pure crate, built first (module 0)"
+status = "done"
+evidence = "implementation order 1 **Done.**; packages/domain-normalize on master (commit cde6409)"
