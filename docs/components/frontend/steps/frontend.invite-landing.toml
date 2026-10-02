@@ -2,3 +2,4 @@ id = "frontend.invite-landing"
 title = "InviteLanding.tsx — the page partners land on"
 status = "pending"
 evidence = ""
+depends_on = ["frontend.scaffold"]

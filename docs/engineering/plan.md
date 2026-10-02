@@ -624,14 +624,7 @@ Decision tiers: the order and status choices are architecture, owner-decided, re
 
 <!-- step: engineering.ledger-graph-order -->
 
-`ledger next` and `ledger render` order steps topologically over `depends_on`, taking the
-smallest `(group, id)` among steps that are ready together, ungrouped last. Add the optional
-`group` key to the step schema. Markers stop being required by `validate` and stop affecting
-order; a marker that names no step still fails. Before the marker order is dropped, record
-`ledger next` for every package, and where the computed answer differs, add the `depends_on`
-edge that restores it, so no plan's next step changes silently. `group` must match
-`[a-z0-9-]+` and sorts after nothing ungrouped; a `depends_on` edge to another component's step is
-a validation error.
+~~`ledger next` and `ledger render` order steps topologically over `depends_on`, taking the smallest `(group, id)` among steps that are ready together, ungrouped last. Add the optional `group` key to the step schema. Markers stop being required by `validate` and stop affecting order; a marker that names no step still fails. Before the marker order is dropped, record `ledger next` for every package, and where the computed answer differs, add the `depends_on` edge that restores it, so no plan's next step changes silently. `group` must match `[a-z0-9-]+` and sorts after nothing ungrouped; a `depends_on` edge to another component's step is a validation error.~~ **Done.**
 
 Acceptance: `code`. Verify: `python -m unittest discover -s tools/plan/tests -t . && python -m tools.plan.ledger validate docs/components/*/ docs/engineering`.
 

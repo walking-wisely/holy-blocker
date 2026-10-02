@@ -2,3 +2,4 @@ id = "classifier-head.ffi"
 title = "classifier-head-ffi and the Kotlin bindings"
 status = "pending"
 evidence = ""
+depends_on = ["classifier-head.head-weights-verdict"]

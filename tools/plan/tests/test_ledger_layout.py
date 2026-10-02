@@ -28,31 +28,26 @@ class LoadPerStepTest(unittest.TestCase):
             self.assertEqual(steps["p.a"].status, "done")
             self.assertEqual(steps["p.a"].kind, "bug")
 
-    def test_orders_by_marker_position_in_plan(self):
+    def test_markers_do_not_affect_order(self):
         with tempfile.TemporaryDirectory() as tmp:
             for step_id in ("p.a", "p.b", "p.c"):
                 write(tmp, f"steps/{step_id}.toml", step_file(step_id))
             write(tmp, "plan.md", "<!-- step: p.c -->\n<!-- step: p.a -->\n<!-- step: p.b -->")
             self.assertEqual(
-                [s.id for s in ledger.load_manifest(Path(tmp))], ["p.c", "p.a", "p.b"]
+                [s.id for s in ledger.load_manifest(Path(tmp))], ["p.a", "p.b", "p.c"]
             )
 
-    def test_steps_without_a_marker_sort_last_by_id(self):
+    def test_depends_on_orders_before_id(self):
         with tempfile.TemporaryDirectory() as tmp:
-            for step_id in ("p.z", "p.m", "p.a"):
-                write(tmp, f"steps/{step_id}.toml", step_file(step_id))
-            write(tmp, "plan.md", "<!-- step: p.z -->")
-            self.assertEqual(
-                [s.id for s in ledger.load_manifest(Path(tmp))], ["p.z", "p.a", "p.m"]
-            )
-
-    def test_next_follows_plan_order(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            write(tmp, "steps/p.a.toml", step_file("p.a"))
+            write(tmp, "steps/p.a.toml", step_file("p.a", extra='depends_on = ["p.b"]\n'))
             write(tmp, "steps/p.b.toml", step_file("p.b"))
-            write(tmp, "plan.md", "<!-- step: p.b -->\n<!-- step: p.a -->")
             step, _ = ledger.next_plan(ledger.load_manifest(Path(tmp)))
             self.assertEqual(step.id, "p.b")
+
+    def test_group_key_is_read(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            write(tmp, "steps/p.a.toml", step_file("p.a", extra='group = "g1"\n'))
+            self.assertEqual(ledger.load_manifest(Path(tmp))[0].group, "g1")
 
     def test_paths_come_from_package_toml(self):
         with tempfile.TemporaryDirectory() as tmp:

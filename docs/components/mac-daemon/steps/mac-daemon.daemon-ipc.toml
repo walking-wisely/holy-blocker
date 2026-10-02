@@ -2,3 +2,4 @@ id = "mac-daemon.daemon-ipc"
 title = "DaemonIPC — framing and verdict types (module 14)"
 status = "pending"
 evidence = "pure half on master (commit 0523a74, 34 tests); the Unix domain socket transport is unbuilt"
+depends_on = ["mac-daemon.event-hooks"]

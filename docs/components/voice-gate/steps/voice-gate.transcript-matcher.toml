@@ -2,3 +2,4 @@ id = "voice-gate.transcript-matcher"
 title = "transcript-matcher.ts — Jaccard similarity check"
 status = "pending"
 evidence = ""
+depends_on = ["voice-gate.verse-picker"]

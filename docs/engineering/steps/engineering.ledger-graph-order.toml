@@ -1,7 +1,7 @@
 id = "engineering.ledger-graph-order"
 title = "order steps topologically over depends_on with an optional group label"
-status = "pending"
-evidence = ""
+status = "at-pr"
+evidence = "PR #109"
 acceptance = "code"
 depends_on = ["engineering.per-step-ledger"]
 verify = "python -m unittest discover -s tools/plan/tests -t . && python -m tools.plan.ledger validate docs/components/*/ docs/engineering"

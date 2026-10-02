@@ -2,3 +2,4 @@ id = "image-sandbox.fcn-tile-max"
 title = "fully convolutional equivalent of tile-max"
 status = "pending"
 evidence = ""
+depends_on = ["image-sandbox.hash"]

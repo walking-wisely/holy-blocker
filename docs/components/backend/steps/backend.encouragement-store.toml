@@ -3,3 +3,4 @@ title = "internal/encouragement store.go — queue helpers (enqueue, list-pendin
 status = "pending"
 evidence = ""
 verify = "cd backend && go test ./..."
+depends_on = ["backend.invite-model-store"]
