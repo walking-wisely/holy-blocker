@@ -133,13 +133,13 @@ def matching_pr(worktree: Worktree, pull_request: PullRequest | None, base: str)
     A branch name can be reused, so a `MERGED` PR for the name is not enough:
     its head must still equal the local tip, and it must target the base we are
     counting against. Otherwise the name's old merge would mark new, unlanded
-    commits as landed.
+    commits as landed. An open PR is kept whatever it targets: it is live work.
     """
     if pull_request is None:
         return None
     if pull_request.head_oid and pull_request.head_oid != worktree.head:
         return None
-    if pull_request.base and pull_request.base != base:
+    if pull_request.base and pull_request.base != base and pull_request.state != "OPEN":
         return None
     return pull_request
 

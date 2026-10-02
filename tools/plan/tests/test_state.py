@@ -1,7 +1,9 @@
+import os
 import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from tools.plan import state
 
@@ -158,6 +160,10 @@ def _git(cwd, *args):
 
 class ContentLandedTest(unittest.TestCase):
     def setUp(self):
+        git_env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+        patcher = mock.patch.dict(os.environ, git_env, clear=True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
         self.repo = self._tmp.name
@@ -260,8 +266,8 @@ class MatchingPrTest(unittest.TestCase):
     def _wt(self, head="abc"):
         return state.Worktree(path="/w", head=head, branch="feat/x")
 
-    def _pr(self, head_oid="abc", base="master"):
-        return state.PullRequest(number=1, state="MERGED", checks="passing", head_oid=head_oid, base=base)
+    def _pr(self, head_oid="abc", base="master", state_="MERGED"):
+        return state.PullRequest(number=1, state=state_, checks="passing", head_oid=head_oid, base=base)
 
     def test_matches_on_head_and_base(self):
         self.assertIsNotNone(state.matching_pr(self._wt(), self._pr(), "master"))
@@ -272,6 +278,10 @@ class MatchingPrTest(unittest.TestCase):
 
     def test_rejects_pr_targeting_another_base(self):
         self.assertIsNone(state.matching_pr(self._wt(), self._pr(base="release"), "master"))
+
+    def test_open_pr_targeting_another_base_is_kept(self):
+        got = state.matching_pr(self._wt(), self._pr(state_="OPEN", base="release"), "master")
+        self.assertEqual(got.state, "OPEN")
 
     def test_none_stays_none(self):
         self.assertIsNone(state.matching_pr(self._wt(), None, "master"))
