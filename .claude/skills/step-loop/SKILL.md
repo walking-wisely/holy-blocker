@@ -53,6 +53,26 @@ Base is `master` unless the step genuinely builds on an unmerged branch; if that
 is ambiguous, ask. Run every command from the worktree. Announce the branch —
 it is the loop's handle for every gate after this.
 
+## 2a. Context-budget gate — before any implementation
+
+```
+python -m tools.plan.context
+```
+
+Exit 0 means under 100,000 tokens: continue. Exit 1 means over: **stop, do not implement**,
+and write a handoff brief instead, then tell the owner to continue in a fresh session:
+
+- step id
+- branch
+- worktree path
+- next action (the first gate not yet done, in one line)
+
+Print the brief to the terminal or write it to the session scratchpad. Never commit it, and
+never include transcript content.
+
+Skip the gate only when the step carries `difficulty = "hard"` in `steps.toml` (`ledger next`
+prints it). Exit 2 means no transcript could be read; say so and continue.
+
 ## 3. Implement, test-first
 
 Write focused unit tests for new logic before the implementation, per the

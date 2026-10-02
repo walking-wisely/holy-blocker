@@ -76,6 +76,40 @@ class KindTest(unittest.TestCase):
         self.assertTrue(any("invalid kind" in p for p in problems))
 
 
+class DifficultyTest(unittest.TestCase):
+    def test_default_difficulty_is_normal(self):
+        self.assertEqual(ledger.Step("p.a", "a", "pending", "").difficulty, "normal")
+
+    def test_hard_is_valid(self):
+        steps = [ledger.Step("p.a", "a", "pending", "", difficulty="hard")]
+        self.assertEqual(ledger.validate(steps, ["p.a"]), [])
+
+    def test_invalid_difficulty(self):
+        steps = [ledger.Step("p.a", "a", "pending", "", difficulty="brutal")]
+        problems = ledger.validate(steps, ["p.a"])
+        self.assertTrue(any("invalid difficulty" in p for p in problems))
+
+    def test_load_manifest_reads_difficulty(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, "steps.toml").write_text(
+                '[[step]]\nid = "p.a"\nstatus = "pending"\ndifficulty = "hard"\n',
+                encoding="utf-8",
+            )
+            self.assertEqual(ledger.load_manifest(Path(tmp))[0].difficulty, "hard")
+
+    def test_next_reports_hard_difficulty(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, "steps.toml").write_text(
+                '[[step]]\nid = "p.a"\nstatus = "pending"\ndifficulty = "hard"\n',
+                encoding="utf-8",
+            )
+            Path(tmp, "plan.md").write_text("<!-- step: p.a -->", encoding="utf-8")
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                ledger.main(["next", tmp])
+            self.assertIn("difficulty: hard", out.getvalue())
+
+
 class RegressedStepValidationTest(unittest.TestCase):
     def test_regressed_step_in_same_manifest_is_valid(self):
         steps = [
