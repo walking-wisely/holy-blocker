@@ -45,6 +45,7 @@ DEFAULT_KIND = "feature"
 VALID_DIFFICULTY = ("normal", "hard")
 DEFAULT_DIFFICULTY = "normal"
 MARKER_RE = re.compile(r"<!--\s*step:\s*([A-Za-z0-9._-]+)\s*-->")
+SAFE_ID_RE = re.compile(r"[A-Za-z0-9._-]+")
 STEPS_DIR = "steps"
 PACKAGE_FILE = "package.toml"
 LEGACY_FILE = "steps.toml"
@@ -173,6 +174,9 @@ def migrate(package_dir: Path) -> list[Path]:
     data = tomllib.loads(text)
     steps_dir = package_dir / STEPS_DIR
     raws = data.get("step", [])
+    unsafe = [raw["id"] for raw in raws if not SAFE_ID_RE.fullmatch(raw["id"]) or raw["id"] in (".", "..")]
+    if unsafe:
+        raise ValueError(f"step ids that are not safe file names: {', '.join(unsafe)}")
     targets = [steps_dir / f"{raw['id']}.toml" for raw in raws]
     clashes = [path for path in targets if path.exists()]
     if clashes:
@@ -387,7 +391,13 @@ def main(argv: list[str] | None = None) -> int:
             if not (package / LEGACY_FILE).exists():
                 print(f"nothing to migrate: {package}", file=sys.stderr)
                 continue
-            for path in migrate(package):
+            try:
+                written = migrate(package)
+            except (ValueError, FileExistsError) as err:
+                print(f"{package}: cannot migrate: {err}", file=sys.stderr)
+                failures += 1
+                continue
+            for path in written:
                 print(path)
             continue
         steps = load_manifest(package)

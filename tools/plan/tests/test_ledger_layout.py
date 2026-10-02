@@ -197,6 +197,24 @@ class MigrateTest(unittest.TestCase):
             ledger.migrate(Path(tmp))
             self.assertEqual(ledger.load_paths(Path(tmp)), ())
 
+    def test_rejects_an_id_that_is_not_a_safe_file_name(self):
+        for bad in ("../escaped", "/abs/x", "a b", "a/b", ".", ".."):
+            with tempfile.TemporaryDirectory() as tmp:
+                write(tmp, "steps.toml", f'[[step]]\nid = "{bad}"\nstatus = "pending"\n')
+                with self.assertRaises(ValueError, msg=bad):
+                    ledger.migrate(Path(tmp))
+                self.assertTrue(Path(tmp, "steps.toml").exists(), bad)
+                self.assertFalse(Path(tmp, "steps").exists(), bad)
+
+    def test_migrate_command_reports_an_unsafe_id_without_a_traceback(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            write(tmp, "steps.toml", '[[step]]\nid = "../x"\nstatus = "pending"\n')
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                code = ledger.main(["migrate", tmp])
+            self.assertEqual(code, 1)
+            self.assertIn("cannot migrate", stderr.getvalue())
+
     def test_migrate_command_converts_the_given_directories(self):
         with tempfile.TemporaryDirectory() as tmp:
             write(tmp, "steps.toml", self.LEGACY)

@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import argparse
 import subprocess
-import tomllib
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -55,7 +54,7 @@ def load_steps(package_dir: Path, package: str) -> list[ledger.Step]:
     """A package's steps, or none when its manifest is missing or unparsable."""
     try:
         return ledger.load_manifest(package_dir)
-    except (OSError, tomllib.TOMLDecodeError, KeyError):
+    except (OSError, ValueError, KeyError, TypeError):
         return []
 
 
