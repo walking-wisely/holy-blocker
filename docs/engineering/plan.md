@@ -556,3 +556,11 @@ Narrowing: without `CLAUDE_CODE_SESSION_ID` the fallback measures the newest tra
 is not under `~/.claude/projects/` reads as exit 2, and the gate does not stop.
 
 Acceptance: `code`. Verify: `python -m unittest discover -s tools/plan/tests -t .`.
+
+### Worktree reaper — landed content and stacked PRs
+
+<!-- step: engineering.reaper-landed-detection -->
+
+The reaper judges "merged" from ancestry and one PR lookup, so branches whose work landed under a new SHA (squash, rebase) and PRs stacked on a parent branch are never reapable, and a worktree whose directory is gone crashes `report`. The fix answers each question from git facts: a branch is `landed` when `git merge-tree --write-tree` of it into the base yields the base's tree, a merged PR counts when every stacked hop ends at the base, and unreapable rows report the merge's conflicts or residual files. Branches are still never deleted.
+
+Acceptance: `code`. Verify: `python -m unittest discover -s tools/plan/tests -t .`.
