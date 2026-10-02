@@ -36,6 +36,10 @@ DEFAULT_ACCEPTANCE = "observation"
 # manifest field — a lost bug declaration is indistinguishable from none (recorded narrowing).
 VALID_KIND = ("feature", "bug")
 DEFAULT_KIND = "feature"
+# `hard` exempts a step from the context-budget gate in step-loop: it may run past the
+# token threshold instead of stopping for a handoff.
+VALID_DIFFICULTY = ("normal", "hard")
+DEFAULT_DIFFICULTY = "normal"
 MARKER_RE = re.compile(r"<!--\s*step:\s*([A-Za-z0-9._-]+)\s*-->")
 
 
@@ -50,6 +54,7 @@ class Step:
     verify: str = ""
     kind: str = DEFAULT_KIND
     regressed_step: str = ""
+    difficulty: str = DEFAULT_DIFFICULTY
 
 
 def load_manifest(package_dir: Path) -> list[Step]:
@@ -66,6 +71,7 @@ def load_manifest(package_dir: Path) -> list[Step]:
             verify=raw.get("verify", ""),
             kind=raw.get("kind", DEFAULT_KIND),
             regressed_step=raw.get("regressed_step", ""),
+            difficulty=raw.get("difficulty", DEFAULT_DIFFICULTY),
         )
         for raw in data.get("step", [])
     ]
@@ -98,6 +104,8 @@ def validate(steps: list[Step], markers: list[str]) -> list[str]:
             problems.append(f"{step.id}: invalid acceptance {step.acceptance!r}")
         if step.kind not in VALID_KIND:
             problems.append(f"{step.id}: invalid kind {step.kind!r}")
+        if step.difficulty not in VALID_DIFFICULTY:
+            problems.append(f"{step.id}: invalid difficulty {step.difficulty!r}")
         if step.regressed_step and step.regressed_step not in ids:
             problems.append(f"{step.id}: unknown regressed_step {step.regressed_step!r}")
     problems.extend(_dependency_problems(steps))
@@ -264,6 +272,8 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 print(f"`{step.id}` — {step.title}")
                 print(f"acceptance: {step.acceptance}")
+                if step.difficulty != DEFAULT_DIFFICULTY:
+                    print(f"difficulty: {step.difficulty}")
                 if step.verify:
                     print(f"verify: {step.verify}")
                 print()
