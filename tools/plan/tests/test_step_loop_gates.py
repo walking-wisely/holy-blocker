@@ -43,6 +43,16 @@ class ReviewGatesTest(unittest.TestCase):
             self.assertTrue((ROOT / path).is_file(), path)
 
 
+class ContextBudgetGateTest(unittest.TestCase):
+    def test_gate_runs_the_context_tool_before_implementation(self):
+        self.assertIn("python -m tools.plan.context", SKILL)
+        self.assertLess(SKILL.index("python -m tools.plan.context"), SKILL.index("## 3. Implement"))
+
+    def test_gate_writes_a_handoff_brief_and_honours_hard_steps(self):
+        for needle in ("handoff brief", "100,000", 'difficulty = "hard"'):
+            self.assertIn(needle, SKILL)
+
+
 class FeatureGatesTest(unittest.TestCase):
     def test_skill_names_the_e2e_gate_demo_and_preflight_verdict(self):
         for needle in ("e2e", "demo", "environment not ready"):

@@ -534,6 +534,29 @@ Resolution: the engineering manifest claims `.github`, `CLAUDE.md`, `AGENTS.md`,
 
 Acceptance: `code`. Verify: `python -m unittest discover -s tools/plan/tests -t .`.
 
+### Context-budget gate **Done.**
+
+<!-- step: engineering.context-budget-gate -->
+
+Sessions that run a step past roughly 100k tokens degrade, and the remembered rule to hand off
+is what drops first. `python -m tools.plan.context` adapts `~/.claude/hooks/context-nudge.sh`: it
+sums `input_tokens + cache_creation_input_tokens + cache_read_input_tokens` of the last
+main-thread assistant line in a transcript (sidechain and synthetic lines are skipped, and a zero total is no data) and compares it to an absolute 100,000-token threshold, not a
+percentage of the window. With no path it finds `$CLAUDE_CODE_SESSION_ID.jsonl` in any directory under
+`~/.claude/projects/`; a set id with no matching file is exit 2, and only an unset id falls back
+to the newest `.jsonl` for the current directory or the main checkout. Exit 0 is under, 1
+is over, 2 is no readable transcript.
+
+`step-loop` gate 2a runs it after the worktree exists and before implementation. Over the
+threshold the loop writes a handoff brief (step id, branch, worktree, next action) and stops. A
+step with `difficulty = "hard"` skips the gate; the ledger accepts `normal` (default) or `hard`,
+and `ledger next` prints a non-default value.
+
+Narrowing: without `CLAUDE_CODE_SESSION_ID` the fallback measures the newest transcript, which may be another session's, and a subagent inherits its parent's id so it measures the parent, which is why the gate runs from the main loop session only. The count is the last assistant message's input side, so a session whose transcript
+is not under `~/.claude/projects/` reads as exit 2, and the gate does not stop.
+
+Acceptance: `code`. Verify: `python -m unittest discover -s tools/plan/tests -t .`.
+
 ### Worktree reaper — landed content and stacked PRs
 
 <!-- step: engineering.reaper-landed-detection -->
