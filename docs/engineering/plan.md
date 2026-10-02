@@ -564,3 +564,11 @@ Acceptance: `code`. Verify: `python -m unittest discover -s tools/plan/tests -t 
 The reaper judges "merged" from ancestry and one PR lookup, so branches whose work landed under a new SHA (squash, rebase) and PRs stacked on a parent branch are never reapable, and a worktree whose directory is gone crashes `report`. The fix answers each question from git facts: a branch is `landed` when `git merge-tree --write-tree` of it into the base yields the base's tree, a merged PR counts when every stacked hop ends at the base, and unreapable rows report the merge's conflicts or residual files. Branches are still never deleted.
 
 Acceptance: `code`. Verify: `python -m unittest discover -s tools/plan/tests -t .`.
+
+### Loop route and empty-diff guard
+
+<!-- step: engineering.loop-route -->
+
+The router in `CLAUDE.md` asks the agent to classify a request by feel, but `loop check` enforces by manifest `paths`, so a change under a governed path can be filed as loop-lite and fail CI. `loop route <paths>` (or `--base`/`--head` for a diff) prints the governing manifests, their pending step ids and a verdict (`step-required`, `claim-required`, `no-governing-manifest`, `nothing-to-route`), and the router runs it before choosing a tier. `loop check --base` also fails when the diff is empty, because it would otherwise pass vacuously before the first commit.
+
+Acceptance: `code`. Verify: `python -m unittest discover -s tools/plan/tests -t .`.

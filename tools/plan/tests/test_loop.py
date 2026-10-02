@@ -132,6 +132,55 @@ class CheckTest(unittest.TestCase):
         self.assertEqual(check(body, ["packages/net-shield/src/lib.rs"]), [])
 
 
+class RouteTest(unittest.TestCase):
+    GOVERNED = [
+        loop.Governed(
+            package="docs/components/net-shield",
+            paths=("packages/net-shield",),
+            step_ids=("net-shield.dns", "net-shield.sni"),
+            pending_step_ids=("net-shield.sni",),
+        ),
+        loop.Governed(
+            package="docs/components/desktop",
+            paths=("apps/desktop",),
+            step_ids=("desktop.ipc",),
+        ),
+    ]
+
+    def test_governed_path_lists_manifest_files_and_pending_steps(self):
+        got = loop.route(["packages/net-shield/src/a.rs", "README.md"], self.GOVERNED)
+        self.assertEqual([m.package for m, _ in got.governing], ["docs/components/net-shield"])
+        self.assertEqual(got.governing[0][1], ("packages/net-shield/src/a.rs",))
+        self.assertEqual(got.unclaimed, ())
+
+    def test_unclaimed_code_root_is_reported(self):
+        got = loop.route(["packages/new-crate/lib.rs"], self.GOVERNED)
+        self.assertEqual(got.governing, ())
+        self.assertEqual(got.unclaimed, ("packages/new-crate/lib.rs",))
+
+    def test_render_names_pending_steps_and_requires_a_step(self):
+        text = loop.render_route(loop.route(["packages/net-shield/src/a.rs"], self.GOVERNED))
+        self.assertIn("governed docs/components/net-shield", text)
+        self.assertIn("pending steps: net-shield.sni", text)
+        self.assertIn("verdict: step-required", text)
+
+    def test_render_with_no_pending_steps_says_to_add_one(self):
+        text = loop.render_route(loop.route(["apps/desktop/main.ts"], self.GOVERNED))
+        self.assertIn("pending steps: none", text)
+
+    def test_render_for_ungoverned_paths_is_loop_lite(self):
+        text = loop.render_route(loop.route(["docs/README.md"], self.GOVERNED))
+        self.assertIn("verdict: no-governing-manifest", text)
+
+    def test_render_for_unclaimed_root_requires_a_claim(self):
+        text = loop.render_route(loop.route(["packages/new-crate/lib.rs"], self.GOVERNED))
+        self.assertIn("unclaimed packages/new-crate/lib.rs", text)
+        self.assertIn("verdict: claim-required", text)
+
+    def test_no_paths_is_nothing_to_route(self):
+        self.assertIn("verdict: nothing-to-route", loop.render_route(loop.route([], self.GOVERNED)))
+
+
 class UnclaimedRootTest(unittest.TestCase):
     def test_new_crate_no_manifest_claims_fails_even_with_a_complete_body(self):
         problems = check(COMPLETE_BODY, ["packages/new-crate/src/lib.rs"])
@@ -231,6 +280,32 @@ class GitDiffTest(unittest.TestCase):
                  f"--base={self.base}", "--head", "HEAD"]
             )
         return code, err.getvalue()
+
+    def test_empty_diff_fails_instead_of_passing_vacuously(self):
+        code, err = self.check()
+        self.assertEqual(code, 1)
+        self.assertIn("no changed files", err)
+
+    def route(self, *paths):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = loop.main(["route", "--root", str(self.root), *paths])
+        return code, out.getvalue()
+
+    def test_route_reads_the_real_manifests(self):
+        code, out = self.route("packages/a/x.rs")
+        self.assertEqual(code, 0)
+        self.assertIn("pending steps: a.one", out)
+        self.assertIn("verdict: step-required", out)
+
+    def test_route_from_a_diff(self):
+        self.write("packages/a/y.rs", "fn y() {}\n")
+        self.commit()
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = loop.main(["route", "--root", str(self.root), f"--base={self.base}", "--head", "HEAD"])
+        self.assertEqual(code, 0)
+        self.assertIn("packages/a/y.rs", out.getvalue())
 
     def test_rename_out_of_a_governed_path_is_still_governed(self):
         self.git("mv", "policy.toml", "notes.md")
