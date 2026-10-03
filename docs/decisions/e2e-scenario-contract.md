@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| **Status** | Accepted — design only; nothing here is built |
+| **Status** | Accepted — design only; nothing here is built. Amended 2026-10-03: §3 and §4 superseded, see [Amendment](#amendment-2026-10-03) |
 | **Date** | 2026-10-02 |
 | **Owner** | Ivan Dutov |
 | **Supersedes** | — |
@@ -62,6 +62,8 @@ scenario passes only if it asserts both directions, as the Android gotchas alrea
 
 ### 3. The pass record is shared through git notes
 
+> **Superseded by the [amendment](#amendment-2026-10-03).** Kept for the reasoning; do not build it.
+
 A pass is recorded as a git note on the **tree hash of the scenario's `covers` paths**, in
 `refs/notes/hb-e2e/<scenario-id>`. The tree hash is stable across unrelated commits, rebases and squash merges,
 which commit SHAs are not. The note carries: result, UTC date, host class (for example `android-36 arm64 AVD`),
@@ -83,6 +85,8 @@ head and requires a matching note. This catches a claim for code that has since 
 behind it. It does not catch someone who writes both the note and the line.
 
 ### 4. The gate reports what it did not cover
+
+> **Amended:** the exit `2` rule below is replaced by the amendment's merge-versus-promotion rule.
 
 `tools/plan/e2e run` selects scenarios whose `covers` intersect the diff and prints, every time, `N changed paths
 covered by no scenario`. Zero scenarios selected is reported as *unverified*, never as success.
@@ -156,3 +160,85 @@ These follow from [image-corpus-custody.md](image-corpus-custody.md),
 - macOS and Windows scenarios. The contract is written to fit them; none is specified here.
 - Unattended runs. Nothing runs scenarios on a schedule.
 - Whether CI runners with a GUI session or an emulator are now usable. Not checked.
+
+## Amendment 2026-10-03
+
+A red-team of this contract and the case-table idea ran three lenses (maintainer attention, engineering speed,
+engineering quality) over four rounds. The agents were one model with different instructions and argued from a
+brief, not from this ADR, so the result is a recommendation the owner has adopted, not independent review.
+
+### A1. The claim is the unit
+
+A claim is a `coverage.md` row. A check is anything that can observe it: a unit test, a hermetic e2e, a host e2e
+or a human checklist. Evidence is a check's result with its provenance. Status is derived from evidence and
+freshness and is never stored. The claim id is the `coverage.md` row id, so checks cite rows and growth is
+additive. A scenario manifest is one kind of check, not the model.
+
+### A2. Every check declares the lowest layer that can observe it
+
+| Layer | Runs on | Evidence writer |
+|---|---|---|
+| `ci` | A hermetic runner: in-process CA, local test server, no TCC, no OS trust store, no browser | CI only |
+| `local` | The dev machine, automated | Nothing recorded; a result is a diagnostic |
+| `human` | The owner, from a checklist, once per feature | The owner's promotion PR |
+
+A `ci` check never promotes a host-level row (TCC, system extensions, VPN consent, Keychain trust): a hermetic run
+proves the code, not the host. Until about ten cases exist this is a review-checklist line, not a lint.
+
+### A3. Git notes are removed
+
+§3 is withdrawn. A note is local, forgeable by anything with a shell, and CI can only check that one exists. CI
+reruns every `ci` check itself and is the only writer of evidence for that layer. The PR-body `<scenario-id> @
+<tree-hash>` line is dropped with it. Host-layer rows carry no recorded pass; they stay `Unverified` until the
+owner promotes them.
+
+### A4. Merge and promotion are separate
+
+Exit `2` still never counts as a pass. A step may merge on exit `2` only if every row it touches stays
+`Unverified`, so Android, macOS and Windows work does not strand. `loop check` hard-fails any change that sets a
+row to `Covered`, or removes it from `Unverified`, on exit `2` or on a non-CI result. Promotion is a separate
+owner-owned PR, citing CI output for `ci` rows and the owner's checklist for `human` rows. The guard is "never
+promotes", not "never merges". This replaces the unbounded merge on exit `2` in §4.
+
+### A5. A case must fail when the code is broken
+
+A passing case proves nothing if it would pass against broken code.
+
+- Every case asserts verdict fields (rule id, reason code), not only the outcome.
+- Every expected-fail test for a known gap asserts the specific wrong outcome (for plain HTTP: the request passed
+  through unscanned with the body intact) and pairs with a positive control that succeeds through the same
+  harness, so a connect or CA error cannot pass as a gap.
+- The test client is independent of the code under test (rustls or curl, not the proxy's own helpers).
+- Each scenario carries 3 to 5 mutants as committed patch files, plus a script that applies each and asserts the
+  check goes red. A path-filtered CI job runs it only when a PR touches the crate or moves a `coverage.md` row. A
+  "N mutants killed" line in a PR body that no job reproduces is not evidence.
+- No mutation work on shared crates (`text-policy`) until the CI cost is measured.
+
+### A6. The owner approves a claim, not the rows
+
+Each scenario has a short `claim.md`: what it proves, what it does not prove, and a three-minute owner checklist
+whose items are falsifiable by looking. `does_not_prove` names unproven consumers explicitly (a `mitm-proxy` pass
+says nothing about the Android and macOS consumers of `text-policy`) and each entry names an existing
+`Unverified` row id. The owner approves that paragraph. Fixture rows are checked mechanically, because the owner
+cannot audit them given [image-corpus-custody.md](image-corpus-custody.md). The PR template shows the count of
+`Unverified` rows.
+
+### A7. When a feature needs a case
+
+A feature that adds or moves a `coverage.md` row, or touches preload/IPC, TLS/CA, TUN, named pipes, capture/OCR
+or OS permissions, needs at least one case, and the case is what justifies moving the row. The requirement
+attaches to the feature, not the step. Not required: docs, typo fixes, refactors whose `covers` already match a
+scenario, and pure logic a unit test fully observes.
+
+### A8. Deferred until a second consumer exists
+
+The `scenario.toml` schema in §1, a runner, the `layer` enum as a manifest field, the claim lint, per-case `demo`
+markers, the instrumented-coverage diagnostic of `covers`, and signing or attestation of evidence. The first
+consumer is a hermetic `mitm-proxy` scenario; mobile is the second. `platform` in §1 should become a declared
+capability list when a host that is not Android, macOS or Windows appears.
+
+### Amendment: what this does not cover
+
+- Host-layer rows (TCC, consent dialogs, Keychain trust) get no cheaper. They are owner-attested or `Unverified`.
+- ML evaluation rows stay capped at `Unverified` or owner-attested; the data is legally unavailable.
+- Forgery of owner promotions. The owner's own review and merge remain the only control.
