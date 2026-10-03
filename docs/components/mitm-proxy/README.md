@@ -15,6 +15,7 @@ Rust HTTPS interception proxy with text and image scan hooks and runtime Protect
 
 - [`plan.md`](plan.md) — Current state, modules, build order
 - [`steps/`](steps/) — Step ledger, one file per step
+- [`claim.md`](claim.md) — Claims, the checks that observe them, what a pass does not prove, known mutation survivors
 
 ## Read for
 

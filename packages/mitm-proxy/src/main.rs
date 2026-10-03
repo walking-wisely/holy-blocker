@@ -58,21 +58,12 @@ async fn main() -> Result<()> {
     // unconditionally, same as before.
     let mode_cell = scan::ProtectionMode::Full.to_atomic();
     let scan = {
-        let url_engine = Arc::clone(&engine);
-        let body_engine = Arc::clone(&engine);
         let image_sandbox = Arc::clone(&sandbox);
-        let url_mode = Arc::clone(&mode_cell);
-        let body_mode = Arc::clone(&mode_cell);
-        Arc::new(tunnel::ScanHooks {
-            url_scanner: Box::new(move |url| {
-                scan::scan_url(&url_engine, url, scan::ProtectionMode::from_atomic(&url_mode))
-            }),
-            body_scanner: Box::new(move |html| {
-                scan::scan_body(&body_engine, html, scan::ProtectionMode::from_atomic(&body_mode))
-            }),
-            image_scanner: Box::new(move |bytes| scan::scan_image(&image_sandbox, bytes)),
-            ..tunnel::ScanHooks::default()
-        })
+        Arc::new(scan::build_hooks(
+            Arc::clone(&engine),
+            Box::new(move |bytes| scan::scan_image(&image_sandbox, bytes)),
+            Arc::clone(&mode_cell),
+        ))
     };
 
     let state = Arc::new(ProxyState { tls, scan, mode: mode_cell });

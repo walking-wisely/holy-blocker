@@ -1,0 +1,73 @@
+name: CI Mutants
+
+on:
+  workflow_call:
+
+jobs:
+  changes:
+    name: Changed paths
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      mitm-proxy: ${{ steps.filter.outputs.mitm-proxy }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Detect changes
+        id: filter
+        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        with:
+          filters: |
+            mitm-proxy:
+              - ".github/workflows/ci-mutants.yml"
+              - "packages/mitm-proxy/**"
+              - "packages/text-policy/**"
+              - "packages/image-sandbox/**"
+              - "docs/engineering/coverage.md"
+              - "docs/components/mitm-proxy/claim.md"
+
+  mitm-proxy:
+    name: mutants / mitm-proxy
+    needs: changes
+    if: needs.changes.outputs.mitm-proxy == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # stable
+        with:
+          toolchain: 1.90.0
+
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        with:
+          workspaces: packages/mitm-proxy
+
+      - name: Install cargo-mutants
+        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+        with:
+          tool: cargo-mutants@27.1.0
+
+      - name: Every excluded mutant is listed in claim.md
+        run: python3 tools/plan/mutants_excludes.py packages/mitm-proxy/.cargo/mutants.toml docs/components/mitm-proxy/claim.md
+
+      - name: Mutate the scan, gate and certificate paths
+        working-directory: packages/mitm-proxy
+        run: cargo mutants -C --locked -j2 --no-shuffle
+
+      - name: Show survivors
+        if: failure()
+        working-directory: packages/mitm-proxy
+        run: cat mutants.out/missed.txt mutants.out/timeout.txt 2>/dev/null || true

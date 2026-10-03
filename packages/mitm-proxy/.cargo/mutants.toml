@@ -1,0 +1,8 @@
+additional_cargo_test_args = ["--test", "hermetic_claims"]
+examine_globs = ["src/scan.rs", "src/tunnel.rs", "src/proxy.rs", "src/connect.rs", "src/tls.rs"]
+exclude_re = [
+    "replace \\* with . in scan_image",
+    "in TlsState::build_client_config",
+    "replace bad_gateway ",
+    "replace text -> ResBody",
+]

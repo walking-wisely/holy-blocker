@@ -80,6 +80,22 @@ distinction is tracked here rather than in the status table.
 | Swipe-kill from Recents on One UI / HyperOS | — | **Unverified** | — | Deferred, blocked on real hardware. Cannot be reproduced on an emulator, so no mitigation can be verified |
 | An empty, truncated, or deleted `blocklist.txt` | — | **Uncovered** | `feat/mobile-vpn-service` | An open guard with no signal |
 
+## Proxy (`mitm-proxy`)
+
+Claims the proxy makes, split from the macOS rows above. `Id` is what a check cites. `Layer` is the lowest
+layer that can observe the claim ([e2e-scenario-contract.md](../decisions/e2e-scenario-contract.md) A2); a
+`ci` check never promotes a host-level row.
+
+| Id | Route | Layer | Status | Where | Evidence / Notes |
+|---|---|---|---|---|---|
+| `mitm-proxy.https-scan-block` | A CONNECT-tunnelled HTTPS request or HTML response matching `text-policy` is refused with 403 and, for a URL match, never reaches the origin; a clean one is relayed byte for byte; an image verdict of Block is refused | `ci` | **Unverified** | `infra/mitm-proxy-claims` | `tests/hermetic_claims.rs` against an in-process CA and loopback origins. Not promoted: `Covered` needs the owner ([claim.md](../components/mitm-proxy/claim.md)) |
+| `mitm-proxy.protection-mode-text` | URL and body verdicts follow `ProtectionMode` changes at runtime | `ci` | **Unverified** | `infra/mitm-proxy-claims` | Same file. The desktop `config_update` IPC that would drive the switch is not built |
+| `mitm-proxy.scan-body-limit` | Bodies over `body_limit` are relayed unscanned; a body exactly at the limit is scanned | `ci` | **Unverified** | `infra/mitm-proxy-claims` | The fail-open above the limit is by design and recorded here, not hidden |
+| `mitm-proxy.image-protection-mode` | The image verdict obeys `ProtectionMode` | `ci` | **Uncovered** | `master` | `main.rs` passes the image scanner through ungated, so `Off` and `WarnOnly` still block images. `known_gap_image_scan_ignores_protection_mode` asserts today's behaviour |
+| `mitm-proxy.plain-http-scan` | Plain **HTTP** request content | `ci` | **Uncovered** | `master` | See the macOS row of the same name. `known_gap_plain_http_is_forwarded_unscanned` |
+| `mitm-proxy.leaf-aki` | Leaf certs carry an Authority Key Identifier | `ci` | **Uncovered** | `master` | See the macOS row "OpenSSL-based clients". The `ci` check observes the missing extension, not an OpenSSL rejection, which is a `local` check |
+| `mitm-proxy.firefox-https` | A real browser renders an HTTPS page through the proxy with the CA installed | `human` | **Partial** | `master` | See the macOS row "HTTPS page content via the proxy" |
+
 ## Windows
 
 | Route | Layer | Status | Where | Notes |

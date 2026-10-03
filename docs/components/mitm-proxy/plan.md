@@ -271,6 +271,8 @@ Tests to write:
 <!-- step: mitm-proxy.tls-cold-miss -->
 10. ~~Add end-to-end integration tests (`tests/proxy_integration.rs`): spin up real TCP listeners on ephemeral ports and drive them with a `reqwest` client. Covers plain HTTP forwarding and the full CONNECT → TLS interception → tunnel → origin round trip.~~ **Done.**
 <!-- step: mitm-proxy.integration-tests -->
+11. ~~Split the proxy into claims (`docs/engineering/coverage.md` rows `mitm-proxy.*`), cover the scan-hook claim with a hermetic cargo integration test (in-process CA, independent rustls client) that includes expected-fail tests for the three known gaps, each paired with a positive HTTPS control, and gate it with a path-filtered `cargo-mutants` CI job. Needs `scan::build_hooks` in the library so the tests exercise the same wiring `main.rs` ships; see [claim.md](claim.md).~~ **Done.**
+<!-- step: mitm-proxy.hermetic-claims -->
 
 8. ~~Add end-to-end integration tests (`tests/proxy_integration.rs`): spin up real TCP listeners on ephemeral ports and drive them with a `reqwest` client configured to use the proxy. Covers plain HTTP forwarding and the full CONNECT → TLS interception → tunnel → origin round trip. Add `reqwest` (rustls-tls) to dev-dependencies; expose `proxy` and `connect` modules from `lib.rs` so integration tests can import `proxy::handle`.~~ **Done.**
 

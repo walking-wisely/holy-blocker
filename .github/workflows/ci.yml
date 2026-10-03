@@ -26,6 +26,13 @@ jobs:
       contents: read
     uses: ./.github/workflows/ci-rust.yml
 
+  mutants:
+    name: mutants
+    if: github.event.action != 'edited'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci-mutants.yml
+
   plan:
     name: plan
     permissions:
@@ -41,7 +48,7 @@ jobs:
 
   gate:
     name: CI gate
-    needs: [js, rust, plan, platforms]
+    needs: [js, rust, mutants, plan, platforms]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
