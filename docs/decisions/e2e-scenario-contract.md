@@ -209,9 +209,18 @@ A passing case proves nothing if it would pass against broken code.
   through unscanned with the body intact) and pairs with a positive control that succeeds through the same
   harness, so a connect or CA error cannot pass as a gap.
 - The test client is independent of the code under test (rustls or curl, not the proxy's own helpers).
-- Each scenario carries 3 to 5 mutants as committed patch files, plus a script that applies each and asserts the
-  check goes red. A path-filtered CI job runs it only when a PR touches the crate or moves a `coverage.md` row. A
-  "N mutants killed" line in a PR body that no job reproduces is not evidence.
+- Mutation testing uses the language's tool, not hand-written mutants: `cargo-mutants` for Rust, with Kotlin and
+  others to follow with their own. It runs against the claim's own check only, scoped by the tool's file and
+  function filters to the code the claim is about. A surviving mutant in scope fails the job, or is excluded in
+  the tool's config and listed as a known survivor in `claim.md` with a reason. A committed patch file is allowed
+  only for a mutant the tool cannot generate, with a one-line reason; none exists yet. A path-filtered CI job runs
+  it only when a PR touches the crate or moves a `coverage.md` row. A "N mutants killed" line in a PR body that no
+  job reproduces is not evidence.
+- Measured on `mitm-proxy` (cargo-mutants 27.1.0, `-j2`, the dev machine): the scoped run is 116 mutants in
+  about three minutes, 64 caught, none missed, 52 unviable. An unscoped first run over six files found 26
+  survivors, two of them real gaps in the claim (the body-limit boundary), which became tests; the rest are the
+  listed known survivors. The tool generated the mutants the gaps called for: the gate, the hook call sites and the
+  leaf validity window. Runtime on a CI runner is not yet measured.
 - No mutation work on shared crates (`text-policy`) until the CI cost is measured.
 
 ### A6. The owner approves a claim, not the rows

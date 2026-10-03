@@ -1,0 +1,7 @@
+id = "mitm-proxy.hermetic-claims"
+title = "split the proxy into claims; hermetic ci check with mutation testing"
+status = "pending"
+evidence = ""
+acceptance = "code"
+depends_on = []
+verify = "cd packages/mitm-proxy && cargo test --locked --test hermetic_claims"

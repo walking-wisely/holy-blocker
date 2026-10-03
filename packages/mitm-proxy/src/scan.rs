@@ -1,3 +1,4 @@
+use crate::tunnel::{ImageScanner, ScanHooks};
 use image_sandbox::{ImageClassifier, ImageSandbox, ImageVerdict, SandboxConfig};
 use std::sync::{
     atomic::{AtomicU8, Ordering},
@@ -117,6 +118,29 @@ pub fn build_default_engine() -> PolicyEngine {
         .expect("built-in dictionary must be valid");
 
     PolicyEngine::new(matcher, Thresholds::default())
+}
+
+/// Assemble the hooks the proxy ships with.
+///
+/// URL and body scans read `mode` on every call. The image scanner is passed
+/// through ungated.
+pub fn build_hooks(
+    engine: Arc<PolicyEngine>,
+    image_scanner: ImageScanner,
+    mode: Arc<AtomicU8>,
+) -> ScanHooks {
+    let url_engine = Arc::clone(&engine);
+    let url_mode = Arc::clone(&mode);
+    ScanHooks {
+        url_scanner: Box::new(move |url| {
+            scan_url(&url_engine, url, ProtectionMode::from_atomic(&url_mode))
+        }),
+        body_scanner: Box::new(move |html| {
+            scan_body(&engine, html, ProtectionMode::from_atomic(&mode))
+        }),
+        image_scanner,
+        ..ScanHooks::default()
+    }
 }
 
 pub fn scan_url(engine: &PolicyEngine, url: &str, mode: ProtectionMode) -> ScanResult {
