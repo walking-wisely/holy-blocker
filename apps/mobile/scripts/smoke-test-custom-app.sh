@@ -3,7 +3,7 @@
 #
 # What it asserts:
 #   1. A chosen app is sent home shortly after it is opened.
-#   2. A cover is shown while it is up and lifts once it has gone.
+#   2. A cover window appears and lifts once the app has gone.
 #   3. An unchosen app is left in the foreground.
 #   4. Enforcement stops when protection is disarmed.
 #
@@ -91,33 +91,20 @@ echo "==> arming protection and listing $chosen"
 seed true
 enable_service
 
-echo "==> 1. the chosen app is sent home"
+echo "==> 1. the chosen app is sent home, and 2. a cover appears and lifts"
+adb shell input keyevent KEYCODE_HOME >/dev/null
 adb shell am force-stop "$chosen"
-start_ms=$(python3 -c 'import time; print(int(time.time()*1000))')
-launch "$chosen"
-sent_home=""
-for _ in $(seq 1 50); do
-    fg="$(foreground)"
-    if [[ "$fg" == *"$chosen"* ]]; then
-        seen_fg=1
-    elif [[ -n "${seen_fg:-}" ]]; then
-        sent_home=1
-        break
-    fi
-    sleep 0.2
-done
-end_ms=$(python3 -c 'import time; print(int(time.time()*1000))')
-[[ -n "$sent_home" ]] || fail "chosen app was never seen foreground and then left (foreground: $(foreground))"
-echo "    ok (foreground for about $((end_ms - start_ms)) ms including launch, 200 ms poll)"
-
-echo "==> 2. cover lifts once the app has gone"
-cleared=""
-for _ in $(seq 1 15); do
-    if ! adb shell dumpsys window windows | grep -qi "Window{.*$pkg}"; then cleared=1; break; fi
-    sleep 1
-done
-[[ -n "$cleared" ]] || fail "overlay still present after the chosen app was sent home"
-echo "    ok"
+component="$(adb shell cmd package resolve-activity --brief -c android.intent.category.LAUNCHER "$chosen" | tr -d '\r' | tail -1)"
+trace="$(adb shell "(am start -n $component >/dev/null &); for i in \$(seq 1 60); do o=\$(dumpsys window windows | grep -c 'Window{.*$pkg'); t=\$(dumpsys activity activities | grep -m1 topResumedActivity); case \"\$t\" in *$chosen*) f=chosen;; *) f=other;; esac; echo \"\$f \$o\"; done" 2>/dev/null | tr -d '\r')"
+first_chosen="$(grep -n '^chosen' <<<"$trace" | head -1 | cut -d: -f1)"
+last_chosen="$(grep -n '^chosen' <<<"$trace" | tail -1 | cut -d: -f1)"
+first_cover="$(grep -n ' [1-9]' <<<"$trace" | head -1 | cut -d: -f1)"
+[[ -n "$first_chosen" ]] || fail "chosen app was never foreground"
+[[ "$(tail -1 <<<"$trace")" == "other 0" ]] || fail "chosen app still foreground or cover still up at the end: $(tail -1 <<<"$trace")"
+[[ "$last_chosen" -lt 60 ]] || fail "chosen app was never sent home"
+[[ -n "$first_cover" ]] || fail "no cover window was ever seen"
+echo "    ok: app foreground samples $first_chosen-$last_chosen, first cover sample $first_cover, cover gone at the end"
+echo "    (samples are one dumpsys pair each; content showed for $((first_cover - first_chosen)) samples before the cover)"
 
 echo "==> observation: does the chosen app's process survive?"
 if adb shell pidof "$chosen" >/dev/null 2>&1; then
