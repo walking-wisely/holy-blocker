@@ -25,6 +25,8 @@ from dataclasses import dataclass
 REMOTE = "origin"
 DELETABLE = ("merged", "ancestor")
 NEVER = ("open",)
+PR_LIMIT = 1000
+DEFAULT_NAMES = frozenset({"master", "main"})
 ORDER = ("merged", "ancestor", "merged-diverged", "merged-other-base", "closed", "none", "open")
 
 
@@ -81,13 +83,18 @@ def classify(name: str, tip: str, prs: list[PrRecord], base: str, in_base: bool)
     return "none", "no PR and the tip is not in the base"
 
 
-def select(rows: list[RemoteBranch], names: list[str], discard: bool) -> tuple[list[RemoteBranch], list[tuple[str, str]]]:
+def select(
+    rows: list[RemoteBranch], names: list[str], discard: bool, protected: set[str] | None = None
+) -> tuple[list[RemoteBranch], list[tuple[str, str]]]:
+    protected = DEFAULT_NAMES | (protected or set())
     chosen: list[RemoteBranch] = []
     refused: list[tuple[str, str]] = []
     for name in names:
         match = next((r for r in rows if r.name == name), None)
         if match is None:
             refused.append((name, "no such remote branch"))
+        elif name in protected:
+            refused.append((name, "protected: base or default branch"))
         elif match.verdict in NEVER:
             refused.append((name, f"{match.verdict}: deleting it would close its PR"))
         elif match.verdict not in DELETABLE and not discard:
@@ -122,11 +129,14 @@ def is_in_base(cwd: str, base: str, tip: str) -> bool:
 
 def fetch_prs(cwd: str) -> list[PrRecord]:
     payload = subprocess.run(
-        ["gh", "pr", "list", "--state", "all", "--limit", "1000",
+        ["gh", "pr", "list", "--state", "all", "--limit", str(PR_LIMIT),
          "--json", "number,state,headRefName,headRefOid,baseRefName"],
         cwd=cwd, check=True, capture_output=True, text=True,
     ).stdout
-    return parse_prs(payload)
+    prs = parse_prs(payload)
+    if len(prs) >= PR_LIMIT:
+        print(f"warning: {PR_LIMIT} PRs fetched; older ones may be missing and read as `none`", file=sys.stderr)
+    return prs
 
 
 def build(cwd: str, base: str, prs: list[PrRecord]) -> list[RemoteBranch]:
@@ -176,7 +186,7 @@ def main(argv: list[str] | None = None) -> int:
     if not args.only:
         print("reap needs --only NAME...; nothing is deleted in bulk", file=sys.stderr)
         return 2
-    chosen, refused = select(rows, args.only, args.discard)
+    chosen, refused = select(rows, args.only, args.discard, {args.base})
     for name, why in refused:
         print(f"refused {name}: {why}", file=sys.stderr)
     for r in chosen:

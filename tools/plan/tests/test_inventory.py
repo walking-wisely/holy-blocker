@@ -119,6 +119,13 @@ class SelectTest(unittest.TestCase):
         self.assertEqual(chosen, [])
         self.assertIn("no such worktree", refused[0][1])
 
+    def test_name_matching_two_worktrees_is_ambiguous(self):
+        first = inv(None, "clean", path="/a/same")
+        second = inv(None, "clean", path="/b/same")
+        chosen, refused = inventory.select([first, second], ["same"], set(), discard=False)
+        self.assertEqual(chosen, [])
+        self.assertIn("ambiguous", refused[0][1])
+
     def test_path_matches_a_detached_worktree(self):
         rows = [inv(None, "clean", path="/wt/detached-1")]
         chosen, _ = inventory.select(rows, ["/wt/detached-1"], set(), discard=False)
@@ -133,6 +140,16 @@ class SummaryTest(unittest.TestCase):
         self.assertIn("2 removable", line)
         self.assertIn("1 blocked", line)
         self.assertIn("7 remote branches", line)
+
+    def test_summary_carries_no_paths_or_names(self):
+        row = inventory.Inventory(
+            path="/wt/secret-path", branch="feat/secret-branch", verdict="has-ignored-state",
+            uncommitted=("?? secret.txt",), ignored=(".env",), commits=("abc1 secret subject",),
+            local_only=0, branch_at_risk=False, pr="#9 OPEN",
+        )
+        line = inventory.summary_line([row], set(), remote_branches=1)
+        for leaked in ("secret", ".env", "/wt", "#9"):
+            self.assertNotIn(leaked, line)
 
     def test_nothing_to_report_is_empty(self):
         self.assertEqual(inventory.summary_line([], set(), remote_branches=0), "")

@@ -13,8 +13,8 @@ reads the inventory and names what to remove.
     python -m tools.plan.worktrees reap --only BRANCH... --yes
     python -m tools.plan.worktrees reap --only BRANCH... --yes --discard
 
-Branches are never deleted: `git worktree remove` leaves them, and that call
-stays with a human.
+Local branches are never deleted: `git worktree remove` leaves them, and that
+call stays with a human. Remote branches are swept by ``tools.plan.branches``.
 """
 
 from __future__ import annotations

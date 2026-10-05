@@ -98,8 +98,12 @@ def select(
     chosen: list[Inventory] = []
     refused: list[tuple[str, str]] = []
     for name in names:
-        match = next((r for r in rows if name in (r.branch, r.path, r.name)), None)
-        if match is None:
+        found = [r for r in rows if name in (r.branch, r.path, r.name)]
+        exact = [r for r in found if name in (r.branch, r.path)]
+        match = (exact or found)[0] if len(exact or found) == 1 else None
+        if len(exact or found) > 1:
+            refused.append((name, "ambiguous: matches several worktrees; name one by path"))
+        elif match is None:
             refused.append((name, "no such worktree"))
         elif state._real(match.path) in protected:
             refused.append((name, "protected: main checkout, current worktree or base branch"))

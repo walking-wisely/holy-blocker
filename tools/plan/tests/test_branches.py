@@ -85,6 +85,12 @@ class SelectTest(unittest.TestCase):
     def test_unknown_name_is_refused(self):
         self.assertEqual(self.pick(["zzz"]), ([], ["zzz"]))
 
+    def test_default_branches_are_never_deletable(self):
+        self.rows += [row("master", "ancestor"), row("main", "ancestor"), row("develop", "ancestor")]
+        chosen, refused = branches.select(self.rows, ["master", "main", "develop"], True, protected={"develop"})
+        self.assertEqual(chosen, [])
+        self.assertEqual([name for name, _ in refused], ["master", "main", "develop"])
+
 
 class DeleteAgainstRealGitTest(unittest.TestCase):
     def setUp(self):
