@@ -3,7 +3,6 @@ package com.holyblocker.mobile.policy
 import java.io.File
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class CustomAppsHygieneTest {
@@ -15,8 +14,11 @@ class CustomAppsHygieneTest {
         .toList()
 
     @Test
-    fun `the custom-app sources were found`() {
-        assertTrue(customAppSources.size >= 3)
+    fun `the custom-app sources scanned are the expected ones`() {
+        assertEquals(
+            setOf("CustomApps.kt", "CustomAppListCodec.kt", "CustomAppStore.kt", "CustomAppProtectedPackages.kt"),
+            customAppSources.map { it.name }.toSet(),
+        )
     }
 
     @Test

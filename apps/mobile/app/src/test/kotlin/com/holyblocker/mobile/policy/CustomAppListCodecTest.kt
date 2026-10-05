@@ -44,4 +44,12 @@ class CustomAppListCodecTest {
             CustomAppListCodec.decode(listOf("removal\tx.y\t5")),
         )
     }
+
+    @Test
+    fun `a negative request time is dropped`() {
+        assertEquals(
+            CustomAppState(setOf("x.y")),
+            CustomAppListCodec.decode(listOf("app\tx.y", "removal\tx.y\t-5")),
+        )
+    }
 }

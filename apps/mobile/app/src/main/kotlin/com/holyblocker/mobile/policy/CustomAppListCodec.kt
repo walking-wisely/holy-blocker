@@ -20,7 +20,7 @@ object CustomAppListCodec {
             val id = fields.getOrNull(1)?.takeIf { identityPattern.matches(it) } ?: continue
             when (fields[0]) {
                 APP -> apps += id
-                REMOVAL -> fields.getOrNull(2)?.toLongOrNull()?.let { removals[id] = it }
+                REMOVAL -> fields.getOrNull(2)?.toLongOrNull()?.takeIf { it >= 0 }?.let { removals[id] = it }
             }
         }
         return CustomAppState(apps, removals.filterKeys { it in apps })

@@ -110,7 +110,8 @@ object CustomApps {
 
     private const val MIN_TOKEN_LENGTH = 5
 
-    private val leadingDomainSegments = setOf("com", "org", "net", "io", "co", "app", "me", "ua", "ru", "de")
+    private val leadingDomainSegments =
+        setOf("com", "org", "net", "io", "co", "app", "me", "ua", "ru", "de", "tv")
 
     private val genericSegments = setOf("android", "app", "apps", "mobile", "lite", "beta", "client", "google")
 
@@ -123,7 +124,7 @@ object CustomApps {
     fun tokens(identity: String, displayName: String?): Set<String> {
         val distinctive = identity.trim().lowercase()
             .split('.')
-            .filterIndexed { index, segment -> !(index == 0 && segment in leadingDomainSegments) }
+            .dropWhile { it in leadingDomainSegments }
             .firstOrNull { it !in genericSegments }
         return listOfNotNull(distinctive, displayName)
             .map { reduce(it) }

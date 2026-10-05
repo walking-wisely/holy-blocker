@@ -247,4 +247,10 @@ class CustomAppsTest {
     fun `tokens are derived without a display name`() {
         assertEquals(setOf("telegram"), CustomApps.tokens("org.telegram.messenger", null))
     }
+
+    @Test
+    fun `leading domain segments are skipped at any depth`() {
+        assertEquals(setOf("kyivstar"), CustomApps.tokens("ua.com.kyivstar.app", null))
+        assertEquals(setOf("twitch"), CustomApps.tokens("tv.twitch.android.app", null))
+    }
 }
