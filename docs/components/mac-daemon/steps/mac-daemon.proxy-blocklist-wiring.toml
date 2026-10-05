@@ -1,7 +1,7 @@
 id = "mac-daemon.proxy-blocklist-wiring"
 title = "Bundle the signed domain list and pass it to the proxy from ProxySupervisor. Needs mitm-proxy.domain-blocklist merged first"
 status = "pending"
-evidence = "ProxyBlocklist + bundle verb + run wiring; 355 swift tests green; a bundle-staged fixture list refused a listed host with 403 to URLSession through the proxy. Not yet observed through the supervised system proxy"
+evidence = "ProxyBlocklist + bundle verb + run wiring; 360 swift tests green; a bundle-staged fixture list refused a listed host with 403 to URLSession through the proxy. Not yet observed through the supervised system proxy"
 acceptance = "observation"
 verify = "a name in the shipped list is refused through the supervised proxy, fetched with URLSession and not curl"
 milestone = "mvp"

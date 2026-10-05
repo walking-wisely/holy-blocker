@@ -146,3 +146,36 @@ struct ProxyBlocklistStageTests {
         }
     }
 }
+
+@Suite("ProxyBlocklistPolicy")
+struct ProxyBlocklistPolicyTests {
+    private let configured = ProxyBlocklistSource.configured(arguments: ["--blocklist-dir", "/x"])
+
+    @Test("requires a list by default")
+    func requiredByDefault() {
+        let policy = ProxyBlocklistPolicy(environment: [:])
+        #expect(policy == .required)
+        #expect(policy.arguments(for: .unavailable(.missing)) == nil)
+        #expect(policy.arguments(for: .unavailable(.rejected)) == nil)
+    }
+
+    @Test("passes the flags through whenever the list resolved")
+    func configuredPasses() {
+        #expect(ProxyBlocklistPolicy.required.arguments(for: configured) == ["--blocklist-dir", "/x"])
+        #expect(ProxyBlocklistPolicy.optional.arguments(for: configured) == ["--blocklist-dir", "/x"])
+    }
+
+    @Test("runs unfiltered only on the explicit opt-in")
+    func optIn() {
+        let policy = ProxyBlocklistPolicy(
+            environment: [ProxyBlocklistPolicy.allowMissingVariable: "1"])
+        #expect(policy.arguments(for: .unavailable(.missing)) == [])
+    }
+
+    @Test("treats any other value as not opted in")
+    func otherValues() {
+        let policy = ProxyBlocklistPolicy(
+            environment: [ProxyBlocklistPolicy.allowMissingVariable: "true"])
+        #expect(policy == .required)
+    }
+}

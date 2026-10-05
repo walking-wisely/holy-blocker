@@ -1,5 +1,5 @@
 id = "mac-daemon.proxy-blocklist-hardening"
-title = "Proxy blocklist edge cases: fail a release bundle with no list, record a missing or keyless list in the tamper log, accept a previous-only slot, reject a key that is not a valid Ed25519 point before launch, note that the daemon's per-request host trace can reach the launchd log"
+title = "Proxy blocklist edge cases: record a refusal to start for a missing list in the tamper log, make CI fail a release bundle built with the development override, accept a previous-only slot, reject a key that is not a valid Ed25519 point before launch, note that the daemon's per-request host trace can reach the launchd log"
 status = "pending"
 evidence = ""
 acceptance = "code"

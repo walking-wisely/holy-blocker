@@ -5,6 +5,25 @@ public enum ProxyBlocklistFailure: Equatable, Sendable {
     case rejected
 }
 
+public enum ProxyBlocklistPolicy: Equatable, Sendable {
+    case required
+    case optional
+
+    public static let allowMissingVariable = "HOLY_BLOCKER_ALLOW_NO_BLOCKLIST"
+
+    public init(environment: [String: String]) {
+        self = environment[Self.allowMissingVariable] == "1" ? .optional : .required
+    }
+
+    public func arguments(for source: ProxyBlocklistSource) -> [String]? {
+        switch (source, self) {
+        case (.configured(let arguments), _): return arguments
+        case (.unavailable, .optional): return []
+        case (.unavailable, .required): return nil
+        }
+    }
+}
+
 public enum ProxyBlocklistStageError: Error, Equatable {
     case noCurrentSlot(URL)
 }
@@ -19,7 +38,7 @@ public enum ProxyBlocklistSource: Equatable, Sendable {
 /// Layout under `Contents/Resources/blocklist`: `current/` and `previous/` slots as the
 /// `domain-blocklist` CLI writes them, and `keys/<key id>.pub` holding raw 32-byte Ed25519 keys.
 /// The proxy exits when handed a directory it cannot load, so a list that is absent or has no
-/// usable key yields no flags at all and the proxy runs without a domain list.
+/// usable key yields no flags at all; `ProxyBlocklistPolicy` decides whether that may run.
 public enum ProxyBlocklist {
     public static let directoryName = "blocklist"
     private static let keyDirectoryName = "keys"

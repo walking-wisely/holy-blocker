@@ -44,6 +44,9 @@ let usage = """
                                         (default: /Library/Application Support/HolyBlocker)
       HOLY_BLOCKER_PROXY_HOST           proxy listen host for `run` (default: 127.0.0.1)
       HOLY_BLOCKER_PROXY_PORT           proxy listen port for `run` (default: 8080)
+      HOLY_BLOCKER_ALLOW_NO_BLOCKLIST   set to 1 to let `bundle` assemble without a signed domain
+                                        list and `run` route traffic without one; without it both
+                                        refuse. Development only
       HOLY_BLOCKER_IMAGE_THRESHOLD      explicit score at or above which an image is blocked;
                                         required to enable image scanning, no built-in default —
                                         unset or unparseable degrades to allow-everything, the
@@ -98,14 +101,16 @@ nonisolated(unsafe) var stopRequested: sig_atomic_t = 0
 /// Supervises the proxy until interrupted, then puts the machine back.
 func runSupervisor(binary: URL, workingDirectory: URL) throws {
     let configuration = ProxyConfiguration(runner: runner, snapshotPath: snapshotPath)
-    var proxyArguments: [String] = []
-    switch ProxyBlocklist.resolve(resources: Bundle.main.resourceURL) {
-    case .configured(let arguments):
-        proxyArguments = arguments
-        print("domain blocklist: bundled list")
-    case .unavailable(let failure):
-        print("domain blocklist: off (\(failure == .missing ? "none in bundle" : "no usable key"))")
+    let blocklist = ProxyBlocklist.resolve(resources: Bundle.main.resourceURL)
+    guard
+        let proxyArguments = ProxyBlocklistPolicy(environment: ProcessInfo.processInfo.environment)
+            .arguments(for: blocklist)
+    else {
+        fail(
+            "no usable signed domain blocklist in the bundle; refusing to route traffic "
+                + "(\(ProxyBlocklistPolicy.allowMissingVariable)=1 allows it for development)")
     }
+    print(proxyArguments.isEmpty ? "domain blocklist: off (development override)" : "domain blocklist: bundled list")
     let supervisor = ProxySupervisor(
         host: proxyHost,
         port: proxyPort,
@@ -707,8 +712,13 @@ do {
             try ProxyBlocklist.stage(
                 artifactDirectory: URL(fileURLWithPath: rest[4]),
                 keyDirectory: URL(fileURLWithPath: rest[5]), into: layout.resources)
+        } else if ProxyBlocklistPolicy(environment: ProcessInfo.processInfo.environment) == .required {
+            try? FileManager.default.removeItem(at: root)
+            fail(
+                "no domain blocklist given; pass <blocklist-dir> <blocklist-key-dir> "
+                    + "(\(ProxyBlocklistPolicy.allowMissingVariable)=1 allows a development bundle)")
         } else {
-            print("warning: no domain blocklist given — the proxy will run without one")
+            print("warning: no domain blocklist given — the proxy will not start without the override")
         }
         // Ad-hoc by default so the bundle is runnable with no certificate — but ad-hoc is exactly
         // the identity that does not survive a rebuild, so say so rather than leave it implied.
