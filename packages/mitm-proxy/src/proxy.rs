@@ -33,8 +33,21 @@ pub async fn handle(stream: TcpStream, tls: Arc<TlsState>, scan: Arc<ScanHooks>)
     Ok(())
 }
 
+fn forbidden() -> Response<ResBody> {
+    Response::builder()
+        .status(StatusCode::FORBIDDEN)
+        .body(text("Blocked\n"))
+        .unwrap()
+}
+
 async fn dispatch(req: Request<Incoming>, tls: Arc<TlsState>, scan: Arc<ScanHooks>) -> Result<Response<ResBody>, Infallible> {
-    let res = if req.method() == Method::CONNECT {
+    let listed = req
+        .uri()
+        .authority()
+        .is_some_and(|authority| scan.host_is_blocked(authority.host()));
+    let res = if listed {
+        forbidden()
+    } else if req.method() == Method::CONNECT {
         let authority = req.uri().authority().cloned();
         match authority {
             Some(authority) => {

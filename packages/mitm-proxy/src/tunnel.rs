@@ -1,3 +1,4 @@
+use crate::blocklist::{HostBlocklist, HostVerdict};
 use crate::scan::ScanResult;
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
@@ -23,6 +24,15 @@ pub struct ScanHooks {
     /// Body bytes scanned per response (bodies larger than this are forwarded
     /// without scanning rather than blocked).
     pub body_limit: usize,
+    pub host_blocklist: Option<Arc<HostBlocklist>>,
+}
+
+impl ScanHooks {
+    pub fn host_is_blocked(&self, host: &str) -> bool {
+        self.host_blocklist
+            .as_ref()
+            .is_some_and(|list| list.verdict(host) == HostVerdict::Block)
+    }
 }
 
 impl Default for ScanHooks {
@@ -34,6 +44,7 @@ impl Default for ScanHooks {
             image_scanner: Box::new(|_| ScanResult::Allow),
             video_tx: tx,
             body_limit: 1024 * 1024,
+            host_blocklist: None,
         }
     }
 }

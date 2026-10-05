@@ -1,3 +1,4 @@
+pub mod blocklist;
 pub mod connect;
 pub mod forward;
 pub mod proxy;
