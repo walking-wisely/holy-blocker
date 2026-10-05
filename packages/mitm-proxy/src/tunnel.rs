@@ -119,6 +119,16 @@ async fn forward(
     let uri = req.uri().to_string();
     let path = req.uri().path().to_owned();
 
+    let host_header_listed = req
+        .headers()
+        .get(hyper::header::HOST)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<hyper::http::uri::Authority>().ok())
+        .is_some_and(|authority| scan.host_is_blocked(authority.host()));
+    if host_header_listed {
+        return Ok(blocked());
+    }
+
     // Phase 3 — URL scan
     if matches!((scan.url_scanner)(&uri), ScanResult::Block { .. }) {
         return Ok(blocked());

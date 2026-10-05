@@ -404,3 +404,42 @@ async fn an_unlisted_connect_authority_with_a_listed_sni_is_refused() {
     assert!(unlisted.is_ok(), "control handshake failed: {unlisted:?}");
     assert!(listed.is_err());
 }
+
+#[tokio::test]
+async fn a_listed_inner_host_header_is_refused_inside_the_tunnel() {
+    let (_dir, list) = hosts_blocklist(&["blocked.example"]);
+    let scan = Arc::new(hooks_with(list));
+
+    let mut statuses = Vec::new();
+    for host in ["fine.example", "www.blocked.example:443"] {
+        let (origin_side, origin_peer) = tokio::io::duplex(65536);
+        tokio::spawn(async move {
+            let service = hyper::service::service_fn(|_req: Request<Incoming>| async {
+                Ok::<_, Infallible>(Response::new(Full::new(Bytes::from_static(b"origin"))))
+            });
+            hyper::server::conn::http1::Builder::new()
+                .serve_connection(TokioIo::new(origin_peer), service)
+                .await
+                .ok();
+        });
+        let (browser_side, browser_peer) = tokio::io::duplex(65536);
+        let scan = Arc::clone(&scan);
+        tokio::spawn(async move {
+            mitm_proxy::tunnel::run(browser_peer, origin_side, scan).await.ok();
+        });
+        let (mut sender, conn) =
+            hyper::client::conn::http1::handshake::<_, Full<Bytes>>(TokioIo::new(browser_side))
+                .await
+                .unwrap();
+        tokio::spawn(conn);
+        let req = Request::builder()
+            .uri("/")
+            .header("host", host)
+            .body(Full::new(Bytes::new()))
+            .unwrap();
+        statuses.push(sender.send_request(req).await.unwrap().status());
+    }
+
+    assert_eq!(statuses[0], hyper::StatusCode::OK);
+    assert_eq!(statuses[1], hyper::StatusCode::FORBIDDEN);
+}
