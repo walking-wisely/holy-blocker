@@ -9,9 +9,14 @@
 //! packet, calls [`DnsGuard::inspect`], and does what the returned
 //! [`DnsDecision`] says.
 
+use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
+use domain_blocklist::KeyId;
+use ed25519_dalek::VerifyingKey;
 use net_shield::{
+    Allowlist, ArtifactError, BlocklistArtifact, BlocklistLookup,
     dns_shield::{DnsShield, DnsVerdict},
     radix::{DomainFilter, FilterAction},
 };
@@ -44,6 +49,55 @@ impl From<DnsVerdict> for DnsDecision {
             DnsVerdict::Forward { name, query } => Self::Forward { name, query },
         }
     }
+}
+
+const LOOKUP_BUDGET: Duration = Duration::from_millis(2);
+const LOOKUP_CACHE_CAPACITY: usize = 4096;
+const ED25519_PUBLIC_KEY_LEN: usize = 32;
+
+/// An Ed25519 public key the caller trusts to sign blocklist artifacts.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct TrustedKey {
+    pub key_id: String,
+    pub public_key: Vec<u8>,
+}
+
+/// Why no guard was built from an artifact. There is never a guard over a
+/// partially trusted list: the caller records the failure and decides what
+/// protection to run without it.
+#[derive(Debug, PartialEq, Eq, thiserror::Error, uniffi::Error)]
+pub enum ArtifactLoadError {
+    #[error("no artifact found")]
+    Missing,
+    #[error("a trusted key is not a 32-byte Ed25519 public key")]
+    BadTrustedKey,
+    #[error("artifact rejected: {reason}")]
+    Rejected { reason: String },
+}
+
+impl From<ArtifactError> for ArtifactLoadError {
+    fn from(value: ArtifactError) -> Self {
+        match value {
+            ArtifactError::SlotMissing => Self::Missing,
+            other => Self::Rejected {
+                reason: other.to_string(),
+            },
+        }
+    }
+}
+
+fn verifying_keys(keys: Vec<TrustedKey>) -> Result<Vec<(KeyId, VerifyingKey)>, ArtifactLoadError> {
+    keys.into_iter()
+        .map(|key| {
+            let bytes: [u8; ED25519_PUBLIC_KEY_LEN] = key
+                .public_key
+                .try_into()
+                .map_err(|_| ArtifactLoadError::BadTrustedKey)?;
+            let verifying =
+                VerifyingKey::from_bytes(&bytes).map_err(|_| ArtifactLoadError::BadTrustedKey)?;
+            Ok((KeyId(key.key_id), verifying))
+        })
+        .collect()
 }
 
 /// Starter rule set, mirroring how `text-policy-ffi` ships a placeholder
@@ -90,6 +144,25 @@ impl DnsGuard {
         Arc::new(Self {
             inner: DnsShield::new(DomainFilter::from_rules(&rules)),
         })
+    }
+
+    /// Builds a guard over the signed blocklist artifact under `artifact_dir`
+    /// (`current/` then `previous/`), verified against `trusted_keys`.
+    #[uniffi::constructor]
+    pub fn with_artifact(
+        artifact_dir: String,
+        trusted_keys: Vec<TrustedKey>,
+    ) -> Result<Arc<Self>, ArtifactLoadError> {
+        let keys = verifying_keys(trusted_keys)?;
+        let artifact = BlocklistArtifact::load(Path::new(&artifact_dir), &keys)?;
+        let lookup = BlocklistLookup::new(Arc::new(artifact), LOOKUP_BUDGET, LOOKUP_CACHE_CAPACITY);
+        Ok(Arc::new(Self {
+            inner: DnsShield::with_policy(
+                DomainFilter::from_rules(&[]),
+                Allowlist::new(),
+                Some(lookup),
+            ),
+        }))
     }
 
     /// Classify one IPv4 packet read from the TUN. Never fails: anything it
@@ -241,6 +314,144 @@ mod tests {
         ];
         for (verdict, decision) in cases {
             assert_eq!(DnsDecision::from(verdict), decision);
+        }
+    }
+
+    mod artifact {
+        use super::*;
+        use domain_blocklist::{Category, KeyId, LicenseId, MergedEntry, SourceId};
+        use domain_normalize::RuleScope;
+        use net_shield::blocklist::{ARTIFACT_FILE, MANIFEST_FILE};
+        use std::path::Path;
+        use tempfile::tempdir;
+
+        const KEY_ID: &str = "release-1";
+
+        fn signing_key(seed: u8) -> ed25519_dalek::SigningKey {
+            ed25519_dalek::SigningKey::from_bytes(&[seed; 32])
+        }
+
+        fn trusted(seed: u8) -> Vec<TrustedKey> {
+            vec![TrustedKey {
+                key_id: KEY_ID.into(),
+                public_key: signing_key(seed).verifying_key().to_bytes().to_vec(),
+            }]
+        }
+
+        fn write_slot(base: &Path, slot: &str, domains: &[&str], seed: u8) {
+            let entries: Vec<MergedEntry> = domains
+                .iter()
+                .map(|d| MergedEntry {
+                    domain: d.to_string(),
+                    scope: RuleScope::Apex,
+                    sources: vec![SourceId::StevenBlack],
+                    categories: vec![Category::Adult],
+                })
+                .collect();
+            let built = domain_blocklist::build(
+                &entries,
+                LicenseId("MIT".into()),
+                Vec::new(),
+                1,
+                1_700_000_000,
+                &[(KeyId(KEY_ID.into()), signing_key(seed))],
+            )
+            .unwrap();
+            let dir = base.join(slot);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join(ARTIFACT_FILE), &built.fst_bytes).unwrap();
+            std::fs::write(
+                dir.join(MANIFEST_FILE),
+                bincode::serialize(&built.manifest).unwrap(),
+            )
+            .unwrap();
+        }
+
+        fn path(dir: &tempfile::TempDir) -> String {
+            dir.path().to_str().unwrap().to_string()
+        }
+
+        #[test]
+        fn a_producer_artifact_blocks_its_names_and_subtree_only() {
+            let dir = tempdir().unwrap();
+            write_slot(dir.path(), "current", &["listed.example"], 7);
+            let guard = DnsGuard::with_artifact(path(&dir), trusted(7)).unwrap();
+            for name in ["listed.example", "cdn.listed.example"] {
+                assert!(
+                    matches!(
+                        guard.inspect(query_packet(name)),
+                        DnsDecision::Blocked { .. }
+                    ),
+                    "{name}"
+                );
+            }
+            assert!(matches!(
+                guard.inspect(query_packet("other.example")),
+                DnsDecision::Forward { .. }
+            ));
+        }
+
+        #[test]
+        fn the_artifact_replaces_the_placeholder_rules() {
+            let dir = tempdir().unwrap();
+            write_slot(dir.path(), "current", &["listed.example"], 7);
+            let guard = DnsGuard::with_artifact(path(&dir), trusted(7)).unwrap();
+            assert!(matches!(
+                guard.inspect(query_packet("blocked.example")),
+                DnsDecision::Forward { .. }
+            ));
+        }
+
+        #[test]
+        fn an_artifact_signed_by_an_untrusted_key_is_refused() {
+            let dir = tempdir().unwrap();
+            write_slot(dir.path(), "current", &["listed.example"], 7);
+            let err = DnsGuard::with_artifact(path(&dir), trusted(8))
+                .err()
+                .unwrap();
+            assert!(matches!(err, ArtifactLoadError::Rejected { .. }), "{err:?}");
+        }
+
+        #[test]
+        fn a_missing_artifact_is_an_error_not_an_empty_list() {
+            let dir = tempdir().unwrap();
+            let err = DnsGuard::with_artifact(path(&dir), trusted(7))
+                .err()
+                .unwrap();
+            assert!(matches!(err, ArtifactLoadError::Missing), "{err:?}");
+        }
+
+        #[test]
+        fn a_corrupt_current_slot_falls_back_to_previous() {
+            let dir = tempdir().unwrap();
+            write_slot(dir.path(), "previous", &["old.example"], 7);
+            write_slot(dir.path(), "current", &["new.example"], 7);
+            std::fs::write(dir.path().join("current").join(ARTIFACT_FILE), b"corrupt").unwrap();
+            let guard = DnsGuard::with_artifact(path(&dir), trusted(7)).unwrap();
+            assert!(matches!(
+                guard.inspect(query_packet("old.example")),
+                DnsDecision::Blocked { .. }
+            ));
+        }
+
+        #[test]
+        fn a_malformed_trusted_key_is_refused() {
+            let dir = tempdir().unwrap();
+            write_slot(dir.path(), "current", &["listed.example"], 7);
+            let keys = vec![TrustedKey {
+                key_id: KEY_ID.into(),
+                public_key: vec![1, 2, 3],
+            }];
+            let err = DnsGuard::with_artifact(path(&dir), keys).err().unwrap();
+            assert!(matches!(err, ArtifactLoadError::BadTrustedKey), "{err:?}");
+        }
+
+        #[test]
+        fn no_trusted_keys_refuses_every_artifact() {
+            let dir = tempdir().unwrap();
+            write_slot(dir.path(), "current", &["listed.example"], 7);
+            let err = DnsGuard::with_artifact(path(&dir), vec![]).err().unwrap();
+            assert!(matches!(err, ArtifactLoadError::Rejected { .. }), "{err:?}");
         }
     }
 }
