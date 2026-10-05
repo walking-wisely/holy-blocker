@@ -121,7 +121,7 @@ pub async fn handle_connect(
         .unwrap_or_else(|| target.host().to_owned());
 
     if scan.host_is_blocked(&sni) {
-        anyhow::bail!("SNI {sni} is on the blocklist");
+        anyhow::bail!("CONNECT refused: host is on the blocklist");
     }
 
     let server_cfg = tls.server_config(&sni)?;
