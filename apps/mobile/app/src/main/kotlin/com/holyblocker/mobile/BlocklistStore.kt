@@ -2,47 +2,79 @@ package com.holyblocker.mobile
 
 import android.content.Context
 import android.util.Log
-import com.holyblocker.mobile.policy.Blocklist
+import com.holyblocker.mobile.policy.BlocklistFailure
+import com.holyblocker.mobile.policy.BlocklistProvisioning
+import uniffi.net_shield_ffi.ArtifactLoadException
+import uniffi.net_shield_ffi.DnsGuard
+import uniffi.net_shield_ffi.TrustedKey
 import java.io.File
 import java.io.IOException
 
+sealed interface BlocklistLoad {
+    class Loaded(val guard: DnsGuard) : BlocklistLoad
+    class Failed(val failure: BlocklistFailure) : BlocklistLoad
+}
+
 /**
- * The file the network guard's rules are read from.
+ * Installs the signed blocklist bundled in the APK under `filesDir` and loads it.
  *
- * `filesDir/blocklist.txt`, one name per line, `#` for comments. Private
- * storage, so nothing else on the device can read which names the user chose —
- * that list is as revealing as the browsing history this product refuses to
- * keep.
- *
- * Absent by default and that is a supported state, not a broken one: with no
- * file the guard falls back to the placeholder rules compiled into
- * `net-shield-ffi` and blocks nothing real. A list of actual hostnames is not
- * something this repository ships.
- *
- * Read once when the VPN establishes rather than per query — the trie is built
- * on the Rust side at construction, and the read is disk I/O.
+ * Assets: `blocklist/{current,previous}/{artifact.fst,manifest.bin}` and
+ * `blocklist/keys/<key id>.pub` (raw 32-byte Ed25519 public keys). The loader
+ * mmaps files, so the assets are copied out; a slot is recopied whenever its
+ * bundled manifest differs from the installed one.
  */
 class BlocklistStore(context: Context) {
 
-    private val file = File(context.applicationContext.filesDir, FILE_NAME)
+    private val assets = context.applicationContext.assets
+    private val root = File(context.applicationContext.filesDir, INSTALL_DIR)
 
-    /**
-     * The rules, or an empty list when there is no readable file.
-     *
-     * Never throws. A missing or unreadable list must leave the rest of the
-     * guard running — the accessibility path does not depend on this, and
-     * taking the process down over it would trade a weaker filter for no filter
-     * at all.
-     */
-    fun domains(): List<String> = try {
-        if (file.exists()) Blocklist.parse(file.readLines()) else emptyList()
+    fun load(): BlocklistLoad = try {
+        SLOTS.forEach(::install)
+        BlocklistLoad.Loaded(DnsGuard.withArtifact(root.path, trustedKeys()))
+    } catch (e: ArtifactLoadException.Missing) {
+        failed(BlocklistFailure.MISSING)
+    } catch (e: ArtifactLoadException) {
+        failed(BlocklistFailure.REJECTED)
     } catch (e: IOException) {
-        Log.w(TAG, "could not read the blocklist; falling back to built-in rules")
-        emptyList()
+        failed(BlocklistFailure.MISSING)
+    }
+
+    private fun failed(failure: BlocklistFailure): BlocklistLoad {
+        Log.w(TAG, "blocklist not loaded: $failure")
+        return BlocklistLoad.Failed(failure)
+    }
+
+    private fun trustedKeys(): List<TrustedKey> =
+        (assets.list("$ASSET_DIR/keys") ?: emptyArray()).mapNotNull { name ->
+            val id = BlocklistProvisioning.keyId(name) ?: return@mapNotNull null
+            TrustedKey(id, assets.open("$ASSET_DIR/keys/$name").use { it.readBytes() })
+        }
+
+    private fun install(slot: String) {
+        val bundled = readAsset("$ASSET_DIR/$slot/$MANIFEST")
+        val installed = File(root, "$slot/$MANIFEST").takeIf { it.exists() }?.readBytes()
+        if (!BlocklistProvisioning.needsInstall(bundled, installed)) return
+        val dir = File(root, slot).apply { mkdirs() }
+        assets.open("$ASSET_DIR/$slot/$ARTIFACT").use { input ->
+            File(dir, "$ARTIFACT.tmp").outputStream().use { input.copyTo(it) }
+        }
+        File(dir, "$ARTIFACT.tmp").renameTo(File(dir, ARTIFACT))
+        File(dir, "$MANIFEST.tmp").writeBytes(bundled!!)
+        File(dir, "$MANIFEST.tmp").renameTo(File(dir, MANIFEST))
+    }
+
+    private fun readAsset(path: String): ByteArray? = try {
+        assets.open(path).use { it.readBytes() }
+    } catch (e: IOException) {
+        null
     }
 
     private companion object {
         const val TAG = "Blocklist"
-        const val FILE_NAME = "blocklist.txt"
+        const val ASSET_DIR = "blocklist"
+        const val INSTALL_DIR = "blocklist-artifact"
+        const val ARTIFACT = "artifact.fst"
+        const val MANIFEST = "manifest.bin"
+        val SLOTS = listOf("current", "previous")
     }
 }

@@ -68,6 +68,28 @@ val checkFfiBindings by tasks.registering {
     }
 }
 
+// -PblocklistArtifactDir=<domain-blocklist --output dir> and
+// -PblocklistTrustedKeyDir=<dir of <key id>.pub files> bundle a signed list; with
+// neither, the APK carries none and the app records it at runtime.
+val blocklistAssets = layout.buildDirectory.dir("generated/blocklist-assets").get().asFile
+val stageBlocklist by tasks.registering(Sync::class) {
+    into(File(blocklistAssets, "blocklist"))
+    providers.gradleProperty("blocklistArtifactDir").orNull?.let { dir ->
+        listOf("current", "previous").forEach { slot ->
+            from(file("$dir/$slot")) { into(slot) }
+        }
+    }
+    providers.gradleProperty("blocklistTrustedKeyDir").orNull?.let { dir ->
+        from(file(dir)) {
+            include("*.pub")
+            into("keys")
+        }
+    }
+}
+
+android.sourceSets["main"].assets.srcDir(blocklistAssets)
+tasks.matching { it.name.matches(Regex("merge.*Assets")) }.configureEach { dependsOn(stageBlocklist) }
+
 tasks.named("preBuild") { dependsOn(checkFfiBindings) }
 
 dependencies {

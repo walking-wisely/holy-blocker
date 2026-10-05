@@ -274,9 +274,12 @@ scaffolding and will fail at load time if they fall out of sync with the `.so`.
     interface down, recording it, and lifting the block. Two missing manifest permissions and a
     missing reboot restore were found by that run; see §5.
 
-    Rules come from `filesDir/blocklist.txt` through `BlocklistStore` — added here because
-    `net-shield-ffi` ships a placeholder rule set by design, so without a runtime source the
-    filter had nothing to enforce and no way to be tested against a name that really resolves.
+    Rules come from a signed two-slot artifact bundled in the APK as assets and installed under
+    `filesDir/blocklist-artifact` by `BlocklistStore` (see `mobile.blocklist-provisioning`); the
+    trusted public keys are bundled beside it. The Gradle properties `blocklistArtifactDir` and
+    `blocklistTrustedKeyDir` name what to bundle; a build without them carries no list, and the
+    guard records `list_missing` and runs on the placeholder rules. A bundled slot replaces the
+    installed one whenever their manifests differ; there is no on-device version high-water mark.
 
     Without `setAlwaysOnVpnPackage` (owner-only) the VPN can be turned off in Settings like
     anything else. **The identifier for that screen is deliberately not in `SettingsProfiles`
