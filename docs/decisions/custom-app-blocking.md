@@ -1,0 +1,218 @@
+# ADR: Custom-app blocking
+
+| Field | Value |
+|---|---|
+| **Status** | Proposed, for owner review in the PR; three owner questions below |
+| **Date** | 2026-10-05 |
+| **Owner** | Ivan Dutov |
+| **Supersedes** | — |
+| **Superseded by** | — |
+
+Tier: product decision extending [mvp-scope.md](mvp-scope.md), which already records the owner's
+answers on modes, the panel and the cooldown. It touches protection modes and the tamper model, so
+the red-team is tier 2 (three lenses) under
+[decision-tiers-and-red-teaming.md](decision-tiers-and-red-teaming.md); findings are at the end.
+
+---
+
+## Context
+
+MVP requirement 2 is "a person names an application and it is blocked regardless of content". Today
+neither platform has a per-app check. Measured 2026-10-05:
+
+- `WindowSuppression` (macOS) hides an application only after a content block verdict, and holds a
+  `defaultProtected` set (`com.holyblocker.daemon`, Finder, Dock, SystemUIServer, loginwindow) that
+  it never hides. Its `protectedBundleIdentifiers` is a mutable `var` and its 5-second cooldown
+  exists for content verdicts.
+- `ScreenGuardService` (Android) reads `event.packageName` and passes it to `ScanGate` and
+  `SettingsGuard`; nothing compares it to a deny list. It finds the foreground package from
+  `rootInActiveWindow`, so it is event-driven and foreground-only; `watchedWindows` already walks all
+  windows for the settings screens.
+- `ProtectionSchedule.kt` implements request, cooldown, confirm and expiry on
+  `SystemClock.elapsedRealtime()`, because `currentTimeMillis()` is user-settable. A confirmed disarm
+  opens a window in which the guard is off.
+- `apps/mobile` targets SDK 36, has `android:allowBackup="false"`, and its manifest has no
+  `<queries>` and no `QUERY_ALL_PACKAGES`.
+- `ScreenGuardService.kt` writes the foreground package to `Log.d` in three places: `scan pkg=`,
+  `settings screen pkg=` and `empty harvest pkg=`. The macOS `MacDaemon` sources have no `os_log`,
+  `NSLog` or `print` today.
+
+## Decision
+
+1. **A list entry is an application identity and a mode.** The identity is the Android package name
+   or the macOS bundle identifier, never a display name. The modes are `block`, `hide` and
+   `unblocked`. An application absent from the list is `unblocked`; the list stores only `block`
+   and `hide`.
+2. **What each mode does.**
+
+   | Mode | Android | macOS |
+   |---|---|---|
+   | `hide` | Cover the app with the overlay on every visible window of that package | Cover the app's window rectangles with the overlay on launch and activation and hide it with `NSRunningApplication.hide()` |
+   | `block` | Send the user home (`GLOBAL_ACTION_HOME`) and cover the app | `terminate()` on launch and activation, and again on relaunch. If the app is still running after a grace period, hide and cover it, repeating on every scan. Never `forceTerminate()` |
+
+   The listed-app path does not use `WindowSuppression`'s 5-second cooldown: that cooldown exists so
+   a content verdict does not hammer an app that refuses, and a listed app is not a verdict.
+
+   Android `block` is not "terminate": plain Device Admin and an accessibility service have no
+   documented way to stop a foreground app of another uid. That is unverified here and is observed by
+   `mobile.custom-app-enforcement`. macOS never force-terminates, for the reason
+   `WindowSuppression.swift` records: a blocker that loses unsaved work gets uninstalled.
+3. **Honest labels.** `hide` is shown as "cover only" and Android `block` as "send home and cover";
+   `block` on macOS is "close". The panel states on its face that clones, work-profile copies and
+   other copies of an app are not covered, and that an app's notifications are not suppressed.
+   Release wording says an app is covered or closed, never that it is stopped.
+4. **Adding merges up.** Adding an app, or choosing a mode for an app already listed, stores the
+   stricter of the existing and requested modes (`block` over `hide` over `unblocked`). The add path
+   can never lower. Test vectors cover add-over-existing.
+5. **Lowering costs, in every protection phase.** Moving `block` to `hide`, and removing an app, is
+   requested, waits out the disarm cooldown, and must be confirmed, as `ProtectionSchedule` does for
+   disarming. One pending lowering per app; an unconfirmed request expires and is deleted, as is a
+   confirmed one once applied. The store refuses a lowering or removal without a confirmed per-app
+   request in every phase, including `DISARMED` and `OFF`, so the list cannot be edited while
+   enforcement is off and found changed on re-arm.
+6. **Clocks.** Android uses `elapsedRealtime`. macOS uses a monotonic clock that continues across
+   sleep and that the user cannot set (`mach_continuous_time`), never `Date()`. A request whose
+   stored start lies in the future, which is what a reboot looks like, is void on both platforms,
+   never "ready". The vectors cover it.
+7. **Strength.** Custom-app blocking is exactly as strong as protection itself: a confirmed disarm
+   opens a window in which all enforcement stops, for every entry at once. The per-app cooldown stops
+   removing an entry from being cheaper than disarming, and nothing makes it stronger than disarming.
+   Release wording does not claim more. While protection is armed, including during a pending or
+   ready disarm request, enforcement runs; it stops when protection is disarmed or off, and the
+   development build's kill switch stops it with everything else.
+8. **Undo of a recent add is not a lowering.** Owner question 1.
+9. **The protected set is evaluated at enforcement time.**
+   - It holds the product's own id and the platform shell: on Android the system UI, the Settings
+     package, the current default launcher, the default dialer and the default SMS app, each resolved
+     through the role or intent at the moment of the check, not cached at add time; on macOS the
+     existing `SuppressionPolicy.defaultProtected` set.
+   - The panel and the store reject protected identities at add time as a convenience. The
+     enforcement check is the one that holds: an entry that becomes protected later (a listed app
+     made the default launcher) is ignored while it holds the role, never acted on, so there is no
+     home-launches-the-app loop.
+10. **Enumeration is not the boundary.** The panel enumerates in memory when it opens and discards
+    the list when it closes. Android lists launchable apps through a `<queries>` entry for the
+    `MAIN`/`LAUNCHER` intent, not `QUERY_ALL_PACKAGES`. macOS lists bundles under `/Applications`,
+    `~/Applications` and `/System/Applications`. Both panels also accept an identity typed by hand,
+    because an app the panel cannot list is not thereby unblockable.
+11. **Android enforcement is not foreground-event-only.** Enforcement runs on every window of a
+    listed package, as `watchedWindows` does for settings, and runs again when the list changes, so
+    an app already in the foreground, in split-screen or in a floating window when it is added is
+    covered without waiting for a new event.
+12. **Data stays on the device and is not logged.**
+    - The list lives in the app's private store: `filesDir` on Android (`allowBackup="false"`, and a
+      test fails if it flips); the agent's Application Support directory on macOS with mode `0600`
+      in a `0700` directory, excluded from Time Machine and iCloud backup. The macOS list is
+      readable by the protected user's own account, and the claim that it stays on the device carries
+      the standard-account scope of mvp-scope.md.
+    - A pending lowering (app and request time) is stored in the same private store, one record per
+      app, deleted on confirm or expiry.
+    - Enforcement writes no per-block record anywhere: not the tamper log, not a log line, not a
+      counter per app. The tamper-log vocabulary gains no event for a blocked app, and a test asserts
+      no enforcement path passes a package or bundle identifier into `TamperEntry.detail`, which is
+      free text.
+    - No `Log.*` in `ScreenGuardService` prints a package name. `mobile.custom-app-enforcement`
+      removes `pkg=` from all three lines and adds a gate that fails on a package name in any `Log.*`
+      call in the file. On macOS no `os_log`, `NSLog` or `print` prints a bundle identifier, and a
+      gate in `mac-daemon.custom-app-core` fails on one.
+    - The privacy inventory row for these data classes (chosen-app list, installed-app enumeration,
+      foreground package, pending lowering) is added by this record's PR, as mvp-scope.md requires
+      before the first custom-app step merges.
+13. **No tamper-log record of a list change in the MVP,** and no per-block signal to the person: there
+    is no liveness indication that a block fired, and the release wording says so. A lowering
+    request is reserved as the content-free event a partner flow will emit once partners exist; it
+    will carry no identity.
+14. **Two small pure modules, not a Rust crate.** The matcher and the lowering rule are about fifty
+    lines each, written in Kotlin and Swift against the same test vectors, as
+    `mac-daemon.protection-schedule` ports `ProtectionSchedule`. A UniFFI crate would add a
+    cross-platform contract for logic that is neither a secret nor heavy. The shared contract is the
+    mode vocabulary and decisions 4 to 6 above.
+15. **macOS is advisory until its agent is observed.** The agent runs as the protected user, so a
+    standard user can edit the list file or stop the agent. Decisions 5 and 6 on macOS are advisory
+    until `mac-daemon.standard-user-tamper` observes whether the agent can be stopped, and release
+    wording claims no parity with Android for requirement 2 on macOS until then. Hardening the store
+    (root-owned, written only through the daemon) is a trust-boundary change that passes through the
+    owner after that result.
+
+## Step requirements
+
+| Step | Must do, beyond its title |
+|---|---|
+| `mobile.custom-app-core` | Matcher, merge-up add, lowering request/confirm/expiry, store with the backup test, protected-set resolution at check time, the vectors in decisions 4 to 6, a test that nothing writes an identity into `TamperEntry.detail` |
+| `mac-daemon.custom-app-core` | The same, with the monotonic sleep-surviving clock, the file mode and backup exclusion, and the no-logging gate. Depends on `mac-daemon.protection-schedule` |
+| `mobile.custom-app-enforcement` | Window-wide enforcement and a rescan on list change, removal of every package name from `Log.*` with its gate, observation of whether `block` can stop an app and how long content shows before cover |
+| `mac-daemon.custom-app-hide`, `custom-app-block` | Launch and activation observers, repeat-hide after the grace period, no use of `WindowSuppression`'s cooldown |
+| `mobile.custom-app-panel`, `mac-daemon.custom-app-panel` | The honest labels and the coverage note of decision 3, manual identity entry, both modes offered at add time with the lowering cost stated |
+
+## Rejected alternatives
+
+| Alternative | Why not |
+|---|---|
+| Match on display name | Names are localized, renamed and spoofable; the identity is the only stable key |
+| `forceTerminate()` for macOS `block` | Discards unsaved work; `WindowSuppression.swift` chose hide over close for this reason |
+| `QUERY_ALL_PACKAGES` on Android | Broader than needed to list launchable apps and a wider package-visibility grant to hold |
+| A Rust crate with UniFFI for the matcher and the schedule | A new cross-platform contract for a trivial pure function |
+| Record each block in the tamper log | A usage history of the person's chosen apps; the log is for the guard, not for activity |
+| Immediate lowering | Defeats requirement 3 as it would defeat it for disarm |
+| Check the protected set only when adding | The Android launcher role and a mutable macOS set change after add; a check at add time either exempts a listed launcher or loops home into the app |
+| The wall clock for the cooldown | User-settable on both platforms |
+| Drop `hide` from the MVP | Owner answer 3 in mvp-scope.md names it; it is kept, labelled "cover only" |
+
+## What this does not cover
+
+- **Another route to the same service.** A blocked app's website, a mirror or a second client with a
+  different identity. Domains are the blocklist's job.
+- **Clones, work profiles and parallel-space apps on Android,** and a macOS app copied and re-signed
+  with a new bundle identifier. Neither is detected.
+- **A short flash before cover.** The overlay is drawn after an accessibility or `NSWorkspace` event,
+  so content can show for a moment. How long is observed in the enforcement steps, not argued here.
+- **Notifications, widgets, share sheets, audio and background work** of a covered or closed app.
+- **Android `block` does not terminate the app.** It is "home and cover" until an observation says
+  otherwise.
+- **The disarm window.** All enforcement stops for its length (decision 7).
+- **A false positive with no emergency path.** An essential app listed by mistake, such as a banking,
+  work or authenticator app, is protected only by the undo of owner question 1 and otherwise by the
+  cooldown. The protected set covers the dialer and messages on Android, not every essential app.
+- **A user-writable list on macOS** until `mac-daemon.standard-user-tamper` (decision 15).
+- **Windows and iOS.**
+
+## Owner questions
+
+1. **A short undo window for a mistaken add.** The intent review found that a newly added app
+   defaults to `block` and a lowering costs the full cooldown, so listing the wrong app, a banking or
+   work app, locks the person out for the length of the cooldown. Recommendation: an add can be
+   removed immediately for five minutes, stored as a monotonic start, void after a reboot, and
+   applying to adds only, never to a lowering. Without it the cost is as stated above. Decision 8 is
+   written as that recommendation if you accept it.
+2. **Default mode for a new app is `block`** (the stricter, and the cooldown makes it sticky). Both
+   modes are offered at add time with the lowering cost stated. Is `block` the right default?
+3. **No tamper-log or per-block record in the MVP** (decision 13). Accepted for the MVP?
+
+## Red-team findings
+
+Three fresh-context runs, 2026-10-05, all by reading; none executed code. Folded findings are
+listed; the rest are in "What this does not cover".
+
+| # | Lens | Finding | Resolved by |
+|---|---|---|---|
+| 1 | Bypass | The add path can lower a mode with no cooldown (**changed the design**) | decision 4 |
+| 2 | Bypass | Per-app cooldown adds nothing beyond disarm; a disarm window stops all enforcement, and the list may be edited while off (**changed the design**) | decisions 5 and 7 |
+| 3 | Bypass | The protected set is checked at add time; a listed launcher either loops or is exempt (**changed the design**) | decision 9 |
+| 4 | Bypass | macOS relaunch gets a 5-second window per cycle and a refused terminate falls to a user-undoable hide | decision 2 |
+| 5 | Bypass | The macOS list is user-writable, which makes the cooldown advisory | decision 15 |
+| 6 | Bypass | Android enforcement is foreground-event-only | decision 11 |
+| 7 | Bypass | Enumeration gaps leave apps unlistable | decision 10 |
+| 8 | Bypass | No clock named for macOS | decision 6 |
+| 9 | Intent | Android `block` and `hide` promise more than they do | decision 3 |
+| 10 | Intent | A mistaken `block` of an essential app has no emergency path (**changed the design**) | owner question 1, decision 9 |
+| 11 | Intent | The cooldown conflates a mistaken add with an impulse to lower | owner question 1 |
+| 12 | Intent | A lowering is an attempt the accountability model would want, and nothing signals it | decision 13 |
+| 13 | Intent | No liveness signal that a block fired | decision 13 |
+| 14 | Legal and privacy | `pkg=` is logged in three places, not one (**changed the design**) | decision 12 |
+| 15 | Legal and privacy | The macOS no-logging rule is unenforced | decision 12 |
+| 16 | Legal and privacy | The macOS store has no stated permissions or backup exclusion | decision 12 |
+| 17 | Legal and privacy | The macOS confidentiality claim is overstated | decision 12, standard-account scope |
+| 18 | Legal and privacy | `allowBackup` is relied on without a test | decision 12 |
+| 19 | Legal and privacy | The inventory row was not committed to | decision 12 and this PR |
+| 20 | Legal and privacy | `TamperEntry.detail` is free text, so content-freeness rests on the vocabulary alone | decision 12 |
+| 21 | Legal and privacy | A pending lowering stores timing metadata | decision 12 |

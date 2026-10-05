@@ -5,4 +5,5 @@ evidence = ""
 acceptance = "code"
 depends_on = ["mobile.custom-app-blocking"]
 group = "custom-apps"
+verify = "gradle unit tests: matcher, merge-up add, lowering request/confirm/expiry, void-on-reboot, backup flag, no identity in TamperEntry.detail"
 milestone = "mvp"
