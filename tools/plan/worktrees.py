@@ -89,17 +89,18 @@ def _report(rows: list[state.Row]) -> None:
 
 
 def _inventories(cwd: str, base: str, light: bool) -> list[inventory.Inventory]:
-    return [inventory.build(tree, base, cwd, light=light) for tree in state.list_worktrees(cwd)]
+    rows = []
+    for tree in state.list_worktrees(cwd):
+        try:
+            rows.append(inventory.build(tree, base, cwd, light=light))
+        except (subprocess.CalledProcessError, OSError) as error:
+            print(f"cannot read {tree.path}: {error}", file=sys.stderr)
+    return rows
 
 
 def _summary(cwd: str, base: str) -> int:
     try:
-        rows = []
-        for tree in state.list_worktrees(cwd):
-            try:
-                rows.append(inventory.build(tree, base, cwd, light=True))
-            except (subprocess.CalledProcessError, OSError):
-                continue
+        rows = _inventories(cwd, base, light=True)
         remote = [name for name, _ in branches.list_remote(cwd) if name != base]
         line = inventory.summary_line(rows, protected_paths(cwd, base), len(remote))
     except (subprocess.CalledProcessError, FileNotFoundError):

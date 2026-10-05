@@ -264,6 +264,36 @@ class PrunableTest(unittest.TestCase):
         self.assertNotIn("wt-gone", remaining)
 
 
+class AdminEntryTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.repo = make_repo(Path(self.tmp.name))
+
+    def drop(self, name):
+        path = add_worktree(self.repo, name, "-b", f"feat/{name}")
+        subprocess.run(["rm", "-rf", str(path)], check=True)
+        row = inv(f"feat/{name}", "prunable", path=str(path))
+        return path, row
+
+    def entries(self):
+        return sorted(p.name for p in (self.repo / ".git" / "worktrees").glob("*"))
+
+    def test_relative_pointer_is_matched(self):
+        path = self.repo.parent / "wt-rel"
+        git(self.repo, "worktree", "add", "-q", "--relative-paths", str(path), "-b", "feat/rel")
+        subprocess.run(["rm", "-rf", str(path)], check=True)
+        inventory.remove(inv("feat/rel", "prunable", path=str(path)), str(self.repo), discard=False)
+        self.assertEqual(self.entries(), [])
+
+    def test_trailing_slash_pointer_is_matched(self):
+        path, row = self.drop("slash")
+        pointer = self.repo / ".git" / "worktrees" / "slash" / "gitdir"
+        pointer.write_text(pointer.read_text().strip() + "/\n")
+        inventory.remove(row, str(self.repo), discard=False)
+        self.assertEqual(self.entries(), [])
+
+
 class RemoveTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

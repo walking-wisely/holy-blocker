@@ -157,10 +157,10 @@ def _drop_admin_entry(path: str, cwd: str) -> None:
     """`git worktree prune` is not scoped to a path and would also drop an
     unnamed worktree whose directory is gone, so delete just this one's entry."""
     common = Path(cwd).joinpath(_git(["rev-parse", "--git-common-dir"], cwd).strip()).resolve()
-    target = os.path.join(path, ".git")
+    target = Path(path, ".git").resolve()
     for entry in (common / "worktrees").glob("*"):
         pointer = entry / "gitdir"
-        if pointer.is_file() and pointer.read_text().strip() == target:
+        if pointer.is_file() and (entry / pointer.read_text().strip()).resolve() == target:
             shutil.rmtree(entry)
             return
     raise FileNotFoundError(f"no worktree administrative entry for {path}")
