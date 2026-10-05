@@ -159,12 +159,15 @@ launches its demo (`demos/<feature>/`, interactive mode) and nothing else; the o
 impressions, not code review, and those become steps. See
 `docs/decisions/feature-demos-and-local-e2e.md`.
 
-After a merge, reap the worktree:
+After a merge, show the owner the worktree's inventory and ask before removing it:
 
 ```
-python -m tools.plan.worktrees reap          # dry run
-python -m tools.plan.worktrees reap --yes
+python3 -m tools.plan.worktrees inventory
+python3 -m tools.plan.worktrees reap --only <branch> --yes
 ```
+
+A merged PR's remote branch is removed by GitHub (`deleteBranchOnMerge`); check with
+`python3 -m tools.plan.branches inventory` that nothing of this step lingers.
 
 ## What the loop must not do
 
@@ -172,8 +175,9 @@ python -m tools.plan.worktrees reap --yes
 - Attempt a third fix for a Blocking finding.
 - Skip the security or privacy review because the diff "obviously" misses their triggers.
 - Write a status file. Derive it.
-- Reap a worktree with local-only commits, a dirty tree, an open PR, or
-  non-disposable ignored files. `--force` relaxes only the last of those.
+- Remove a worktree the owner has not seen the inventory of, or pass `--discard` without an
+  explicit instruction. A worktree with uncommitted files or non-disposable ignored state is
+  blocked by default.
 - Treat a `gh` failure as "no PR" — `unknown` is its own state, and the reaper
   leaves it alone.
 - Trust a merged PR on a reused branch name: the PR must still target the base

@@ -95,14 +95,17 @@ def parse_ignored(text: str) -> list[str]:
     return paths
 
 
-def is_disposable_ignored(paths: list[str]) -> bool:
-    if not paths:
-        return True
+def non_disposable_ignored(paths: list[str]) -> list[str]:
+    kept: list[str] = []
     for path in paths:
         parts = [part for part in path.strip().strip("/").split("/") if part]
         if not any(part in DISPOSABLE_IGNORED for part in parts):
-            return False
-    return True
+            kept.append(path)
+    return kept
+
+
+def is_disposable_ignored(paths: list[str]) -> bool:
+    return not non_disposable_ignored(paths)
 
 
 def summarise_checks(rollup: list[dict]) -> str:
@@ -190,18 +193,6 @@ def classify(
 
 def reapable(classified: Classified) -> bool:
     return classified.verdict in REAPABLE
-
-
-def select_reapable(rows: list[Row], protected: set[str], force: bool = False) -> list[Row]:
-    """Rows safe to remove: a reapable verdict, never a protected path, and no
-    non-disposable ignored state unless forced."""
-    return [
-        row
-        for row in rows
-        if row.verdict in REAPABLE
-        and _real(row.path) not in protected
-        and (force or not row.ignored_state)
-    ]
 
 
 def _real(path: str) -> str:

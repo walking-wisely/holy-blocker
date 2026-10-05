@@ -328,34 +328,6 @@ class IgnoredTest(unittest.TestCase):
         self.assertTrue(state.is_disposable_ignored([]))
 
 
-class SelectReapableTest(unittest.TestCase):
-    def _row(self, path, verdict, ignored_state=False):
-        return state.Row(path=path, branch="b", verdict=verdict, reason="", ignored_state=ignored_state)
-
-    def test_selects_only_reapable_and_unprotected(self):
-        rows = [
-            self._row("/main", "merged"),
-            self._row("/w/a", "merged"),
-            self._row("/w/b", "open"),
-            self._row("/w/c", "abandoned"),
-        ]
-        got = state.select_reapable(rows, protected={"/main"})
-        self.assertEqual([r.path for r in got], ["/w/a", "/w/c"])
-
-    def test_open_is_never_selected(self):
-        rows = [self._row("/w/a", "open")]
-        self.assertEqual(state.select_reapable(rows, protected=set()), [])
-
-    def test_ignored_state_blocks_merge_until_forced(self):
-        rows = [self._row("/w/a", "merged", ignored_state=True)]
-        self.assertEqual(state.select_reapable(rows, protected=set()), [])
-        self.assertEqual([r.path for r in state.select_reapable(rows, protected=set(), force=True)], ["/w/a"])
-
-    def test_force_does_not_override_the_verdict(self):
-        rows = [self._row("/w/a", "open", ignored_state=True)]
-        self.assertEqual(state.select_reapable(rows, protected=set(), force=True), [])
-
-
 class ParsePrTest(unittest.TestCase):
     def test_empty_list_is_none(self):
         self.assertIsNone(state.parse_pr("[]"))
