@@ -22,5 +22,13 @@ path = "src/bin/uniffi-bindgen.rs"
 required-features = ["bindgen"]
 
 [dependencies]
+domain-blocklist = { path = "../domain-blocklist" }
+domain-normalize = { path = "../domain-normalize" }
+ed25519-dalek = "3.0.0"
 net-shield = { path = "../net-shield" }
+thiserror = "2.0.20"
 uniffi = { version = "0.32.0", default-features = false }
+
+[dev-dependencies]
+bincode = "1"
+tempfile = "3"

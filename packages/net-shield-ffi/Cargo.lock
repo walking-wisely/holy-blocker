@@ -632,7 +632,13 @@ dependencies = [
 name = "net-shield-ffi"
 version = "0.1.0"
 dependencies = [
+ "bincode",
+ "domain-blocklist",
+ "domain-normalize",
+ "ed25519-dalek",
  "net-shield",
+ "tempfile",
+ "thiserror 2.0.21",
  "uniffi",
 ]
 
