@@ -287,15 +287,28 @@ List worktrees and their classification (merged, abandoned, open, dirty, etc.):
 python -m tools.plan.worktrees report
 ```
 
-Reap merged/abandoned worktrees (dry run first, then add `--yes`):
+Removal is gated by what the worktree holds, not by its branch's fate: `git worktree remove`
+leaves the branch, so only uncommitted, untracked or non-disposable ignored files, and commits on
+an unreferenced detached HEAD, can be lost. Read the inventory, then name what to remove:
 
 ```
-python -m tools.plan.worktrees reap            # dry run
-python -m tools.plan.worktrees reap --yes      # actually remove
-python -m tools.plan.worktrees reap --yes --force   # also reap worktrees with ignored state
+python3 -m tools.plan.worktrees inventory                  # contents, commits ahead, PR state
+python3 -m tools.plan.worktrees inventory --summary        # one offline line (SessionStart hook)
+python3 -m tools.plan.worktrees reap --only BRANCH...      # dry run
+python3 -m tools.plan.worktrees reap --only BRANCH... --yes
+python3 -m tools.plan.worktrees reap --only BRANCH... --yes --discard   # also drop uncommitted/ignored state
 ```
 
-Branches are never deleted by the reaper — that decision is left to a human.
+Remove a worktree only after the owner has seen its inventory and said so; run `--discard` only
+on an explicit instruction. Branches are never deleted by the worktree reaper.
+
+Remote branches a merged PR left behind are swept the same way. A branch is `merged` only if a
+merged PR's head equals the remote tip, so commits pushed after the merge are never lost:
+
+```
+python3 -m tools.plan.branches inventory
+python3 -m tools.plan.branches reap --only NAME... --yes   # merged and ancestor branches only
+```
 
 ### Pending-step discovery
 

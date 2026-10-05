@@ -683,3 +683,32 @@ Once no worktree or open PR carries a `steps.toml`, delete the transitional read
 `migrate` command. `python -m tools.plan.todos --all` run across worktrees shows none left.
 
 Acceptance: `code`. Verify: `python -m unittest discover -s tools/plan/tests -t .`.
+
+### Worktree and branch hygiene
+
+<!-- step: engineering.worktree-branch-hygiene -->
+
+Finished worktrees and merged remote branches pile up because nothing removes them and the owner
+cannot see what a removal would lose. The gate is the worktree's contents, not its branch's fate:
+`git worktree remove` never touches the branch, so what a removal can destroy is uncommitted,
+untracked or non-disposable ignored files, plus commits on a detached HEAD that no ref holds.
+
+- `worktrees inventory` lists, per worktree, those contents, the commits ahead of the base, whether
+  they exist on any remote, and the PR state. A worktree is `clean` (removable), or blocked as
+  `has-uncommitted`, `has-ignored-state` or `orphaned-head`. Unpushed commits on a clean worktree
+  are a `branch-at-risk` warning, not a block: the branch survives the removal.
+- `worktrees inventory --summary` is one offline line, for a `SessionStart` hook in
+  `.claude/settings.json`, so the sweep surfaces at the start of every session with no scheduler.
+- `worktrees reap --only <branch>... --yes` removes only the named worktrees, never a protected one.
+  Blocked worktrees need `--discard`, after their file list is printed.
+- `branches inventory` classifies every remote branch from one `gh pr list` call: `merged` (a merged
+  PR into the base whose head equals the remote tip), `ancestor` (tip already in the base),
+  `merged-diverged` (commits pushed after the merge), `closed`, `open`, `none`. `branches reap
+  --only <name>... --yes` deletes with a lease on the inventoried tip; only `merged` and `ancestor`
+  qualify without `--discard`, and an `open` branch never does.
+- The repository's `deleteBranchOnMerge` setting is switched on so merged branches stop piling up.
+
+Reference documents: `git-worktree(1)` (`remove`, `list --porcelain`), `git-push(1)`
+(`--force-with-lease=<ref>:<expect>`, `--delete`), `gh pr list --json` fields.
+
+Acceptance: `code`. Verify: `python3 -m unittest discover -s tools/plan/tests -t .`.

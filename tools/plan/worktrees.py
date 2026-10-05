@@ -1,20 +1,20 @@
 """Report and reap stranded git worktrees.
 
 The working rhythm is worktree-in, PR-out, but nothing reaped the worktree on
-the way out, so finished branches piled up. This classifies every worktree from
-git and gh facts (``tools.plan.state``) and removes the ones whose work is
-already merged or whose branch carries nothing unique.
+the way out, so finished branches piled up. `report` classifies every worktree
+by its branch's fate from git and gh facts (``tools.plan.state``). Removal is
+gated by the worktree's contents instead (``tools.plan.inventory``): the owner
+reads the inventory and names what to remove.
 
     python -m tools.plan.worktrees report
-    python -m tools.plan.worktrees reap            # dry run
-    python -m tools.plan.worktrees reap --yes
-    python -m tools.plan.worktrees reap --yes --force   # also removed: ignored state
+    python -m tools.plan.worktrees inventory            # what a removal would lose
+    python -m tools.plan.worktrees inventory --summary  # one offline line
+    python -m tools.plan.worktrees reap --only BRANCH...         # dry run
+    python -m tools.plan.worktrees reap --only BRANCH... --yes
+    python -m tools.plan.worktrees reap --only BRANCH... --yes --discard
 
-A branch with no merged PR is reaped as `landed` only when merging it into the
-base would change nothing (``state.content_landed``), which holds across squash
-merges and rebases.
-
-Branches are never deleted: that call stays with a human.
+Local branches are never deleted: `git worktree remove` leaves them, and that
+call stays with a human. Remote branches are swept by ``tools.plan.branches``.
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ import subprocess
 import sys
 from dataclasses import replace
 
-from tools.plan import state
+from tools.plan import branches, inventory, state
 
 
 def build_rows(cwd: str, base: str) -> list[state.Row]:
@@ -88,36 +88,77 @@ def _report(rows: list[state.Row]) -> None:
         print(f"{row.verdict:<10} {branch:<45} {row.reason}{marker}")
 
 
+def _inventories(cwd: str, base: str, light: bool) -> list[inventory.Inventory]:
+    rows = []
+    for tree in state.list_worktrees(cwd):
+        try:
+            rows.append(inventory.build(tree, base, cwd, light=light))
+        except (subprocess.CalledProcessError, OSError) as error:
+            print(f"cannot read {tree.path}: {error}", file=sys.stderr)
+    return rows
+
+
+def _summary(cwd: str, base: str) -> int:
+    try:
+        rows = _inventories(cwd, base, light=True)
+        remote = [name for name, _ in branches.list_remote(cwd) if name != base]
+        line = inventory.summary_line(rows, protected_paths(cwd, base), len(remote))
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return 0
+    if line:
+        print(line)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m tools.plan.worktrees")
-    parser.add_argument("command", choices=("report", "reap"))
+    parser.add_argument("command", choices=("report", "inventory", "reap"))
     parser.add_argument("--base", default="master")
+    parser.add_argument("--only", nargs="+", default=[], metavar="BRANCH", help="reap: worktrees to remove, by branch or path")
     parser.add_argument("--yes", action="store_true", help="actually remove; without it, dry run")
-    parser.add_argument("--force", action="store_true", help="also remove worktrees with ignored state")
+    parser.add_argument("--discard", action="store_true", help="also remove worktrees holding uncommitted or ignored state")
+    parser.add_argument("--summary", action="store_true", help="inventory: one offline line")
     args = parser.parse_args(argv)
 
     cwd = "."
-    rows = build_rows(cwd, args.base)
     if args.command == "report":
-        _report(rows)
+        _report(build_rows(cwd, args.base))
+        return 0
+    if args.command == "inventory" and args.summary:
+        return _summary(cwd, args.base)
+
+    rows = _inventories(cwd, args.base, light=False)
+    protected = protected_paths(cwd, args.base)
+    if args.command == "inventory":
+        for row in rows:
+            if state._real(row.path) not in protected:
+                print("\n".join(inventory.format_inventory(row)))
         return 0
 
-    doomed = state.select_reapable(rows, protected_paths(cwd, args.base), force=args.force)
-    if not doomed:
-        print("nothing to reap")
-        return 0
-    for row in doomed:
-        marker = " [ignored state]" if row.ignored_state else ""
-        print(f"{row.verdict:<10} {row.branch or '(detached)'}{marker}")
-        print(f"           {row.path}")
+    if not args.only:
+        print("reap needs --only BRANCH...; nothing is removed in bulk", file=sys.stderr)
+        return 2
+    chosen, refused = inventory.select(rows, args.only, protected, args.discard)
+    for name, why in refused:
+        print(f"refused {name}: {why}", file=sys.stderr)
+    for row in chosen:
+        print("\n".join(inventory.format_inventory(row)))
+    if refused:
+        return 2
     if not args.yes:
-        print(f"\ndry run: {len(doomed)} worktree(s) would be removed; pass --yes to remove", file=sys.stderr)
+        print(f"\ndry run: {len(chosen)} worktree(s) would be removed; pass --yes to remove", file=sys.stderr)
         return 0
-    for row in doomed:
-        subprocess.run(["git", "worktree", "remove", row.path], cwd=cwd, check=True)
+    failed = False
+    for row in chosen:
+        try:
+            inventory.remove(row, cwd, args.discard)
+        except (subprocess.CalledProcessError, OSError) as error:
+            detail = (getattr(error, "stderr", "") or str(error)).strip()
+            print(f"failed {row.path}: {detail}", file=sys.stderr)
+            failed = True
+            continue
         print(f"removed {row.path}")
-    subprocess.run(["git", "worktree", "prune"], cwd=cwd, check=True)
-    return 0
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":

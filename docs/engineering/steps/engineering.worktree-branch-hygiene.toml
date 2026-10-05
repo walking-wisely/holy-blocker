@@ -1,0 +1,6 @@
+id = "engineering.worktree-branch-hygiene"
+title = "owner-gated worktree and remote branch inventory and reap, with a session-start summary"
+status = "pending"
+evidence = ""
+acceptance = "code"
+verify = "python3 -m unittest discover -s tools/plan/tests -t ."
