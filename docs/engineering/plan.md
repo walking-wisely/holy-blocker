@@ -573,6 +573,14 @@ The router in `CLAUDE.md` asks the agent to classify a request by feel, but `loo
 
 Acceptance: `code`. Verify: `python -m unittest discover -s tools/plan/tests -t .`.
 
+### MVP milestone label
+
+<!-- step: engineering.mvp-milestone -->
+
+Decision: [mvp-scope.md](../decisions/mvp-scope.md). `milestone = "mvp"` is an optional, closed-set step key. `order_steps` sorts ready milestone steps ahead of grouped and ungrouped ones, `validate` rejects an unknown value and a milestone step that waits on an unfinished non-milestone step, `todos` tags and filters, and `loop check` prints an advisory note for an off-milestone feature step.
+
+Acceptance: `code`. Verify: `python3 -m unittest discover -s tools/plan/tests -t .`.
+
 ## Steps 12–14 — per-step ledger files
 
 Decision: [per-step-ledger-files.md](../decisions/per-step-ledger-files.md).

@@ -1,0 +1,7 @@
+id = "mac-daemon.standard-user-tamper"
+title = "Observe tccutil reset and daemon removal from a standard, non-admin account"
+status = "pending"
+evidence = ""
+acceptance = "observation"
+group = "tamper"
+milestone = "mvp"

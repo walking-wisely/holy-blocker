@@ -3,3 +3,4 @@ title = "Android e2e scenario — wrap the three smoke scripts under the scenari
 status = "pending"
 evidence = ""
 depends_on = ["mobile.vpn-dns-filter"]
+milestone = "mvp"

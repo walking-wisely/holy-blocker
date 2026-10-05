@@ -330,9 +330,6 @@ class MissingPathTest(unittest.TestCase):
         self.assertIn("no such directory", stderr.getvalue())
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 class OrderStepsTest(unittest.TestCase):
     def _ids(self, steps):
         return [s.id for s in ledger.order_steps(steps)]
@@ -383,3 +380,61 @@ class GroupValidationTest(unittest.TestCase):
     def test_cross_component_dependency_is_an_error(self):
         steps = [ledger.Step("p.a", "a", "pending", "", depends_on=("other.x",))]
         self.assertTrue(any("unknown dependency" in p for p in ledger.validate(steps, [])))
+
+
+class MilestoneTest(unittest.TestCase):
+    def _step(self, step_id, milestone="", group="", deps=(), status="pending", kind="feature"):
+        return ledger.Step(
+            step_id, "t", status, "done" if status == "done" else "",
+            depends_on=tuple(deps), group=group, milestone=milestone, kind=kind,
+        )
+
+    def _ids(self, steps):
+        return [s.id for s in ledger.order_steps(steps)]
+
+    def test_milestone_step_sorts_before_grouped_step(self):
+        steps = [self._step("p.a", group="aaa"), self._step("p.z", milestone="mvp")]
+        self.assertEqual(self._ids(steps), ["p.z", "p.a"])
+
+    def test_milestone_steps_sort_by_group_then_id(self):
+        steps = [
+            self._step("p.b", milestone="mvp", group="g2"),
+            self._step("p.c", milestone="mvp", group="g1"),
+            self._step("p.a", milestone="mvp"),
+        ]
+        self.assertEqual(self._ids(steps), ["p.c", "p.b", "p.a"])
+
+    def test_dependency_still_precedes_milestone_step(self):
+        steps = [self._step("p.a", milestone="mvp", deps=["p.z"]), self._step("p.z")]
+        self.assertEqual(self._ids(steps), ["p.z", "p.a"])
+
+    def test_bug_step_sorts_before_milestone_step(self):
+        steps = [self._step("p.a", milestone="mvp"), self._step("p.z", kind="bug")]
+        self.assertEqual(self._ids(steps), ["p.z", "p.a"])
+
+    def test_unknown_milestone_is_invalid(self):
+        problems = ledger.validate([self._step("p.a", milestone="beta")], [])
+        self.assertTrue(any("invalid milestone" in p for p in problems))
+
+    def test_valid_milestone_has_no_problems(self):
+        self.assertEqual(ledger.validate([self._step("p.a", milestone="mvp")], []), [])
+
+    def test_milestone_step_cannot_wait_on_unfinished_non_milestone_step(self):
+        steps = [self._step("p.a", milestone="mvp", deps=["p.b"]), self._step("p.b")]
+        problems = ledger.validate(steps, [])
+        self.assertTrue(any("p.a" in p and "p.b" in p and "milestone" in p for p in problems))
+
+    def test_milestone_step_may_wait_on_done_non_milestone_step(self):
+        steps = [self._step("p.a", milestone="mvp", deps=["p.b"]), self._step("p.b", status="done")]
+        self.assertEqual(ledger.validate(steps, []), [])
+
+    def test_milestone_step_may_wait_on_milestone_step(self):
+        steps = [
+            self._step("p.a", milestone="mvp", deps=["p.b"]),
+            self._step("p.b", milestone="mvp"),
+        ]
+        self.assertEqual(ledger.validate(steps, []), [])
+
+
+if __name__ == "__main__":
+    unittest.main()

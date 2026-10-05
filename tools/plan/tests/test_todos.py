@@ -134,12 +134,12 @@ class FormatBlockerFlagTest(unittest.TestCase):
 
 
 class ShowTest(unittest.TestCase):
-    def _todo(self, step_id="p.x", status="pending", verdict="merged", branch="feat/x", path="/w", kind="feature"):
+    def _todo(self, step_id="p.x", status="pending", verdict="merged", branch="feat/x", path="/w", kind="feature", milestone=""):
         return todos.Todo(
             step_id=step_id, title="a step", status=status,
             acceptance="code", verify="", evidence="",
             package="p", worktree_path=path, branch=branch,
-            worktree_verdict=verdict, worktree_reason="test", kind=kind,
+            worktree_verdict=verdict, worktree_reason="test", kind=kind, milestone=milestone,
         )
 
     def _capture(self, todos_list, **kwargs):
@@ -163,6 +163,19 @@ class ShowTest(unittest.TestCase):
         out = self._capture(ts, show_all=True, blockers_only=False)
         self.assertIn("p.a", out)
         self.assertIn("p.b", out)
+
+    def test_milestone_steps_are_listed_first_and_tagged(self):
+        ts = [self._todo("p.a"), self._todo("p.z", milestone="mvp")]
+        out = self._capture(ts, show_all=False, blockers_only=False)
+        self.assertLess(out.index("p.z"), out.index("p.a"))
+        self.assertIn("p.z [mvp]", out)
+        self.assertNotIn("p.a [mvp]", out)
+
+    def test_milestone_filter_drops_other_steps(self):
+        ts = [self._todo("p.a"), self._todo("p.z", milestone="mvp")]
+        out = self._capture(ts, show_all=False, blockers_only=False, milestone="mvp")
+        self.assertIn("p.z", out)
+        self.assertNotIn("p.a", out)
 
     def test_blockers_only_filters_clean(self):
         ts = [
