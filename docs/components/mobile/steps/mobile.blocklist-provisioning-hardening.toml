@@ -1,0 +1,8 @@
+id = "mobile.blocklist-provisioning-hardening"
+title = "Blocklist provisioning edge cases: fail a release build with no list or a dev key, record a fallback to the previous slot, compare manifest versions on install, surface a failed load"
+status = "pending"
+evidence = ""
+acceptance = "code"
+verify = "./gradlew testDebugUnitTest from apps/mobile"
+kind = "bug"
+group = "blocklist"

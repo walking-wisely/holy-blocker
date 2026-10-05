@@ -82,7 +82,7 @@ arm() {
     # Written with the process down: SharedPreferences caches in memory, so a
     # file edit under a running app is simply overwritten.
     adb shell am force-stop "$pkg"
-    adb shell "run-as $pkg sh -c 'cat > shared_prefs/protection_mode.xml' <<'EOF'
+    adb shell "run-as $pkg sh -c 'mkdir -p shared_prefs; cat > shared_prefs/protection_mode.xml' <<'EOF'
 <?xml version='1.0' encoding='utf-8' standalone='yes' ?>
 <map>
     <boolean name=\"armed\" value=\"$1\" />
@@ -120,8 +120,9 @@ build_fixture_list
 echo "==> waiting for device"
 wait_for_boot
 
-echo "==> installing"
-adb install -r -g "$apk" >/dev/null || fail "install failed"
+echo "==> installing fresh"
+adb uninstall "$pkg" >/dev/null 2>&1 || true
+adb install -g "$apk" >/dev/null || fail "install failed"
 
 echo "==> granting the VPN op"
 # The emulator equivalent of accepting the consent dialog, which is a system
@@ -156,7 +157,9 @@ lookup_fails "$blocked" || fail "$blocked resolved; it should have been refused 
 adb logcat -d -s NetworkGuard:V | grep -q "answered a blocked name locally" \
     || fail "no local answer was logged; the refusal may have come from the resolver"
 echo "    $blocked refused"
-adb shell "run-as $pkg cat files/tamper-log.tsv" | grep -qE "list_missing|list_rejected" \
+adb logcat -d -s Blocklist:V | grep -q "blocklist loaded" || fail "the shipped list was not loaded"
+tamper_log="$(adb shell "run-as $pkg cat files/tamper-log.tsv")" || fail "no tamper log to read"
+grep -qE "list_missing|list_rejected" <<<"$tamper_log" \
     && fail "the shipped list was recorded as missing or rejected"
 
 echo "==> checking a permitted name"

@@ -32,6 +32,10 @@ android {
         }
     }
 
+    androidResources {
+        noCompress += "fst"
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false

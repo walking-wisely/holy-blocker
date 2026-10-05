@@ -4,6 +4,7 @@ import android.content.Context
 import android.util.Log
 import com.holyblocker.mobile.policy.BlocklistFailure
 import com.holyblocker.mobile.policy.BlocklistProvisioning
+import com.holyblocker.mobile.policy.SlotFingerprint
 import uniffi.net_shield_ffi.ArtifactLoadException
 import uniffi.net_shield_ffi.DnsGuard
 import uniffi.net_shield_ffi.TrustedKey
@@ -26,17 +27,27 @@ sealed interface BlocklistLoad {
 class BlocklistStore(context: Context) {
 
     private val assets = context.applicationContext.assets
-    private val root = File(context.applicationContext.filesDir, INSTALL_DIR)
+    private val appFiles = context.applicationContext.filesDir
+    private val root = File(appFiles, INSTALL_DIR)
 
-    fun load(): BlocklistLoad = try {
-        SLOTS.forEach(::install)
-        BlocklistLoad.Loaded(DnsGuard.withArtifact(root.path, trustedKeys()))
-    } catch (e: ArtifactLoadException.Missing) {
-        failed(BlocklistFailure.MISSING)
-    } catch (e: ArtifactLoadException) {
-        failed(BlocklistFailure.REJECTED)
-    } catch (e: IOException) {
-        failed(BlocklistFailure.MISSING)
+    fun load(): BlocklistLoad {
+        File(appFiles, LEGACY_FILE).delete()
+        SLOTS.forEach { slot ->
+            try {
+                install(slot)
+            } catch (e: IOException) {
+                Log.w(TAG, "could not install the $slot slot")
+            }
+        }
+        return try {
+            val guard = DnsGuard.withArtifact(root.path, trustedKeys())
+            Log.i(TAG, "blocklist loaded")
+            BlocklistLoad.Loaded(guard)
+        } catch (e: ArtifactLoadException.Missing) {
+            failed(BlocklistFailure.MISSING)
+        } catch (e: Exception) {
+            failed(BlocklistFailure.REJECTED)
+        }
     }
 
     private fun failed(failure: BlocklistFailure): BlocklistLoad {
@@ -51,16 +62,25 @@ class BlocklistStore(context: Context) {
         }
 
     private fun install(slot: String) {
-        val bundled = readAsset("$ASSET_DIR/$slot/$MANIFEST")
-        val installed = File(root, "$slot/$MANIFEST").takeIf { it.exists() }?.readBytes()
-        if (!BlocklistProvisioning.needsInstall(bundled, installed)) return
-        val dir = File(root, slot).apply { mkdirs() }
+        val bundledManifest = readAsset("$ASSET_DIR/$slot/$MANIFEST") ?: return
+        val bundledLength = assets.openFd("$ASSET_DIR/$slot/$ARTIFACT").use { it.length }
+        val dir = File(root, slot)
+        val installedManifest = File(dir, MANIFEST).takeIf { it.exists() }?.readBytes()
+        val installed = installedManifest?.let {
+            SlotFingerprint(it, File(dir, ARTIFACT).takeIf { f -> f.exists() }?.length() ?: -1)
+        }
+        if (!BlocklistProvisioning.needsInstall(SlotFingerprint(bundledManifest, bundledLength), installed)) return
+        dir.mkdirs()
         assets.open("$ASSET_DIR/$slot/$ARTIFACT").use { input ->
             File(dir, "$ARTIFACT.tmp").outputStream().use { input.copyTo(it) }
         }
-        File(dir, "$ARTIFACT.tmp").renameTo(File(dir, ARTIFACT))
-        File(dir, "$MANIFEST.tmp").writeBytes(bundled!!)
-        File(dir, "$MANIFEST.tmp").renameTo(File(dir, MANIFEST))
+        replace(File(dir, "$ARTIFACT.tmp"), File(dir, ARTIFACT))
+        File(dir, "$MANIFEST.tmp").writeBytes(bundledManifest)
+        replace(File(dir, "$MANIFEST.tmp"), File(dir, MANIFEST))
+    }
+
+    private fun replace(from: File, to: File) {
+        if (!from.renameTo(to)) throw IOException("could not replace ${to.name}")
     }
 
     private fun readAsset(path: String): ByteArray? = try {
@@ -72,6 +92,7 @@ class BlocklistStore(context: Context) {
     private companion object {
         const val TAG = "Blocklist"
         const val ASSET_DIR = "blocklist"
+        const val LEGACY_FILE = "blocklist.txt"
         const val INSTALL_DIR = "blocklist-artifact"
         const val ARTIFACT = "artifact.fst"
         const val MANIFEST = "manifest.bin"
