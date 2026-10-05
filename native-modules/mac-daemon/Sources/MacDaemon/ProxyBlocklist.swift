@@ -5,6 +5,10 @@ public enum ProxyBlocklistFailure: Equatable, Sendable {
     case rejected
 }
 
+public enum ProxyBlocklistStageError: Error, Equatable {
+    case noCurrentSlot(URL)
+}
+
 public enum ProxyBlocklistSource: Equatable, Sendable {
     case configured(arguments: [String])
     case unavailable(ProxyBlocklistFailure)
@@ -50,6 +54,10 @@ public enum ProxyBlocklist {
         artifactDirectory: URL, keyDirectory: URL, into resources: URL,
         fileManager: FileManager = .default
     ) throws {
+        guard
+            fileManager.fileExists(
+                atPath: artifactDirectory.appendingPathComponent("current").path)
+        else { throw ProxyBlocklistStageError.noCurrentSlot(artifactDirectory) }
         let list = resources.appendingPathComponent(directoryName)
         if fileManager.fileExists(atPath: list.path) {
             try fileManager.removeItem(at: list)

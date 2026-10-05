@@ -132,4 +132,17 @@ struct ProxyBlocklistStageTests {
         #expect(FileManager.default.fileExists(atPath: list.appendingPathComponent("previous/manifest.bin").path))
         #expect(!FileManager.default.fileExists(atPath: list.appendingPathComponent("keys/ignored.txt").path))
     }
+
+    @Test("refuses an artifact directory with no current slot")
+    func refusesMissingCurrent() throws {
+        let work = try makeResources()
+        defer { try? FileManager.default.removeItem(at: work) }
+        let artifacts = work.appendingPathComponent("artifacts")
+        try FileManager.default.createDirectory(at: artifacts, withIntermediateDirectories: true)
+
+        #expect(throws: ProxyBlocklistStageError.noCurrentSlot(artifacts)) {
+            try ProxyBlocklist.stage(
+                artifactDirectory: artifacts, keyDirectory: work, into: work)
+        }
+    }
 }

@@ -42,7 +42,9 @@ MODEL="${MODEL:-$PWD/../../data/models/baseline-v0.onnx}"
 # The signed domain list is sealed the same way. BLOCKLIST_DIR is a `domain-blocklist` output
 # directory (current/ and previous/) and BLOCKLIST_KEY_DIR holds <key id>.pub raw public keys; set
 # both or neither.
-if [[ -n "${BLOCKLIST_DIR:-}" && -n "${BLOCKLIST_KEY_DIR:-}" ]]; then
+if [[ -n "${BLOCKLIST_DIR:-}" || -n "${BLOCKLIST_KEY_DIR:-}" ]]; then
+    [[ -n "${BLOCKLIST_DIR:-}" && -n "${BLOCKLIST_KEY_DIR:-}" ]] \
+        || { echo "bundle.sh: set both BLOCKLIST_DIR and BLOCKLIST_KEY_DIR, or neither" >&2; exit 1; }
     "$BINARY" bundle "$OUTPUT" "$IDENTITY" "$PWD/.ffi/lib" "$MODEL" "$BLOCKLIST_DIR" "$BLOCKLIST_KEY_DIR"
 else
     "$BINARY" bundle "$OUTPUT" "$IDENTITY" "$PWD/.ffi/lib" "$MODEL"
