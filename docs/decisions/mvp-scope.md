@@ -136,6 +136,8 @@ scoped to a standard account.
 | `mac-daemon.proxy-blocklist-wiring` | `mitm-proxy.domain-blocklist` |
 | `mobile.e2e-android-scenario`, `mac-daemon.e2e-macos-scenario` | `engineering.e2e-contract`, `engineering.e2e-runner` |
 | `mac-daemon.install` and the two macOS tamper observations | `engineering.privilege-dispatcher` |
+| `mobile.custom-app-domains` | `net-shield.keyword-rule` |
+| `mac-daemon.custom-app-domains` | `mitm-proxy.keyword-rule`, which follows `mitm-proxy.domain-blocklist` |
 | `engineering.dev-build-release-guard` | `mobile.dev-kill-switch`, `mobile.release-signing` |
 | `engineering.dev-build-release-guard-macos` | `mac-daemon.dev-kill-switch`, `mac-daemon.release-identity` |
 

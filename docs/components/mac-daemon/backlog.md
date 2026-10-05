@@ -191,3 +191,11 @@ is automatic and already implemented.
 - **`mitm-proxy`'s plain-HTTP path takes no `ScanHooks`**, so URL, body and image scanning apply
   only to CONNECT-tunnelled traffic. That is a `packages/mitm-proxy` gap; it is noted here only
   because the macOS proxy configuration routes both.
+
+## Custom-app blocking — revisit after the MVP
+
+Deferred by [custom-app-blocking.md](../../decisions/custom-app-blocking.md): audio, notifications,
+widgets and share sheets of a covered or closed app (first to revisit); background work and the
+flash before cover; clones, work profiles and re-signed copies; a real app-to-domain mapping instead
+of name matching; the `never` rating's clues; hardening the list store; a partner event for a
+lowering request.

@@ -1,0 +1,8 @@
+id = "mitm-proxy.keyword-rule"
+title = "Refuse a CONNECT authority or plain HTTP host that a keyword rule matches"
+status = "pending"
+evidence = ""
+acceptance = "code"
+depends_on = ["mitm-proxy.domain-blocklist"]
+verify = "cargo test from packages/mitm-proxy"
+milestone = "mvp"
