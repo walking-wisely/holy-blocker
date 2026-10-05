@@ -99,7 +99,8 @@ def non_disposable_ignored(paths: list[str]) -> list[str]:
     kept: list[str] = []
     for path in paths:
         parts = [part for part in path.strip().strip("/").split("/") if part]
-        if not any(part in DISPOSABLE_IGNORED for part in parts):
+        is_directory = path.strip().endswith("/")
+        if not is_directory or not any(part in DISPOSABLE_IGNORED for part in parts):
             kept.append(path)
     return kept
 

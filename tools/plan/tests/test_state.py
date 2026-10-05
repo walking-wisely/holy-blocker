@@ -324,6 +324,9 @@ class IgnoredTest(unittest.TestCase):
     def test_env_file_is_not_disposable(self):
         self.assertFalse(state.is_disposable_ignored([".env"]))
 
+    def test_an_ignored_file_under_a_build_directory_name_is_state(self):
+        self.assertFalse(state.is_disposable_ignored(["data/build/local.sqlite"]))
+
     def test_empty_is_disposable(self):
         self.assertTrue(state.is_disposable_ignored([]))
 

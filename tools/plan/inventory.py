@@ -13,8 +13,10 @@ survives the removal.
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 from dataclasses import dataclass
+from pathlib import Path
 
 from tools.plan import state
 
@@ -40,10 +42,10 @@ class Inventory:
 
 
 def verdict_for(*, prunable: bool, uncommitted: tuple[str, ...], ignored: tuple[str, ...], orphaned: bool) -> str:
-    if prunable:
-        return "prunable"
     if orphaned:
         return "orphaned-head"
+    if prunable:
+        return "prunable"
     if uncommitted:
         return "has-uncommitted"
     if ignored:
@@ -71,11 +73,12 @@ def _pr_label(branch: str | None, cwd: str, pr_lookup) -> str:
 
 
 def build(worktree: state.Worktree, base: str, cwd: str, pr_lookup=state.pr_for_branch, light: bool = False) -> Inventory:
+    orphaned = worktree.branch is None and not _held_by_a_ref(worktree.head, cwd)
     if worktree.prunable:
-        return Inventory(worktree.path, worktree.branch, "prunable", (), (), (), 0, False, "none")
+        verdict = verdict_for(prunable=True, uncommitted=(), ignored=(), orphaned=orphaned)
+        return Inventory(worktree.path, worktree.branch, verdict, (), (), (), 0, False, "none")
     uncommitted = tuple(_git(["status", "--porcelain"], worktree.path).splitlines())
     ignored = tuple(state.non_disposable_ignored(state.ignored_entries(worktree.path)))
-    orphaned = worktree.branch is None and not _held_by_a_ref(worktree.head, cwd)
     commits: tuple[str, ...] = ()
     local_only = 0
     at_risk = False
@@ -150,9 +153,22 @@ def format_inventory(row: Inventory) -> list[str]:
     return lines
 
 
+def _drop_admin_entry(path: str, cwd: str) -> None:
+    """`git worktree prune` is not scoped to a path and would also drop an
+    unnamed worktree whose directory is gone, so delete just this one's entry."""
+    common = Path(cwd).joinpath(_git(["rev-parse", "--git-common-dir"], cwd).strip()).resolve()
+    target = os.path.join(path, ".git")
+    for entry in (common / "worktrees").glob("*"):
+        pointer = entry / "gitdir"
+        if pointer.is_file() and pointer.read_text().strip() == target:
+            shutil.rmtree(entry)
+            return
+    raise FileNotFoundError(f"no worktree administrative entry for {path}")
+
+
 def remove(row: Inventory, cwd: str, discard: bool) -> None:
     if row.verdict == "prunable":
-        _git(["worktree", "prune"], cwd)
+        _drop_admin_entry(row.path, cwd)
         return
     args = ["worktree", "remove"]
     if discard:

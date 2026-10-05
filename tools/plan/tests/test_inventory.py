@@ -233,6 +233,37 @@ class BuildAgainstRealGitTest(unittest.TestCase):
         self.assertEqual(self.build(wt).verdict, "clean")
 
 
+class PrunableTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.repo = make_repo(Path(self.tmp.name))
+        self.orphan = add_worktree(self.repo, "wt-orphan", "--detach")
+        (self.orphan / "b").write_text("2")
+        git(self.orphan, "add", "b")
+        git(self.orphan, "commit", "-qm", "unique")
+        self.gone = add_worktree(self.repo, "wt-gone", "-b", "feat/gone")
+        for path in (self.orphan, self.gone):
+            subprocess.run(["rm", "-rf", str(path)], check=True)
+
+    def rows(self):
+        return {
+            r.name: r
+            for r in (inventory.build(t, "master", str(self.repo), pr_lookup=no_pr) for t in state.list_worktrees(str(self.repo)))
+        }
+
+    def test_prunable_detached_worktree_with_unreferenced_commit_is_orphaned(self):
+        self.assertEqual(self.rows()["wt-orphan"].verdict, "orphaned-head")
+        self.assertEqual(self.rows()["feat/gone"].verdict, "prunable")
+
+    def test_removing_one_prunable_worktree_leaves_the_other(self):
+        rows = self.rows()
+        inventory.remove(rows["feat/gone"], str(self.repo), discard=False)
+        remaining = {os.path.basename(t.path) for t in state.list_worktrees(str(self.repo))}
+        self.assertIn("wt-orphan", remaining)
+        self.assertNotIn("wt-gone", remaining)
+
+
 class RemoveTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

@@ -26,7 +26,8 @@ REMOTE = "origin"
 DELETABLE = ("merged", "ancestor")
 NEVER = ("open",)
 PR_LIMIT = 1000
-DEFAULT_NAMES = frozenset({"master", "main"})
+DEFAULT_NAMES = frozenset({"master", "main", "develop", "gh-pages"})
+PROTECTED_PREFIXES = ("release/",)
 ORDER = ("merged", "ancestor", "merged-diverged", "merged-other-base", "closed", "none", "open")
 
 
@@ -93,7 +94,7 @@ def select(
         match = next((r for r in rows if r.name == name), None)
         if match is None:
             refused.append((name, "no such remote branch"))
-        elif name in protected:
+        elif name in protected or name.startswith(PROTECTED_PREFIXES):
             refused.append((name, "protected: base or default branch"))
         elif match.verdict in NEVER:
             refused.append((name, f"{match.verdict}: deleting it would close its PR"))
@@ -169,7 +170,8 @@ def main(argv: list[str] | None = None) -> int:
     if not args.no_fetch:
         _git(["fetch", "--prune", REMOTE], cwd)
     try:
-        rows = build(cwd, args.base, fetch_prs(cwd))
+        prs = fetch_prs(cwd)
+        rows = build(cwd, args.base, prs)
     except (subprocess.CalledProcessError, FileNotFoundError) as error:
         print(f"could not read pull requests: {error}", file=sys.stderr)
         return 2
@@ -183,6 +185,9 @@ def main(argv: list[str] | None = None) -> int:
                     print(f"  {r.name}  [{r.pr}]  {r.reason}")
         return 0
 
+    if len(prs) >= PR_LIMIT:
+        print("refusing to delete: the PR list may be truncated", file=sys.stderr)
+        return 2
     if not args.only:
         print("reap needs --only NAME...; nothing is deleted in bulk", file=sys.stderr)
         return 2

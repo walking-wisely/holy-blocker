@@ -94,7 +94,12 @@ def _inventories(cwd: str, base: str, light: bool) -> list[inventory.Inventory]:
 
 def _summary(cwd: str, base: str) -> int:
     try:
-        rows = _inventories(cwd, base, light=True)
+        rows = []
+        for tree in state.list_worktrees(cwd):
+            try:
+                rows.append(inventory.build(tree, base, cwd, light=True))
+            except (subprocess.CalledProcessError, OSError):
+                continue
         remote = [name for name, _ in branches.list_remote(cwd) if name != base]
         line = inventory.summary_line(rows, protected_paths(cwd, base), len(remote))
     except (subprocess.CalledProcessError, FileNotFoundError):
@@ -142,11 +147,17 @@ def main(argv: list[str] | None = None) -> int:
     if not args.yes:
         print(f"\ndry run: {len(chosen)} worktree(s) would be removed; pass --yes to remove", file=sys.stderr)
         return 0
+    failed = False
     for row in chosen:
-        inventory.remove(row, cwd, args.discard)
+        try:
+            inventory.remove(row, cwd, args.discard)
+        except (subprocess.CalledProcessError, OSError) as error:
+            detail = (getattr(error, "stderr", "") or str(error)).strip()
+            print(f"failed {row.path}: {detail}", file=sys.stderr)
+            failed = True
+            continue
         print(f"removed {row.path}")
-    subprocess.run(["git", "worktree", "prune"], cwd=cwd, check=True)
-    return 0
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":

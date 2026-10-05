@@ -5,7 +5,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cd \"$CLAUDE_PROJECT_DIR\" && python3 -m tools.plan.worktrees inventory --summary 2>/dev/null || true"
+            "command": "cd \"$CLAUDE_PROJECT_DIR\" && python3 -m tools.plan.worktrees inventory --summary 2>/dev/null || true",
+            "timeout": 20
           }
         ]
       }
