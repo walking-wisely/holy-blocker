@@ -271,6 +271,8 @@ Tests to write:
 <!-- step: mitm-proxy.tls-cold-miss -->
 10. ~~Add end-to-end integration tests (`tests/proxy_integration.rs`): spin up real TCP listeners on ephemeral ports and drive them with a `reqwest` client. Covers plain HTTP forwarding and the full CONNECT → TLS interception → tunnel → origin round trip.~~ **Done.**
 <!-- step: mitm-proxy.integration-tests -->
+11. ~~Refuse listed hosts from the signed domain blocklist (`src/blocklist.rs`, `--blocklist-dir`, `--blocklist-key`): the plain-HTTP and CONNECT authority, the TLS SNI, and the inner `Host` header. A name that cannot be normalized is refused; IP literals are not matched; with no `--blocklist-dir` nothing is filtered.~~ **Done.**
+<!-- step: mitm-proxy.domain-blocklist -->
 
 8. ~~Add end-to-end integration tests (`tests/proxy_integration.rs`): spin up real TCP listeners on ephemeral ports and drive them with a `reqwest` client configured to use the proxy. Covers plain HTTP forwarding and the full CONNECT → TLS interception → tunnel → origin round trip. Add `reqwest` (rustls-tls) to dev-dependencies; expose `proxy` and `connect` modules from `lib.rs` so integration tests can import `proxy::handle`.~~ **Done.**
 

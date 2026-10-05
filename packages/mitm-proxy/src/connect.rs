@@ -120,6 +120,10 @@ pub async fn handle_connect(
         .map(str::to_owned)
         .unwrap_or_else(|| target.host().to_owned());
 
+    if scan.host_is_blocked(&sni) {
+        anyhow::bail!("CONNECT refused: host is on the blocklist");
+    }
+
     let server_cfg = tls.server_config(&sni)?;
     let browser_tls = start
         .into_stream(server_cfg)

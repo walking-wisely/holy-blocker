@@ -15,6 +15,10 @@ path = "src/main.rs"
 [dependencies]
 text-policy = { path = "../text-policy" }
 image-sandbox = { path = "../image-sandbox", features = ["onnx"] }
+domain-blocklist = { path = "../domain-blocklist" }
+domain-normalize = { path = "../domain-normalize" }
+net-shield = { path = "../net-shield" }
+ed25519-dalek = "3.0.0"
 anyhow = "1"
 bytes = "1"
 http-body-util = "0.1"
@@ -32,6 +36,8 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 
 [dev-dependencies]
+bincode = "1"
+tempfile = "3"
 criterion = { version = "0.8", features = ["async_tokio"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 x509-parser = "0.18"

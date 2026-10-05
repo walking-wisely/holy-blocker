@@ -1,3 +1,4 @@
+mod blocklist;
 mod cli;
 mod connect;
 mod forward;
@@ -57,6 +58,15 @@ async fn main() -> Result<()> {
     // Image scanning is not yet gated by mode — it predates ProtectionMode and runs
     // unconditionally, same as before.
     let mode_cell = scan::ProtectionMode::Full.to_atomic();
+    let host_blocklist = match options.blocklist_dir.as_deref() {
+        Some(dir) => {
+            let list = blocklist::HostBlocklist::load(dir, &options.blocklist_keys)
+                .map_err(|e| anyhow::anyhow!("loading the domain blocklist from {}: {e}", dir.display()))?;
+            info!(version = list.version(), "domain blocklist loaded");
+            Some(Arc::new(list))
+        }
+        None => None,
+    };
     let scan = {
         let url_engine = Arc::clone(&engine);
         let body_engine = Arc::clone(&engine);
@@ -71,6 +81,7 @@ async fn main() -> Result<()> {
                 scan::scan_body(&body_engine, html, scan::ProtectionMode::from_atomic(&body_mode))
             }),
             image_scanner: Box::new(move |bytes| scan::scan_image(&image_sandbox, bytes)),
+            host_blocklist,
             ..tunnel::ScanHooks::default()
         })
     };

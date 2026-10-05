@@ -1,3 +1,4 @@
+use crate::blocklist::{HostBlocklist, HostVerdict};
 use crate::scan::ScanResult;
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
@@ -23,6 +24,15 @@ pub struct ScanHooks {
     /// Body bytes scanned per response (bodies larger than this are forwarded
     /// without scanning rather than blocked).
     pub body_limit: usize,
+    pub host_blocklist: Option<Arc<HostBlocklist>>,
+}
+
+impl ScanHooks {
+    pub fn host_is_blocked(&self, host: &str) -> bool {
+        self.host_blocklist
+            .as_ref()
+            .is_some_and(|list| list.verdict(host) == HostVerdict::Block)
+    }
 }
 
 impl Default for ScanHooks {
@@ -34,6 +44,7 @@ impl Default for ScanHooks {
             image_scanner: Box::new(|_| ScanResult::Allow),
             video_tx: tx,
             body_limit: 1024 * 1024,
+            host_blocklist: None,
         }
     }
 }
@@ -107,6 +118,16 @@ async fn forward(
 ) -> Result<Response<ResBody>, Infallible> {
     let uri = req.uri().to_string();
     let path = req.uri().path().to_owned();
+
+    let host_header_listed = req
+        .headers()
+        .get(hyper::header::HOST)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<hyper::http::uri::Authority>().ok())
+        .is_some_and(|authority| scan.host_is_blocked(authority.host()));
+    if host_header_listed {
+        return Ok(blocked());
+    }
 
     // Phase 3 — URL scan
     if matches!((scan.url_scanner)(&uri), ScanResult::Block { .. }) {

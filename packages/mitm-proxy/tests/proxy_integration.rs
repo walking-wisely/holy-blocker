@@ -14,7 +14,7 @@ use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
 use hyper::{Request, Response, body::Incoming};
 use hyper_util::rt::TokioIo;
-use mitm_proxy::{proxy, tls::TlsState, tunnel::ScanHooks};
+use mitm_proxy::{blocklist::HostBlocklist, proxy, tls::TlsState, tunnel::ScanHooks};
 use rcgen::{BasicConstraints, CertificateParams, IsCa, Issuer, KeyPair};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use rustls::{ClientConfig, RootCertStore, ServerConfig};
@@ -138,9 +138,13 @@ async fn spawn_https_origin(origin_ca: &TestCa, body: &'static [u8]) -> u16 {
 
 /// Spawn the proxy using `tls`. Returns the bound port.
 async fn spawn_proxy(tls: Arc<TlsState>) -> u16 {
+    spawn_proxy_with(tls, ScanHooks::default()).await
+}
+
+async fn spawn_proxy_with(tls: Arc<TlsState>, scan: ScanHooks) -> u16 {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
-    let scan = Arc::new(ScanHooks::default());
+    let scan = Arc::new(scan);
     tokio::spawn(async move {
         loop {
             let Ok((stream, peer)) = listener.accept().await else { break };
@@ -241,4 +245,201 @@ async fn https_proxy_intercepts_and_forwards() {
 
     assert_eq!(resp.status(), 200);
     assert_eq!(resp.bytes().await.unwrap().as_ref(), b"hello over tls");
+}
+
+// ── Domain blocklist ─────────────────────────────────────────────────────────
+
+fn hosts_blocklist(apexes: &[&str]) -> (tempfile::TempDir, Arc<HostBlocklist>) {
+    use domain_blocklist::{Category, KeyId, LicenseId, MergedEntry, SourceId};
+    use domain_normalize::RuleScope;
+    use net_shield::blocklist::{ARTIFACT_FILE, MANIFEST_FILE};
+
+    let signing = ed25519_dalek::SigningKey::from_bytes(&[3u8; 32]);
+    let entries: Vec<MergedEntry> = apexes
+        .iter()
+        .map(|d| MergedEntry {
+            domain: (*d).to_owned(),
+            scope: RuleScope::Apex,
+            sources: vec![SourceId::StevenBlack],
+            categories: vec![Category::Adult],
+        })
+        .collect();
+    let artifact = domain_blocklist::build(
+        &entries,
+        LicenseId("MIT".to_owned()),
+        Vec::new(),
+        1,
+        1_700_000_000,
+        &[(KeyId("k1".to_owned()), signing.clone())],
+    )
+    .unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let slot = dir.path().join("current");
+    std::fs::create_dir_all(&slot).unwrap();
+    std::fs::write(slot.join(ARTIFACT_FILE), &artifact.fst_bytes).unwrap();
+    std::fs::write(
+        slot.join(MANIFEST_FILE),
+        bincode::serialize(&artifact.manifest).unwrap(),
+    )
+    .unwrap();
+    let keys = [(KeyId("k1".to_owned()), signing.verifying_key())];
+    let list = HostBlocklist::load(dir.path(), &keys).unwrap();
+    (dir, Arc::new(list))
+}
+
+fn hooks_with(list: Arc<HostBlocklist>) -> ScanHooks {
+    ScanHooks {
+        host_blocklist: Some(list),
+        ..ScanHooks::default()
+    }
+}
+
+async fn raw_connect_status(proxy_port: u16, authority: &str) -> String {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", proxy_port))
+        .await
+        .unwrap();
+    let request = format!("CONNECT {authority} HTTP/1.1\r\nHost: {authority}\r\n\r\n");
+    stream.write_all(request.as_bytes()).await.unwrap();
+    let mut buf = [0u8; 64];
+    let n = stream.read(&mut buf).await.unwrap();
+    String::from_utf8_lossy(&buf[..n]).lines().next().unwrap_or("").to_owned()
+}
+
+#[tokio::test]
+async fn a_listed_host_is_refused_on_plain_http_without_contacting_the_origin() {
+    let proxy_ca = make_ca();
+    let tls = Arc::new(TlsState::from_issuer(proxy_ca.issuer));
+    let origin_port = spawn_http_origin(b"must not be served").await;
+    let (_dir, list) = hosts_blocklist(&["blocked.example"]);
+    let proxy_port = spawn_proxy_with(tls, hooks_with(list)).await;
+
+    let client = proxy_client(proxy_port, &proxy_ca.der);
+    let resp = client
+        .get(format!("http://www.blocked.example:{origin_port}/"))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 403);
+    assert_ne!(resp.bytes().await.unwrap().as_ref(), b"must not be served");
+}
+
+#[tokio::test]
+async fn an_unlisted_host_is_still_forwarded_when_a_list_is_loaded() {
+    let proxy_ca = make_ca();
+    let tls = Arc::new(TlsState::from_issuer(proxy_ca.issuer));
+    let origin_port = spawn_http_origin(b"hello from origin").await;
+    let (_dir, list) = hosts_blocklist(&["blocked.example"]);
+    let proxy_port = spawn_proxy_with(tls, hooks_with(list)).await;
+
+    let client = proxy_client(proxy_port, &proxy_ca.der);
+    let resp = client
+        .get(format!("http://127.0.0.1:{origin_port}/"))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 200);
+    assert_eq!(resp.bytes().await.unwrap().as_ref(), b"hello from origin");
+}
+
+#[tokio::test]
+async fn a_listed_connect_authority_is_refused_before_any_tunnel() {
+    let proxy_ca = make_ca();
+    let tls = Arc::new(TlsState::from_issuer(proxy_ca.issuer));
+    let (_dir, list) = hosts_blocklist(&["blocked.example"]);
+    let proxy_port = spawn_proxy_with(tls, hooks_with(list)).await;
+
+    let status = raw_connect_status(proxy_port, "www.blocked.example:443").await;
+
+    assert!(status.contains("403"), "got {status:?}");
+}
+
+async fn tls_handshake_through_connect(
+    proxy_port: u16,
+    proxy_ca_der: &CertificateDer<'static>,
+    authority: &str,
+    sni: &'static str,
+) -> std::io::Result<()> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", proxy_port))
+        .await
+        .unwrap();
+    let request = format!("CONNECT {authority} HTTP/1.1\r\nHost: {authority}\r\n\r\n");
+    stream.write_all(request.as_bytes()).await.unwrap();
+    let mut head = Vec::new();
+    while !head.ends_with(b"\r\n\r\n") {
+        let mut byte = [0u8; 1];
+        stream.read_exact(&mut byte).await?;
+        head.push(byte[0]);
+    }
+    assert!(String::from_utf8_lossy(&head).contains("200"));
+
+    let mut roots = RootCertStore::empty();
+    roots.add(proxy_ca_der.clone()).unwrap();
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let config = ClientConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    let connector = tokio_rustls::TlsConnector::from(Arc::new(config));
+    let name = rustls::pki_types::ServerName::try_from(sni).unwrap();
+    connector.connect(name, stream).await.map(|_| ())
+}
+
+#[tokio::test]
+async fn an_unlisted_connect_authority_with_a_listed_sni_is_refused() {
+    let proxy_ca = make_ca();
+    let tls = Arc::new(TlsState::from_issuer(proxy_ca.issuer));
+    let (_dir, list) = hosts_blocklist(&["blocked.example"]);
+    let proxy_port = spawn_proxy_with(tls, hooks_with(list)).await;
+
+    let unlisted =
+        tls_handshake_through_connect(proxy_port, &proxy_ca.der, "127.0.0.1:9", "fine.example").await;
+    let listed =
+        tls_handshake_through_connect(proxy_port, &proxy_ca.der, "127.0.0.1:9", "www.blocked.example").await;
+
+    assert!(unlisted.is_ok(), "control handshake failed: {unlisted:?}");
+    assert!(listed.is_err());
+}
+
+#[tokio::test]
+async fn a_listed_inner_host_header_is_refused_inside_the_tunnel() {
+    let (_dir, list) = hosts_blocklist(&["blocked.example"]);
+    let scan = Arc::new(hooks_with(list));
+
+    let mut statuses = Vec::new();
+    for host in ["fine.example", "www.blocked.example:443"] {
+        let (origin_side, origin_peer) = tokio::io::duplex(65536);
+        tokio::spawn(async move {
+            let service = hyper::service::service_fn(|_req: Request<Incoming>| async {
+                Ok::<_, Infallible>(Response::new(Full::new(Bytes::from_static(b"origin"))))
+            });
+            hyper::server::conn::http1::Builder::new()
+                .serve_connection(TokioIo::new(origin_peer), service)
+                .await
+                .ok();
+        });
+        let (browser_side, browser_peer) = tokio::io::duplex(65536);
+        let scan = Arc::clone(&scan);
+        tokio::spawn(async move {
+            mitm_proxy::tunnel::run(browser_peer, origin_side, scan).await.ok();
+        });
+        let (mut sender, conn) =
+            hyper::client::conn::http1::handshake::<_, Full<Bytes>>(TokioIo::new(browser_side))
+                .await
+                .unwrap();
+        tokio::spawn(conn);
+        let req = Request::builder()
+            .uri("/")
+            .header("host", host)
+            .body(Full::new(Bytes::new()))
+            .unwrap();
+        statuses.push(sender.send_request(req).await.unwrap().status());
+    }
+
+    assert_eq!(statuses[0], hyper::StatusCode::OK);
+    assert_eq!(statuses[1], hyper::StatusCode::FORBIDDEN);
 }

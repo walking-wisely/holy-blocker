@@ -7,6 +7,9 @@
 //! Hand-rolled rather than pulling in a parser: three flags do not justify a
 //! dependency in a binary that sits in the path of all browser traffic.
 
+use crate::blocklist::parse_trusted_key;
+use domain_blocklist::KeyId;
+use ed25519_dalek::VerifyingKey;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
@@ -21,6 +24,10 @@ usage: mitm-proxy [options]
   --image-sexy-threshold <f>
                           warn at or above this sexy score; required with
                           --image-model, no built-in default
+  --blocklist-dir <path> signed domain blocklist directory (current/ and previous/
+                          slots); requires --blocklist-key
+  --blocklist-key <id>:<hex>
+                          trusted Ed25519 public key as 64 hex digits; repeatable
   -h, --help             print this message";
 
 #[derive(Debug, Clone, PartialEq)]
@@ -39,6 +46,8 @@ pub struct Options {
     /// rule as `image_threshold`, and required alongside it whenever
     /// `image_model` is set.
     pub image_sexy_threshold: Option<f32>,
+    pub blocklist_dir: Option<PathBuf>,
+    pub blocklist_keys: Vec<(KeyId, VerifyingKey)>,
 }
 
 impl Default for Options {
@@ -49,6 +58,8 @@ impl Default for Options {
             image_model: None,
             image_threshold: None,
             image_sexy_threshold: None,
+            blocklist_dir: None,
+            blocklist_keys: Vec::new(),
         }
     }
 }
@@ -94,6 +105,8 @@ impl Options {
                     }
                     options.image_sexy_threshold = Some(parsed);
                 }
+                "--blocklist-dir" => options.blocklist_dir = Some(PathBuf::from(value()?)),
+                "--blocklist-key" => options.blocklist_keys.push(parse_trusted_key(&value()?)?),
                 "-h" | "--help" => {
                     println!("{USAGE}");
                     std::process::exit(0);
@@ -114,6 +127,12 @@ impl Options {
                  built-in default"
                     .to_string(),
             );
+        }
+        if options.blocklist_dir.is_some() && options.blocklist_keys.is_empty() {
+            return Err("--blocklist-dir requires at least one --blocklist-key".to_string());
+        }
+        if options.blocklist_dir.is_none() && !options.blocklist_keys.is_empty() {
+            return Err("--blocklist-key requires --blocklist-dir".to_string());
         }
         Ok(options)
     }
@@ -231,5 +250,30 @@ mod tests {
     #[test]
     fn an_unknown_flag_is_rejected() {
         assert!(parse(&["--wat"]).is_err());
+    }
+
+    const KEY: &str = "k1:ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c";
+
+    #[test]
+    fn a_blocklist_dir_with_a_key_is_parsed() {
+        let options = parse(&["--blocklist-dir", "list", "--blocklist-key", KEY]).unwrap();
+
+        assert_eq!(options.blocklist_dir, Some(PathBuf::from("list")));
+        assert_eq!(options.blocklist_keys.len(), 1);
+    }
+
+    #[test]
+    fn a_blocklist_dir_without_a_key_is_rejected() {
+        assert!(parse(&["--blocklist-dir", "list"]).is_err());
+    }
+
+    #[test]
+    fn a_blocklist_key_without_a_dir_is_rejected() {
+        assert!(parse(&["--blocklist-key", KEY]).is_err());
+    }
+
+    #[test]
+    fn a_malformed_blocklist_key_is_rejected() {
+        assert!(parse(&["--blocklist-dir", "list", "--blocklist-key", "k1:zz"]).is_err());
     }
 }
