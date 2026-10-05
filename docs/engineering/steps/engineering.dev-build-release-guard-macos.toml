@@ -1,0 +1,7 @@
+id = "engineering.dev-build-release-guard-macos"
+title = "CI fails when the release bundle contains the development bundle id or kill switch, or shares its signing identity with the dev build"
+status = "pending"
+evidence = ""
+acceptance = "code"
+group = "dev-build"
+milestone = "mvp"

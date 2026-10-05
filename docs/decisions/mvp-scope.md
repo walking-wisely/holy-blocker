@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| **Status** | Accepted, with one open question (see below) |
+| **Status** | Accepted, amended 2026-10-05 with the owner's answers; one open question remains |
 | **Date** | 2026-10-05 |
 | **Owner** | Ivan Dutov |
 | **Supersedes** | — |
@@ -95,13 +95,49 @@ that does.
      [protection-modes.md](protection-modes.md). The development bypass is not that mode and does
      not weaken it.
 
+## Owner answers, 2026-10-05
+
+1. **macOS runs in a standard account.** Changing a LaunchDaemon needs sudo, which is accepted as the
+   removal barrier. The agent is the open part: it runs as the protected user to hold the
+   Accessibility grant, so whether that user can stop it is observed by
+   `mac-daemon.standard-user-tamper` before any wording ships. A protected user who is a local admin
+   stays out of scope, and a "Yes" is never given for an admin account.
+2. **Turning protection down is the same on every platform.** Request, cooldown, confirm, as
+   `apps/mobile` does today; `mac-daemon.protection-schedule` brings macOS to parity. Requirement 3
+   therefore reads: removal is refused or delayed, and what cannot be prevented is logged. The
+   development build remains the only instant off.
+3. **Custom-app blocking has per-app modes and a searchable list panel on both platforms.** Block
+   terminates the app where the platform allows it, hide covers the app with the overlay, unblocked
+   does nothing. Android cannot terminate another app under plain Device Admin (unverified), so
+   there block sends the user home and covers the app. The macOS panel is native in the agent, not
+   the Electron control panel, which stays out of the MVP. Lowering a mode follows the disarm
+   cooldown. The remaining design goes through `plan-inception` in the two custom-app steps.
+4. **The MVP is working builds on the owner's own devices, not store releases.** Release builds are
+   signed with a local keystore (Android) and a local identity (macOS), both different from the
+   development build's.
+5. **The domain list is bundled in each build.** Updates come from a new build. Fetching updates from
+   the project's own source is permitted and is a later step that passes through `plan-inception`
+   first: it adds a capability and a trust boundary, and no host exists yet.
+
 ## Open question
 
 **A protected user who is a local admin on macOS.** [content-interception.md](content-interception.md)
-leaves this open and `assess()` reports `weakened` without refusing to run. Requirement 3 is only
-as strong as the answer: against an admin, a standard-user `tccutil` result does not apply. Until
-the owner decides, the MVP's "not deletable" claim on macOS is scoped to a standard account, and
-the step `mac-daemon.standard-user-tamper` observes it before any wording ships.
+leaves this open and `assess()` reports `weakened` without refusing to run. Against an admin, a
+standard-user `tccutil` result does not apply, so the MVP's "not deletable" claim on macOS stays
+scoped to a standard account.
+
+## Build order across components
+
+`depends_on` binds within one component only, so these edges are recorded here and in step titles.
+
+| Step | Needs first |
+|---|---|
+| `mobile.blocklist-provisioning` | `net-shield.ffi-artifact-load` |
+| `mac-daemon.proxy-blocklist-wiring` | `mitm-proxy.domain-blocklist` |
+| `mobile.e2e-android-scenario`, `mac-daemon.e2e-macos-scenario` | `engineering.e2e-contract`, `engineering.e2e-runner` |
+| `mac-daemon.install` and the two macOS tamper observations | `engineering.privilege-dispatcher` |
+| `engineering.dev-build-release-guard` | `mobile.dev-kill-switch`, `mobile.release-signing` |
+| `engineering.dev-build-release-guard-macos` | `mac-daemon.dev-kill-switch`, `mac-daemon.release-identity` |
 
 ## Rejected alternatives
 

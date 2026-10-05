@@ -1,5 +1,5 @@
 id = "engineering.dev-build-release-guard"
-title = "CI fails when a release artifact contains the development build's identifier or kill switch"
+title = "CI fails when the release APK contains the development application id or kill switch, or shares its signing certificate with the dev build"
 status = "pending"
 evidence = ""
 acceptance = "code"

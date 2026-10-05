@@ -1,0 +1,9 @@
+id = "mobile.dev-kill-switch"
+title = "Compiled-in protection kill switch in the dev source set: local action only, no exported component, acts on the dev build's own process"
+status = "pending"
+evidence = ""
+acceptance = "observation"
+depends_on = ["mobile.dev-flavor"]
+verify = "on an emulator the dev build turns itself off while the release build stays armed"
+group = "dev-build"
+milestone = "mvp"

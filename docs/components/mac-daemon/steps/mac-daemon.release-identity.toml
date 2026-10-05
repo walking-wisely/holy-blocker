@@ -1,0 +1,8 @@
+id = "mac-daemon.release-identity"
+title = "A local release signing identity distinct from Holy Blocker Dev, with a runbook"
+status = "pending"
+evidence = ""
+acceptance = "code"
+verify = "holy-blocker-macd bundle-status reports the release and development identities as different"
+group = "dev-build"
+milestone = "mvp"

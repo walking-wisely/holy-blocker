@@ -1,5 +1,5 @@
 id = "mobile.custom-app-blocking"
-title = "Block user-chosen apps — plan-inception first, then foreground-package detection and a chooser"
+title = "Plan-inception for custom-app blocking on both platforms: decision record, per-app modes, data-classes row"
 status = "pending"
 evidence = ""
 acceptance = "product"

@@ -1,6 +1,6 @@
 id = "mobile.e2e-android-scenario"
-title = "Android e2e scenario — wrap the three smoke scripts under the scenario contract"
+title = "Android e2e scenario under the scenario contract: text, DNS, chosen app, uninstall refused, release refusing the dev off command. Does not wrap smoke-test-capture.sh. Needs engineering.e2e-contract and e2e-runner"
 status = "pending"
 evidence = ""
-depends_on = ["mobile.vpn-dns-filter"]
+depends_on = ["mobile.vpn-dns-filter", "mobile.blocklist-provisioning", "mobile.custom-app-enforcement", "mobile.dev-kill-switch"]
 milestone = "mvp"

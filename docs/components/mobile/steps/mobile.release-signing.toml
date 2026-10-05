@@ -1,0 +1,8 @@
+id = "mobile.release-signing"
+title = "Release build signed with a local keystore kept outside the repository, distinct from the development build's key"
+status = "pending"
+evidence = ""
+acceptance = "code"
+verify = "apksigner verify --print-certs shows different certificates for the release and development APKs"
+group = "dev-build"
+milestone = "mvp"
