@@ -139,7 +139,7 @@ class ScreenGuardService : AccessibilityService() {
         val packageName = event?.packageName?.toString() ?: return
 
         // Before the scans, which would otherwise lift the cover.
-        if (enforceCustomApps()) return
+        if (enforceCustomApps(packageName)) return
 
         // The settings screens are checked first and are deliberately not behind
         // ScanGate's debounce: a 300 ms window on the one screen that removes the
@@ -183,7 +183,7 @@ class ScreenGuardService : AccessibilityService() {
     }
 
     /** Returns whether a cover is up; rechecks on a timer while one is. */
-    private fun enforceCustomApps(): Boolean {
+    private fun enforceCustomApps(eventPackage: String? = null): Boolean {
         handler.removeCallbacks(enforceTask)
         val overlay = overlay ?: return false
         val protectedNow = protectedPackages?.current() ?: return false
@@ -191,7 +191,7 @@ class ScreenGuardService : AccessibilityService() {
 
         val action = enforcement.decide(
             state = listedApps,
-            visiblePackages = visiblePackages(),
+            visiblePackages = visiblePackages() + listOfNotNull(eventPackage),
             protected = protectedNow,
             protection = protectionState,
             nowElapsed = SystemClock.elapsedRealtime(),

@@ -78,7 +78,7 @@ class CustomAppsHygieneTest {
     @Test
     fun `enforcement passes no identity to the tamper log`() {
         val text = File(main, "kotlin/com/holyblocker/mobile/ScreenGuardService.kt").readText()
-        val body = text.substringAfter("private fun enforceCustomApps()").substringBefore("private fun guardSettingsScreen")
+        val body = text.substringAfter("private fun enforceCustomApps(").substringBefore("private fun guardSettingsScreen")
 
         assertFalse(body.contains("tamperLog"))
         assertFalse(body.contains("Log."))
