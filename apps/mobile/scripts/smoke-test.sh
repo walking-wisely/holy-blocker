@@ -77,7 +77,7 @@ echo "    ok"
 
 # `|| true`: an empty log is the normal state while polling, but grep exits 1 on
 # no match and `set -e` would kill the script mid-loop.
-scan_line() { adb logcat -d -s ScreenGuard | grep "scan pkg=" | tail -1 || true; }
+scan_line() { adb logcat -d -s ScreenGuard | grep "scan action=" | tail -1 || true; }
 
 echo "==> 2. benign text stays clear"
 # Start from the launcher so a cover left by an earlier run cannot be mistaken
@@ -118,7 +118,7 @@ adb shell input text "explicit%sact"
 # the log before the scan that matters has landed.
 line=""
 for _ in $(seq 1 15); do
-    line="$(adb logcat -d -s ScreenGuard | grep "scan pkg=" | grep "action=BLOCK" | tail -1 || true)"
+    line="$(adb logcat -d -s ScreenGuard | grep "scan action=" | grep "action=BLOCK" | tail -1 || true)"
     [[ -n "$line" ]] && break
     sleep 1
 done

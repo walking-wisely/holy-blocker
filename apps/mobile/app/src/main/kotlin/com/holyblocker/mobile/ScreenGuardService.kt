@@ -12,6 +12,8 @@ import android.view.accessibility.AccessibilityWindowInfo
 import com.holyblocker.mobile.admin.HolyBlockerAdminReceiver
 import com.holyblocker.mobile.policy.CoverReason
 import com.holyblocker.mobile.policy.CoverState
+import com.holyblocker.mobile.policy.CustomAppEnforcement
+import com.holyblocker.mobile.policy.CustomAppState
 import com.holyblocker.mobile.policy.GateOutcome
 import com.holyblocker.mobile.policy.GuardDecision
 import com.holyblocker.mobile.policy.NativeTextPolicy
@@ -24,6 +26,7 @@ import com.holyblocker.mobile.policy.TamperEvent
 import com.holyblocker.mobile.policy.TamperLog
 import com.holyblocker.mobile.policy.UnwatchedEvent
 import com.holyblocker.mobile.policy.WindowScreen
+import java.io.IOException
 
 /**
  * Layer 2's workhorse on Android: reads on-screen text from other apps, runs it
@@ -43,6 +46,12 @@ class ScreenGuardService : AccessibilityService() {
     private var tamperLog: TamperLogStore? = null
     private var appliedGuardActive = false
 
+    private var customApps: CustomAppStore? = null
+    private var protectedPackages: ProtectedPackages? = null
+    private var listedApps = CustomAppState()
+    private val enforcement = CustomAppEnforcement()
+    private var customCoverUp = false
+
     private val rescan = RescanSchedule()
     private val handler = Handler(Looper.getMainLooper())
 
@@ -59,6 +68,8 @@ class ScreenGuardService : AccessibilityService() {
         }
     }
 
+    private val enforceTask: Runnable = Runnable { enforceCustomApps() }
+
     override fun onServiceConnected() {
         super.onServiceConnected()
         val engine = NativeTextPolicy.withBuiltinDictionary()
@@ -67,6 +78,15 @@ class ScreenGuardService : AccessibilityService() {
         overlay = OverlayController(this)
         protection = ProtectionStore(this)
         tamperLog = TamperLogStore.of(this).also(::recordConnect)
+        customApps = CustomAppStore(this)
+        protectedPackages = ProtectedPackages.of(this)
+        refreshListedApps()
+        CustomAppStore.changeListener = {
+            handler.post {
+                refreshListedApps()
+                enforceCustomApps()
+            }
+        }
 
         val profile = SettingsProfiles.forManufacturer(Build.MANUFACTURER)
         settingsGuard = SettingsGuard(
@@ -118,6 +138,9 @@ class ScreenGuardService : AccessibilityService() {
         val overlay = overlay ?: return
         val packageName = event?.packageName?.toString() ?: return
 
+        // Before the scans, which would otherwise lift the cover.
+        if (enforceCustomApps()) return
+
         // The settings screens are checked first and are deliberately not behind
         // ScanGate's debounce: a 300 ms window on the one screen that removes the
         // guard is exactly the gap this is here to close.
@@ -138,7 +161,7 @@ class ScreenGuardService : AccessibilityService() {
                 // it came from.
                 Log.d(
                     TAG,
-                    "scan pkg=$packageName action=${outcome.verdict.action} " +
+                    "scan action=${outcome.verdict.action} " +
                         "score=${outcome.verdict.score} cover=${outcome.cover}",
                 )
                 overlay.apply(outcome.cover)
@@ -146,6 +169,44 @@ class ScreenGuardService : AccessibilityService() {
 
             is GateOutcome.Skipped -> Unit // leave the overlay as it is
         }
+    }
+
+    private fun refreshListedApps() {
+        listedApps = try {
+            customApps?.state() ?: return
+        } catch (e: IOException) {
+            // Keep enforcing the last list read; an unreadable file must not
+            // switch blocking off.
+            Log.w(TAG, "custom app list unreadable")
+            return
+        }
+    }
+
+    /** Returns whether a cover is up; rechecks on a timer while one is. */
+    private fun enforceCustomApps(): Boolean {
+        handler.removeCallbacks(enforceTask)
+        val overlay = overlay ?: return false
+        val protectedNow = protectedPackages?.current() ?: return false
+        val protectionState = protection?.state() ?: return false
+
+        val action = enforcement.decide(
+            state = listedApps,
+            visiblePackages = visiblePackages(),
+            protected = protectedNow,
+            protection = protectionState,
+            nowElapsed = SystemClock.elapsedRealtime(),
+        )
+
+        if (action.cover) {
+            overlay.apply(CoverState.COVER)
+            customCoverUp = true
+            if (action.sendHome) performGlobalAction(GLOBAL_ACTION_HOME)
+            handler.postDelayed(enforceTask, ENFORCE_RECHECK_MILLIS)
+        } else if (customCoverUp) {
+            overlay.apply(CoverState.CLEAR)
+            customCoverUp = false
+        }
+        return action.cover
     }
 
     /**
@@ -360,7 +421,7 @@ class ScreenGuardService : AccessibilityService() {
         // focus is now what decides between backing out and covering.
         Log.d(
             TAG,
-            "settings screen pkg=$packageName class=$className " +
+            "settings screen class=$className " +
                 "window=${window?.id ?: -1} focused=${window?.isFocused ?: true} " +
                 "texts=${texts.size} ids=${resourceIds.take(12)}",
         )
@@ -445,7 +506,7 @@ class ScreenGuardService : AccessibilityService() {
         // out of budget has a declared/fetched gap that means nothing.
         Log.w(
             TAG,
-            "empty harvest pkg=$packageName windows=${matching.size} [$shape] " +
+            "empty harvest windows=${matching.size} [$shape] " +
                 "rootChildren=${root.childCount} declared=$declared fetched=$fetched " +
                 "truncated=${budget.exhausted} starved=$starved",
         )
@@ -612,6 +673,8 @@ class ScreenGuardService : AccessibilityService() {
         // Before the overlay and policy go: a queued re-look would otherwise run
         // against a torn-down service and a closed policy engine.
         cancelRescan()
+        CustomAppStore.changeListener = null
+        handler.removeCallbacks(enforceTask)
         overlay?.destroy()
         overlay = null
         policy?.close()
@@ -625,6 +688,7 @@ class ScreenGuardService : AccessibilityService() {
     companion object {
         private const val TAG = "ScreenGuard"
         private const val MAX_DEPTH = 40
+        private const val ENFORCE_RECHECK_MILLIS = 500L
         private const val MAX_FRAGMENTS = 400
 
         /**

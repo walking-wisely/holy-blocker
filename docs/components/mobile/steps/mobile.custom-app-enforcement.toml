@@ -1,7 +1,7 @@
 id = "mobile.custom-app-enforcement"
 title = "Enforce the list from ScreenGuardService: send the user home and cover a listed app"
-status = "pending"
-evidence = ""
+status = "done"
+evidence = "policy/CustomAppEnforcement.kt, ScreenGuardService.kt; scripts/smoke-test-custom-app.sh passed on an API 36 emulator; PR feat/mobile-custom-app-enforcement"
 acceptance = "observation"
 depends_on = ["mobile.custom-app-core"]
 verify = "smoke script: a chosen app is covered or sent home, an unchosen app is untouched"

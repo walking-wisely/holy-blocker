@@ -3,6 +3,7 @@ package com.holyblocker.mobile.policy
 import java.io.File
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class CustomAppsHygieneTest {
@@ -16,7 +17,13 @@ class CustomAppsHygieneTest {
     @Test
     fun `the custom-app sources scanned are the expected ones`() {
         assertEquals(
-            setOf("CustomApps.kt", "CustomAppListCodec.kt", "CustomAppStore.kt", "CustomAppProtectedPackages.kt"),
+            setOf(
+                "CustomApps.kt",
+                "CustomAppListCodec.kt",
+                "CustomAppStore.kt",
+                "CustomAppProtectedPackages.kt",
+                "CustomAppEnforcement.kt",
+            ),
             customAppSources.map { it.name }.toSet(),
         )
     }
@@ -44,5 +51,36 @@ class CustomAppsHygieneTest {
 
         assertEquals(1, Regex("""android:allowBackup="false"""").findAll(manifest).count())
         assertFalse(manifest.contains("""allowBackup="true""""))
+    }
+
+    @Test
+    fun `the screen guard never puts a package name in a log call`() {
+        val text = File(main, "kotlin/com/holyblocker/mobile/ScreenGuardService.kt").readText()
+        val logCalls = Regex("""Log\.\w\(""").findAll(text).map { call ->
+            var depth = 1
+            var end = call.range.last + 1
+            while (depth > 0) {
+                when (text[end]) {
+                    '(' -> depth++
+                    ')' -> depth--
+                }
+                end++
+            }
+            text.substring(call.range.first, end)
+        }.toList()
+
+        assertTrue(logCalls.isNotEmpty())
+        for (call in logCalls) {
+            assertFalse("log call names a package: $call", Regex("""(?i)pkg|packageName""").containsMatchIn(call))
+        }
+    }
+
+    @Test
+    fun `enforcement passes no identity to the tamper log`() {
+        val text = File(main, "kotlin/com/holyblocker/mobile/ScreenGuardService.kt").readText()
+        val body = text.substringAfter("private fun enforceCustomApps()").substringBefore("private fun guardSettingsScreen")
+
+        assertFalse(body.contains("tamperLog"))
+        assertFalse(body.contains("Log."))
     }
 }
