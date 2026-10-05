@@ -1,8 +1,9 @@
 id = "mobile.custom-app-core"
-title = "Deny list with a per-app mode (block, hide, unblocked), the matcher and the on-device store; lowering a mode follows the disarm cooldown"
+title = "Deny list, the matcher, the app rating and the on-device store; removing an app follows the disarm cooldown"
 status = "pending"
 evidence = ""
 acceptance = "code"
 depends_on = ["mobile.custom-app-blocking"]
 group = "custom-apps"
+verify = "gradle unit tests: matcher, merge-up add, lowering request/confirm/expiry, void-on-reboot, backup flag, no identity in TamperEntry.detail"
 milestone = "mvp"

@@ -1,0 +1,9 @@
+id = "mac-daemon.custom-app-domains"
+title = "Pass a confirmed app's name tokens to the proxy; they follow the entry's mode and lowering. Needs mitm-proxy.keyword-rule"
+status = "pending"
+evidence = ""
+acceptance = "observation"
+depends_on = ["mac-daemon.custom-app-core"]
+verify = "a host carrying a confirmed token is refused through the supervised proxy, an unrelated host is not"
+group = "custom-apps"
+milestone = "mvp"

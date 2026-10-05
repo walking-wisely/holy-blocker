@@ -1,7 +1,7 @@
 id = "mac-daemon.e2e-macos-scenario"
-title = "macOS e2e scenario on a standard account under the scenario contract: text overlay, listed domain refused, chosen app hidden and terminated, removal refused. Needs engineering.e2e-contract and e2e-runner"
+title = "macOS e2e scenario on a standard account under the scenario contract: text overlay, listed domain refused, chosen app terminated, removal refused. Needs engineering.e2e-contract and e2e-runner"
 status = "pending"
 evidence = ""
 acceptance = "observation"
-depends_on = ["mac-daemon.install", "mac-daemon.persistence", "mac-daemon.standard-user-removal", "mac-daemon.settings-guard", "mac-daemon.scan-loop-frameless", "mac-daemon.proxy-blocklist-wiring", "mac-daemon.custom-app-hide", "mac-daemon.custom-app-block", "mac-daemon.custom-app-panel", "mac-daemon.protection-schedule", "mac-daemon.dev-kill-switch"]
+depends_on = ["mac-daemon.install", "mac-daemon.persistence", "mac-daemon.standard-user-removal", "mac-daemon.settings-guard", "mac-daemon.scan-loop-frameless", "mac-daemon.proxy-blocklist-wiring", "mac-daemon.custom-app-block", "mac-daemon.custom-app-panel", "mac-daemon.protection-schedule", "mac-daemon.dev-kill-switch"]
 milestone = "mvp"

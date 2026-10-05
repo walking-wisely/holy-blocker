@@ -1,0 +1,9 @@
+id = "mobile.custom-app-domains"
+title = "Feed a confirmed app's name tokens to the DNS path; they follow the entry's mode and lowering. Needs net-shield.keyword-rule"
+status = "pending"
+evidence = ""
+acceptance = "observation"
+depends_on = ["mobile.custom-app-core"]
+verify = "smoke script: a name carrying a confirmed token is refused, an unrelated name is answered"
+group = "custom-apps"
+milestone = "mvp"

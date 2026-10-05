@@ -106,11 +106,12 @@ that does.
    `apps/mobile` does today; `mac-daemon.protection-schedule` brings macOS to parity. Requirement 3
    therefore reads: removal is refused or delayed, and what cannot be prevented is logged. The
    development build remains the only instant off.
-3. **Custom-app blocking has per-app modes and a searchable list panel on both platforms.** Block
-   terminates the app where the platform allows it, hide covers the app with the overlay, unblocked
-   does nothing. Android cannot terminate another app under plain Device Admin (unverified), so
+3. **Custom-app blocking has a searchable list panel on both platforms.** *Amended 2026-10-05: the
+   per-app modes (block, hide, unblocked) are dropped; an app is blocked or it is not, and hiding
+   text and images stays app-wide ([custom-app-blocking.md](custom-app-blocking.md)).* Block
+   terminates the app where the platform allows it. Android cannot terminate another app under plain Device Admin (unverified), so
    there block sends the user home and covers the app. The macOS panel is native in the agent, not
-   the Electron control panel, which stays out of the MVP. Lowering a mode follows the disarm
+   the Electron control panel, which stays out of the MVP. Removing an app follows the disarm
    cooldown. The remaining design goes through `plan-inception` in the two custom-app steps.
 4. **The MVP is working builds on the owner's own devices, not store releases.** Release builds are
    signed with a local keystore (Android) and a local identity (macOS), both different from the
@@ -136,6 +137,8 @@ scoped to a standard account.
 | `mac-daemon.proxy-blocklist-wiring` | `mitm-proxy.domain-blocklist` |
 | `mobile.e2e-android-scenario`, `mac-daemon.e2e-macos-scenario` | `engineering.e2e-contract`, `engineering.e2e-runner` |
 | `mac-daemon.install` and the two macOS tamper observations | `engineering.privilege-dispatcher` |
+| `mobile.custom-app-domains` | `net-shield.keyword-rule` |
+| `mac-daemon.custom-app-domains` | `mitm-proxy.keyword-rule`, which follows `mitm-proxy.domain-blocklist` |
 | `engineering.dev-build-release-guard` | `mobile.dev-kill-switch`, `mobile.release-signing` |
 | `engineering.dev-build-release-guard-macos` | `mac-daemon.dev-kill-switch`, `mac-daemon.release-identity` |
 

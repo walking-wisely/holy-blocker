@@ -1,5 +1,5 @@
 id = "mobile.custom-app-panel"
-title = "Searchable installed-app list in MainActivity to choose apps and set their mode"
+title = "Searchable installed-app list in MainActivity to choose the apps to block, with name tokens confirmed"
 status = "pending"
 evidence = ""
 acceptance = "observation"

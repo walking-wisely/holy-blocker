@@ -260,3 +260,11 @@ treated as the user leaving**, so a `com.android.systemui` status-bar event land
 the device-admin list opened cancelled that screen's entire re-look budget and reset the back-out
 bound. `SettingsGuard.classifyUnwatchedEvent` now separates "chrome over a guarded screen" from a
 real departure, with an explicit third answer for a foreground that cannot be resolved.
+
+## Custom-app blocking — revisit after the MVP
+
+Deferred by [custom-app-blocking.md](../../decisions/custom-app-blocking.md): audio, notifications,
+widgets and share sheets of a covered or closed app (first to revisit); background work and the
+flash before cover; clones, work profiles and re-signed copies; a real app-to-domain mapping instead
+of name matching; the `never` rating's clues; hardening the list store; a partner event for a
+lowering request.
