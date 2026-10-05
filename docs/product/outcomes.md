@@ -71,8 +71,8 @@ browsing by default.
 
 ## Let the user add their own sites and apps to block
 
-**Status:** in progress for apps. Per-app modes (block, hide, unblocked), the cooldown on lowering and
-what each mode does and does not stop are decided in [custom-app-blocking.md](../decisions/custom-app-blocking.md);
+**Status:** in progress for apps. A blocked-app list, the cooldown on removing an app and what blocking does
+and does not stop are decided in [custom-app-blocking.md](../decisions/custom-app-blocking.md);
 nothing is built yet, and neither `apps/mobile` nor `native-modules/mac-daemon` has a per-app check today.
 User-supplied blocked *domains* are a separate, not-started part of this outcome: `net-shield`'s
 `DomainFilter` already models an explicit per-domain rule (the same mechanism the override above uses).

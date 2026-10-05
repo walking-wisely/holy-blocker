@@ -1,5 +1,5 @@
 id = "mac-daemon.custom-app-blocking"
-title = "Plan-inception for custom-app blocking on both platforms: decision record, per-app modes, data-classes row (shared with mobile.custom-app-blocking)"
+title = "Plan-inception for custom-app blocking on both platforms: decision record, the block-only list, data-classes row (shared with mobile.custom-app-blocking)"
 status = "done"
 evidence = "decision record docs/decisions/custom-app-blocking.md, ADR index row, outcomes and data-classes rows; owner questions open in the PR"
 acceptance = "product"

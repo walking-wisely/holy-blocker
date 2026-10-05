@@ -1,5 +1,5 @@
 id = "mac-daemon.custom-app-block"
-title = "Block mode: terminate the app on launch and activation, and again if it relaunches"
+title = "Terminate a listed app on launch and activation and again if it relaunches; hide and cover it if it refuses to quit"
 status = "pending"
 evidence = ""
 acceptance = "observation"

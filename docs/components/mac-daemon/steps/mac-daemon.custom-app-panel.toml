@@ -1,5 +1,5 @@
 id = "mac-daemon.custom-app-panel"
-title = "Native searchable app list in the agent to choose apps and set their mode"
+title = "Native searchable app list in the agent to choose the apps to block, with name tokens confirmed"
 status = "pending"
 evidence = ""
 acceptance = "observation"

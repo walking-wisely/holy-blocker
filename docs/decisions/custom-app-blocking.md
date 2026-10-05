@@ -2,14 +2,14 @@
 
 | Field | Value |
 |---|---|
-| **Status** | Proposed, revised after owner review comments; owner questions below |
+| **Status** | Accepted 2026-10-05 on the owner's answers; revised from the first draft, see "Owner answers" |
 | **Date** | 2026-10-05 |
 | **Owner** | Ivan Dutov |
 | **Supersedes** | — |
 | **Superseded by** | — |
 
 Tier: product decision extending [mvp-scope.md](mvp-scope.md), which already records the owner's
-answers on modes, the panel and the cooldown. It touches protection modes and the tamper model, so
+answers on the panel and the cooldown. Its per-app modes are narrowed by this record to block only. It touches protection modes and the tamper model, so
 the red-team is tier 2 (three lenses) under
 [decision-tiers-and-red-teaming.md](decision-tiers-and-red-teaming.md); findings are at the end.
 
@@ -39,37 +39,36 @@ neither platform has a per-app check. Measured 2026-10-05:
 
 ## Decision
 
-1. **A list entry is an application identity and a mode.** The identity is the Android package name
-   or the macOS bundle identifier, never a display name. The modes are `block`, `hide` and
-   `unblocked`. An application absent from the list is `unblocked`; the list stores only `block`
-   and `hide`.
-2. **What each mode does.**
+1. **A list entry is an application identity, and a listed application is blocked.** The identity is
+   the Android package name or the macOS bundle identifier, never a display name. There are no
+   per-app modes: an application is on the list or it is not.
+2. **What blocking does.**
 
-   | Mode | Android | macOS |
-   |---|---|---|
-   | `hide` | Cover the app with the overlay on every visible window of that package | Cover the app's window rectangles with the overlay on launch and activation and hide it with `NSRunningApplication.hide()` |
-   | `block` | Send the user home (`GLOBAL_ACTION_HOME`) and cover the app | `terminate()` on launch and activation, and again on relaunch. If the app is still running after a grace period, hide and cover it, repeating on every scan. Never `forceTerminate()` |
+   | Android | macOS |
+   |---|---|
+   | Send the user home (`GLOBAL_ACTION_HOME`) and cover the app with the overlay on every visible window of that package | `terminate()` on launch and activation, and again on relaunch. If the app is still running after a grace period, hide it and cover its windows, repeating on every scan. Never `forceTerminate()` |
 
-   The listed-app path does not use `WindowSuppression`'s 5-second cooldown: that cooldown exists so
-   a content verdict does not hammer an app that refuses, and a listed app is not a verdict.
+   Hiding and covering on macOS is the fallback for an app that refuses to quit, not a mode. The
+   listed-app path does not use `WindowSuppression`'s 5-second cooldown: that cooldown exists so a
+   content verdict does not hammer an app that refuses, and a listed app is not a verdict.
 
-   Android `block` is not "terminate": plain Device Admin and an accessibility service have no
+   Android blocking is not "terminate": plain Device Admin and an accessibility service have no
    documented way to stop a foreground app of another uid. That is unverified here and is observed by
    `mobile.custom-app-enforcement`. macOS never force-terminates, for the reason
    `WindowSuppression.swift` records: a blocker that loses unsaved work gets uninstalled.
-3. **Honest labels.** `hide` is shown as "cover only" and Android `block` as "send home and cover";
-   `block` on macOS is "close". The panel states on its face that clones, work-profile copies and
-   other copies of an app are not covered, and that an app's notifications are not suppressed.
-   Release wording says an app is covered or closed, never that it is stopped.
-4. **Adding merges up.** Adding an app, or choosing a mode for an app already listed, stores the
-   stricter of the existing and requested modes (`block` over `hide` over `unblocked`). The add path
-   can never lower. Test vectors cover add-over-existing.
-5. **Lowering costs, in every protection phase.** Moving `block` to `hide`, and removing an app, is
-   requested, waits out the disarm cooldown, and must be confirmed, as `ProtectionSchedule` does for
-   disarming. One pending lowering per app; an unconfirmed request expires and is deleted, as is a
-   confirmed one once applied. The store refuses a lowering or removal without a confirmed per-app
-   request in every phase, including `DISARMED` and `OFF`, so the list cannot be edited while
-   enforcement is off and found changed on re-arm.
+3. **Honest labels.** Android blocking is shown as "send home and cover" and macOS blocking as
+   "close". The panel states on its face that clones, work-profile copies and other copies of an
+   app are not covered, and that an app's notifications are not suppressed. Release wording says an
+   app is covered or closed, never that it is stopped.
+4. **There is no per-app hide.** Hiding text or images inside an application is what the text policy
+   and the image classifier do, for every application and not per app, and that path is unchanged.
+   Scoping it per app is not needed and is not planned. The owner's earlier "hide" mode is dropped.
+5. **Removal costs, in every protection phase.** Removing an app from the list is requested, waits
+   out the disarm cooldown, and must be confirmed, as `ProtectionSchedule` does for disarming.
+   Adding is immediate and idempotent. One pending removal per app; an unconfirmed request expires
+   and is deleted, as is a confirmed one once applied. The store refuses a removal without a
+   confirmed per-app request in every phase, including `DISARMED` and `OFF`, so the list cannot be
+   edited while enforcement is off and found changed on re-arm.
 6. **Clocks.** Android uses `elapsedRealtime`. macOS uses a monotonic clock that continues across
    sleep and that the user cannot set (`mach_continuous_time`), never `Date()`. A request whose
    stored start lies in the future, which is what a reboot looks like, is void on both platforms,
@@ -86,16 +85,18 @@ neither platform has a per-app check. Measured 2026-10-05:
 
    | Rating | Meaning | Panel behaviour |
    |---|---|---|
-   | `never` | Life-sustaining or the person cannot function without it: the platform shell, the emergency and phone-dialer apps, banking and payment apps | Refused at add, not offered, not accepted by hand |
-   | `ordinary` | Everything else | Listed on the person's own decision; the lowering cost is stated at add time |
+   | `never` | Life-sustaining, or the person cannot function without it: the platform shell, emergency and phone-dialer apps, banking and payment apps, medical-device apps, authenticator and 2FA apps, maps, and work tools including work messengers such as Slack | Refused at add, not offered, not accepted by hand |
+   | `ordinary` | Everything else, including the common consumer messengers (Telegram, Instagram, Facebook) | Listed on the person's own decision; the removal cost is stated at add time |
+
+   Messaging is not blanket `never`: the line is consumer messengers a person may be right to block
+   against work messengers whose blocking would be a disaster.
 
    The clues are on-device and cheap: a bundled, reviewable list of identities; name tokens such as
    a bank or payment term in the identity; and on macOS the bundle's declared
    `LSApplicationCategoryType` (finance and health categories), whose exact values the core step
    verifies. Android has no local finance category, so there the clues are the list and the tokens;
    that is unverified here. The rating is conservative in one direction: it may refuse a harmless
-   app and must not miss an obvious bank. Which further applications are `never` is the owner's
-   call, not inferred here (owner question 1). Like the protected set, the rating is evaluated at
+   app and must not miss an obvious bank. Further applications are `never` only by a change to the bundled list, which the owner approves. Like the protected set, the rating is evaluated at
    enforcement time, so an entry that later turns `never` is not enforced.
 9. **The protected set is evaluated at enforcement time.**
    - It holds the product's own id and the platform shell: on Android the system UI, the Settings
@@ -127,8 +128,8 @@ neither platform has a per-app check. Measured 2026-10-05:
       example `line`, `meta`, `mail`, `maps`) never match, because they would block unrelated sites.
     - The panel shows the derived tokens and what each matches at add time and the person confirms
       them. A match is never silent, and the person can drop a token. Domains matched by a confirmed
-      token are one unit with the app entry: they follow its mode, and lowering or removing the app
-      lowers them, under the same cooldown.
+      token are one unit with the app entry: they follow the entry, and removing the app removes them,
+      under the same cooldown.
     - The matcher is a new kind of explicit rule in `net-shield` (keyword, evaluated after the
       device-local allowlist and with the explicit `DomainFilter` rules in the precedence of
       `blocklist.rs`), exposed to Android over the existing UniFFI wrapper and to the macOS proxy
@@ -162,8 +163,8 @@ neither platform has a per-app check. Measured 2026-10-05:
 15. **Two small pure modules, not a Rust crate.** The matcher and the lowering rule are about fifty
     lines each, written in Kotlin and Swift against the same test vectors, as
     `mac-daemon.protection-schedule` ports `ProtectionSchedule`. A UniFFI crate would add a
-    cross-platform contract for logic that is neither a secret nor heavy. The shared contract is the
-    mode vocabulary and decisions 4 to 6 above and the rating and token rules of decisions 8 and 12.
+    cross-platform contract for logic that is neither a secret nor heavy. The shared contract is
+    the decisions 5 and 6 above and the rating and token rules of decisions 8 and 12.
 16. **macOS is advisory until its agent is observed.** The agent runs as the protected user, so a
     standard user can edit the list file or stop the agent. Decisions 5 and 6 on macOS are advisory
     until `mac-daemon.standard-user-tamper` observes whether the agent can be stopped, and release
@@ -175,14 +176,14 @@ neither platform has a per-app check. Measured 2026-10-05:
 
 | Step | Must do, beyond its title |
 |---|---|
-| `mobile.custom-app-core` | Matcher, merge-up add, lowering request/confirm/expiry, store with the backup test, protected-set resolution and the `never` rating at check time, token derivation, the vectors in decisions 4 to 6, 8 and 12, a test that nothing writes an identity into `TamperEntry.detail` |
+| `mobile.custom-app-core` | Matcher, idempotent add, removal request/confirm/expiry, store with the backup test, protected-set resolution and the `never` rating at check time, token derivation, the vectors in decisions 5, 6, 8 and 12, a test that nothing writes an identity into `TamperEntry.detail` |
 | `mac-daemon.custom-app-core` | The same, with the monotonic sleep-surviving clock, the file mode and backup exclusion, and the no-logging gate. Depends on `mac-daemon.protection-schedule` |
 | `mobile.custom-app-enforcement` | Window-wide enforcement and a rescan on list change, removal of every package name from `Log.*` with its gate, observation of whether `block` can stop an app and how long content shows before cover |
-| `mac-daemon.custom-app-hide`, `custom-app-block` | Launch and activation observers, repeat-hide after the grace period, no use of `WindowSuppression`'s cooldown |
-| `mobile.custom-app-panel`, `mac-daemon.custom-app-panel` | The honest labels and the coverage note of decision 3, manual identity entry, both modes offered at add time with the lowering cost stated, refusal of `never` identities, and the derived tokens shown for confirmation |
+| `mac-daemon.custom-app-block` | Launch and activation observers, repeat-hide after the grace period, no use of `WindowSuppression`'s cooldown |
+| `mobile.custom-app-panel`, `mac-daemon.custom-app-panel` | The honest labels and the coverage note of decision 3, manual identity entry, the removal cost stated at add time, refusal of `never` identities, and the derived tokens shown for confirmation |
 | `net-shield.keyword-rule` | The keyword rule kind of decision 12: token minimum, stoplist, label matching, precedence after the allowlist; the stoplist changes only through this record |
 | `mitm-proxy.keyword-rule` | Refuse a CONNECT authority or plain HTTP host that a keyword rule matches; depends on `mitm-proxy.domain-blocklist` |
-| `mobile.custom-app-domains`, `mac-daemon.custom-app-domains` | Feed a confirmed app's tokens to the DNS path (Android) or the proxy (macOS), observed: a name carrying the token is refused, an unrelated name is not, and the tokens follow the entry's mode and lowering. Needs `net-shield.keyword-rule` (and `mitm-proxy.keyword-rule` on macOS) |
+| `mobile.custom-app-domains`, `mac-daemon.custom-app-domains` | Feed a confirmed app's tokens to the DNS path (Android) or the proxy (macOS), observed: a name carrying the token is refused, an unrelated name is not, and the tokens follow the entry and its removal. Needs `net-shield.keyword-rule` (and `mitm-proxy.keyword-rule` on macOS) |
 
 ## Rejected alternatives
 
@@ -193,11 +194,11 @@ neither platform has a per-app check. Measured 2026-10-05:
 | `QUERY_ALL_PACKAGES` on Android | Broader than needed to list launchable apps and a wider package-visibility grant to hold |
 | A Rust crate with UniFFI for the matcher and the schedule | A new cross-platform contract for a trivial pure function |
 | Record each block in the tamper log | A usage history of the person's chosen apps; the log is for the guard, not for activity |
-| Immediate lowering | Defeats requirement 3 as it would defeat it for disarm |
+| Immediate removal | Defeats requirement 3 as it would defeat it for disarm |
 | Check the protected set only when adding | The Android launcher role and a mutable macOS set change after add; a check at add time either exempts a listed launcher or loops home into the app |
 | The wall clock for the cooldown | User-settable on both platforms |
 | A short undo window for every newly added app | Owner review: a loophole for every app to fix a mistake only some apps can make dangerous. Replaced by the `never` rating of decision 8 |
-| Drop `hide` from the MVP | Owner answer 3 in mvp-scope.md names it; it is kept, labelled "cover only" |
+| A per-app `hide` mode | Owner review: hiding text and images is app-wide and decided by the text policy and the image classifier; a per-app cover is not that, and is not needed |
 
 ## What this does not cover
 
@@ -234,18 +235,17 @@ Deliberately deferred, to be reopened once the MVP is observed on the owner's de
 
 The same list is in the mobile and mac-daemon backlogs.
 
-## Owner questions
+## Owner answers
 
-1. **Which applications are `never`?** Decision 8 fixes the mechanism and an initial set (shell,
-   emergency and dialer, banking and payment). Candidates you may want added: medical and health
-   devices, authenticators and 2FA, maps and ride, messaging, and work tools. Your call; the rating
-   is data and is changed without a new decision.
-2. **A keyword rule in `net-shield`** (decision 12) is a contract Android and the macOS proxy both
-   consume. Confirm that name matching with stated confidence, a five-character minimum and a
-   stoplist is the MVP shape you want.
-3. **Default mode for a new app is `block`** (the stricter, and the cooldown makes it sticky). Both
-   modes are offered at add time with the lowering cost stated. Is `block` the right default?
-4. **No tamper-log or per-block record in the MVP** (decision 14). Accepted?
+Given 2026-10-05 on the first draft:
+
+1. **`never` additions:** medical devices, authenticators and 2FA, maps and work tools. Messaging is
+   not blanket `never`: consumer messengers (Telegram, Instagram, Facebook) stay listable and work
+   messengers (Slack) are `never`.
+2. **Name matching:** confidence tiers and a stoplist, as decision 12 has them.
+3. **Per-app `hide` is dropped.** Hiding text and images is app-wide through the text policy and
+   the image classifier. An application has only the blocked state (decision 4).
+4. **No record of list changes** in the MVP is accepted (decision 14).
 
 ## Red-team findings
 
@@ -254,7 +254,7 @@ review comments. Folded findings are listed; the rest are in "What this does not
 
 | # | Lens | Finding | Resolved by |
 |---|---|---|---|
-| 1 | Bypass | The add path can lower a mode with no cooldown (**changed the design**) | decision 4 |
+| 1 | Bypass | The add path can lower a mode with no cooldown | moot after modes were dropped; decision 5 |
 | 2 | Bypass | Per-app cooldown adds nothing beyond disarm; a disarm window stops all enforcement, and the list may be edited while off (**changed the design**) | decisions 5 and 7 |
 | 3 | Bypass | The protected set is checked at add time; a listed launcher either loops or is exempt (**changed the design**) | decision 9 |
 | 4 | Bypass | macOS relaunch gets a 5-second window per cycle and a refused terminate falls to a user-undoable hide | decision 2 |
@@ -262,8 +262,8 @@ review comments. Folded findings are listed; the rest are in "What this does not
 | 6 | Bypass | Android enforcement is foreground-event-only | decision 11 |
 | 7 | Bypass | Enumeration gaps leave apps unlistable | decision 10 |
 | 8 | Bypass | No clock named for macOS | decision 6 |
-| 9 | Intent | Android `block` and `hide` promise more than they do | decision 3 |
-| 10 | Intent | A mistaken `block` of an essential app has no emergency path (**changed the design**) | decision 8 (the undo was rejected on owner review) |
+| 9 | Intent | Android `block` and `hide` promise more than they do | decisions 3 and 4 |
+| 10 | Intent | A mistaken block of an essential app has no emergency path (**changed the design**) | decision 8 (the undo was rejected on owner review) |
 | 11 | Intent | The cooldown conflates a mistaken add with an impulse to lower | decision 8 |
 | 12 | Intent | A lowering is an attempt the accountability model would want, and nothing signals it | decision 14 |
 | 13 | Intent | No liveness signal that a block fired | decision 14 |
@@ -278,3 +278,5 @@ review comments. Folded findings are listed; the rest are in "What this does not
 | 22 | Owner review | Name-matching domains for a listed app is wanted for the MVP (**changed the design**) | decision 12 |
 | 23 | Owner review | List what to revisit, audio and notifications first | "Revisit after the MVP" |
 | 24 | Owner review | A short undo for every app is a bad idea; rate apps by clues and refuse the life-sustaining (**changed the design**) | decision 8 |
+| 25 | Owner review | Per-app hide is not what was meant; hiding is app-wide (**changed the design**) | decision 4 |
+| 26 | Owner review | Consumer messengers are listable, work messengers and the named categories are not | decision 8 |

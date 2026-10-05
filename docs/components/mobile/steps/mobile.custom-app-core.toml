@@ -1,5 +1,5 @@
 id = "mobile.custom-app-core"
-title = "Deny list with a per-app mode (block, hide, unblocked), the matcher and the on-device store; lowering a mode follows the disarm cooldown"
+title = "Deny list, the matcher, the app rating and the on-device store; removing an app follows the disarm cooldown"
 status = "pending"
 evidence = ""
 acceptance = "code"

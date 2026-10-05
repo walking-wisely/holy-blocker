@@ -1,5 +1,5 @@
 id = "mobile.custom-app-enforcement"
-title = "Enforce the mode from ScreenGuardService: hide covers the app with the overlay, block sends the user home and covers it"
+title = "Enforce the list from ScreenGuardService: send the user home and cover a listed app"
 status = "pending"
 evidence = ""
 acceptance = "observation"
