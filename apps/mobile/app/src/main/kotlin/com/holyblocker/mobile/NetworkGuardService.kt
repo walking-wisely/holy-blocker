@@ -10,6 +10,7 @@ import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import android.net.VpnService
 import android.os.ParcelFileDescriptor
+import android.os.SystemClock
 import android.util.Log
 import com.holyblocker.mobile.policy.DnsAnswer
 import com.holyblocker.mobile.policy.NetworkGuard
@@ -308,24 +309,31 @@ class NetworkGuardService : VpnService() {
                 return null
             }
 
-            socket.soTimeout = NetworkGuard.UPSTREAM_TIMEOUT_MILLIS
             socket.connect(resolver, NetworkGuard.DNS_PORT)
             socket.send(DatagramPacket(query, query.size, resolver, NetworkGuard.DNS_PORT))
 
-            val buffer = ByteArray(NetworkGuard.MAX_DNS_MESSAGE_BYTES)
-            val response = DatagramPacket(buffer, buffer.size)
-            socket.receive(response)
-            buffer.copyOf(response.length).takeIf { DnsAnswer.matches(query, it) }
-                ?: run {
-                    Log.w(TAG, "upstream answer did not match its query; dropped")
-                    null
-                }
+            receiveMatching(socket, query)
         }
     } catch (e: IOException) {
         // Timeout, unreachable network, or a socket closed under us. The next
         // resolver in the list gets a turn; if none answers the client retries.
         Log.d(TAG, "upstream query failed: ${e.javaClass.simpleName}")
         null
+    }
+
+    private fun receiveMatching(socket: DatagramSocket, query: ByteArray): ByteArray? {
+        val buffer = ByteArray(NetworkGuard.MAX_DNS_MESSAGE_BYTES)
+        val deadline = SystemClock.elapsedRealtime() + NetworkGuard.UPSTREAM_TIMEOUT_MILLIS
+        while (true) {
+            val remaining = deadline - SystemClock.elapsedRealtime()
+            if (remaining <= 0) return null
+            socket.soTimeout = remaining.toInt()
+            val response = DatagramPacket(buffer, buffer.size)
+            socket.receive(response)
+            val answer = buffer.copyOf(response.length)
+            if (DnsAnswer.matches(query, answer)) return answer
+            Log.w(TAG, "upstream datagram did not match its query; dropped")
+        }
     }
 
     private fun writeToTun(packet: ByteArray) {

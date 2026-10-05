@@ -3,7 +3,10 @@ package com.holyblocker.mobile.policy
 object DnsAnswer {
 
     private const val HEADER_BYTES = 12
+    private const val FLAGS_BYTE = 2
     private const val QR_FLAG = 0x80
+    private const val QDCOUNT_HIGH = 4
+    private const val QDCOUNT_LOW = 5
     private const val TYPE_AND_CLASS_BYTES = 4
     private const val ASCII_CASE_BIT = 0x20
 
@@ -11,7 +14,7 @@ object DnsAnswer {
     fun matches(query: ByteArray, answer: ByteArray): Boolean {
         val questionEnd = singleQuestionEnd(query) ?: return false
         if (answer.size < questionEnd) return false
-        if (answer[2].toInt() and QR_FLAG == 0) return false
+        if (answer[FLAGS_BYTE].toInt() and QR_FLAG == 0) return false
         if (query[0] != answer[0] || query[1] != answer[1]) return false
         if (!hasOneQuestion(answer)) return false
         for (i in HEADER_BYTES until questionEnd) {
@@ -21,7 +24,7 @@ object DnsAnswer {
     }
 
     private fun hasOneQuestion(message: ByteArray): Boolean =
-        message.size >= HEADER_BYTES && message[4].toInt() == 0 && message[5].toInt() == 1
+        message.size >= HEADER_BYTES && message[QDCOUNT_HIGH].toInt() == 0 && message[QDCOUNT_LOW].toInt() == 1
 
     private fun singleQuestionEnd(query: ByteArray): Int? {
         if (!hasOneQuestion(query)) return null

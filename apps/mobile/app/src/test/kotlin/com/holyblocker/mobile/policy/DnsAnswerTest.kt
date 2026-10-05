@@ -86,4 +86,23 @@ class DnsAnswerTest {
         val pointer = byteArrayOf(0xC0.toByte(), 12)
         assertFalse(DnsAnswer.matches(query, message(0x1234, response = true, qname = pointer)))
     }
+
+    @Test
+    fun `arbitrary bytes never throw`() {
+        val random = java.util.Random(1)
+        repeat(5_000) {
+            val bytes = ByteArray(random.nextInt(80)).also(random::nextBytes)
+            DnsAnswer.matches(bytes, bytes)
+            DnsAnswer.matches(query, bytes)
+            DnsAnswer.matches(bytes, query)
+        }
+    }
+
+    @Test
+    fun `a differing type or class byte does not match`() {
+        val answer = message(0x1234, response = true)
+        val classByte = answer.size - 1
+        answer[classByte] = (answer[classByte].toInt() xor 0x20).toByte()
+        assertFalse(DnsAnswer.matches(query, answer))
+    }
 }
