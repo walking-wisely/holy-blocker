@@ -99,6 +99,12 @@ enum class TamperEvent(
      */
     NETWORK_GUARD_REVOKED("net_revoked"),
 
+    /** The network guard found no signed blocklist and fell back to the placeholder rules. */
+    BLOCKLIST_MISSING("list_missing"),
+
+    /** A signed blocklist was present but failed verification, so the placeholder rules are in force. */
+    BLOCKLIST_REJECTED("list_rejected"),
+
     /** A screen-capture session began, with the user's per-session consent. */
     SCREEN_CAPTURE_STARTED("capture_on"),
 

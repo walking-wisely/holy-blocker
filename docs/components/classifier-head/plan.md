@@ -315,7 +315,7 @@ artifact's own bytes, so a silent re-export cannot keep the old identity.
 **A refusal to load is not a failure to block.** Missing, truncated, version-mismatched or
 backbone-mismatched weights produce a head that allows everything, mirroring
 `ImageSandbox::disabled()`. Both platforms already have the pattern for where the bytes come
-from: `filesDir` on Android, exactly as `BlocklistStore` reads `filesDir/blocklist.txt`.
+from: `filesDir` on Android, in the way `BlocklistStore` installs its artifact under `filesDir`.
 
 Tests first — this module is where the test-first rule earns its keep, and they are written
 against the table above before any code exists: a round trip through `encode`/`decode`; a

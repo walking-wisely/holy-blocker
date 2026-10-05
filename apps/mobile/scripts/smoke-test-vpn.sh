@@ -27,10 +27,11 @@
 #
 # Usage: smoke-test-vpn.sh   (needs a booted emulator or device on adb)
 #
-# It writes the protection mode and the blocklist directly through `run-as`,
-# which is the emulator equivalent of the user arming the app and choosing a
-# list. That needs a debuggable build — i.e. the debug APK, which is what this
-# installs.
+# The blocklist is not pushed. The script builds a small fixture list with the
+# domain-blocklist pipeline, signs it with a throwaway key, and bundles it into
+# the APK it installs — so what is exercised is the shipped-list path a fresh
+# install takes. The protection mode is written through `run-as`, the emulator
+# equivalent of the user arming the app; that needs a debuggable build.
 set -euo pipefail
 
 pkg="com.holyblocker.mobile"
@@ -38,6 +39,7 @@ pkg="com.holyblocker.mobile"
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 mobile_dir="$(dirname "$here")"
 apk="$mobile_dir/app/build/outputs/apk/debug/app-debug.apk"
+packages_dir="$mobile_dir/../../packages"
 
 # Names that really resolve, so a refusal is unambiguously ours. A reserved name
 # (RFC 2606) would NXDOMAIN with or without the filter and prove nothing.
@@ -80,7 +82,7 @@ arm() {
     # Written with the process down: SharedPreferences caches in memory, so a
     # file edit under a running app is simply overwritten.
     adb shell am force-stop "$pkg"
-    adb shell "run-as $pkg sh -c 'cat > shared_prefs/protection_mode.xml' <<'EOF'
+    adb shell "run-as $pkg sh -c 'mkdir -p shared_prefs; cat > shared_prefs/protection_mode.xml' <<'EOF'
 <?xml version='1.0' encoding='utf-8' standalone='yes' ?>
 <map>
     <boolean name=\"armed\" value=\"$1\" />
@@ -88,22 +90,47 @@ arm() {
 EOF"
 }
 
-[[ -f "$apk" ]] || fail "no APK at $apk — run ./gradlew :app:assembleDebug"
+build_fixture_list() {
+    work="$(mktemp -d)"
+    trap 'rm -rf "$work"' EXIT
+    mkdir "$work/fixtures" "$work/keys"
+    printf '0.0.0.0 %s\n' "$blocked" > "$work/fixtures/stevenblack.txt"
+    for f in hagezi_nsfw ut1_adult ut1_gambling ut1_dating; do
+        printf 'filler-%s.example\n' "$f" > "$work/fixtures/$f.txt"
+    done
+    seq 1 1200 | sed 's/.*/control-&.org/' > "$work/control.txt"
+    head -c 32 /dev/urandom > "$work/seed"
+    # PKCS#8 prefix for an Ed25519 seed (RFC 8410 §7); the last 32 bytes of the
+    # SPKI DER are the raw public key.
+    ( printf '\x30\x2e\x02\x01\x00\x30\x05\x06\x03\x2b\x65\x70\x04\x22\x04\x20'; cat "$work/seed" ) \
+        | openssl pkey -inform DER -pubout -outform DER | tail -c 32 > "$work/keys/dev-1.pub"
+    ( cd "$packages_dir/domain-blocklist" && cargo run -q --features cli -- \
+        --fixture-dir "$work/fixtures" --output "$work/list" \
+        --control-set "$work/control.txt" --signing-key "dev-1:$work/seed" ) >/dev/null 2>&1 \
+        || fail "could not build the fixture blocklist"
+    ( cd "$mobile_dir" && ./gradlew -q :app:assembleDebug \
+        -PblocklistArtifactDir="$work/list" -PblocklistTrustedKeyDir="$work/keys" ) \
+        || fail "could not assemble the APK with the fixture list"
+}
+
+echo "==> building a fixture list and bundling it into the APK"
+build_fixture_list
+[[ -f "$apk" ]] || fail "no APK at $apk"
 
 echo "==> waiting for device"
 wait_for_boot
 
-echo "==> installing"
-adb install -r -g "$apk" >/dev/null || fail "install failed"
+echo "==> installing fresh"
+adb uninstall "$pkg" >/dev/null 2>&1 || true
+adb install -g "$apk" >/dev/null || fail "install failed"
 
 echo "==> granting the VPN op"
 # The emulator equivalent of accepting the consent dialog, which is a system
 # window an instrumented test cannot tap.
 adb shell appops set "$pkg" ACTIVATE_VPN allow
 
-echo "==> arming protection and installing a blocklist"
+echo "==> arming protection"
 arm true
-adb shell "run-as $pkg sh -c 'printf \"# smoke test\n$blocked\n\" > files/blocklist.txt'"
 
 # Bring the guard up once before the reboot, so the reboot is testing that it
 # comes *back* rather than that it can start at all.
@@ -130,6 +157,10 @@ lookup_fails "$blocked" || fail "$blocked resolved; it should have been refused 
 adb logcat -d -s NetworkGuard:V | grep -q "answered a blocked name locally" \
     || fail "no local answer was logged; the refusal may have come from the resolver"
 echo "    $blocked refused"
+adb logcat -d -s Blocklist:V | grep -q "blocklist loaded" || fail "the shipped list was not loaded"
+tamper_log="$(adb shell "run-as $pkg cat files/tamper-log.tsv")" || fail "no tamper log to read"
+grep -qE "list_missing|list_rejected" <<<"$tamper_log" \
+    && fail "the shipped list was recorded as missing or rejected"
 
 echo "==> checking a permitted name"
 # Also the online check: if the route were wider than a single /32 this would

@@ -12,6 +12,7 @@ import android.net.VpnService
 import android.os.ParcelFileDescriptor
 import android.os.SystemClock
 import android.util.Log
+import com.holyblocker.mobile.policy.BlocklistProvisioning
 import com.holyblocker.mobile.policy.DnsAnswer
 import com.holyblocker.mobile.policy.NetworkGuard
 import com.holyblocker.mobile.policy.TamperEvent
@@ -201,19 +202,12 @@ class NetworkGuardService : VpnService() {
         tun = descriptor
         tunOutput = FileOutputStream(descriptor.fileDescriptor)
 
-        // Read once per session, not per query: the trie is built on the Rust
-        // side at construction, and this is disk I/O. An empty list means no
-        // blocklist file, which falls back to the placeholder rules compiled
-        // into net-shield-ffi — a supported state, not a broken one.
-        val domains = BlocklistStore(this).domains()
-        guard = if (domains.isEmpty()) {
-            Log.i(TAG, "no blocklist file; using built-in rules")
-            DnsGuard.withBuiltinRules()
-        } else {
-            // The count, never the names: the list is as revealing as the
-            // browsing history this product refuses to keep.
-            Log.i(TAG, "loaded ${domains.size} blocklist rules")
-            DnsGuard.withBlockedDomains(domains)
+        guard = when (val loaded = BlocklistStore(this).load()) {
+            is BlocklistLoad.Loaded -> loaded.guard
+            is BlocklistLoad.Failed -> {
+                tamperLog.record(BlocklistProvisioning.eventFor(loaded.failure))
+                DnsGuard.withBuiltinRules()
+            }
         }
 
         forwarders = Executors.newFixedThreadPool(FORWARDER_THREADS) as ThreadPoolExecutor
