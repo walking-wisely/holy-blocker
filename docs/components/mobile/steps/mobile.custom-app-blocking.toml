@@ -1,0 +1,7 @@
+id = "mobile.custom-app-blocking"
+title = "Block user-chosen apps — plan-inception first, then foreground-package detection and a chooser"
+status = "pending"
+evidence = ""
+acceptance = "product"
+group = "custom-apps"
+milestone = "mvp"

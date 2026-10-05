@@ -1,0 +1,6 @@
+id = "engineering.mvp-milestone"
+title = "mvp milestone label: ordering, validation, todos filter and loop check note"
+status = "at-pr"
+evidence = ""
+acceptance = "code"
+verify = "python3 -m unittest discover -s tools/plan/tests -t ."

@@ -9,6 +9,21 @@ in [`../components/`](../components/) describe how each package is built and in 
 blocked, on which platform, by which layer, and what does not. This file is not generated from
 either. The rationale for the mission lives in [`../mission.md`](../mission.md).
 
+## The MVP
+
+**Status:** in progress. Scope and rationale: [mvp-scope.md](../decisions/mvp-scope.md). Four
+requirements on Android and macOS only: block adult content (text and domains, not imagery), block
+user-chosen apps, protection that cannot be deleted, and a separate development build that can turn
+protection off. The steps that carry it are the ones marked `milestone = "mvp"`; list them with
+`python -m tools.plan.todos --milestone mvp`. It is complete when the cross-cutting coverage row
+"Can a user install this today and have anything blocked end to end?" reads **Yes** on both
+platforms.
+
+**Packages:** `apps/mobile`, `native-modules/mac-daemon`, `packages/text-policy`,
+`packages/net-shield`, `packages/mitm-proxy`
+
+What actually gets blocked: [coverage ledger — MVP](../engineering/coverage.md#mvp).
+
 ## Block adult content on Android without a cloud service
 
 **Status:** in progress, on an unmerged branch for part of it. The on-screen text path is observed

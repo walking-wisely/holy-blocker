@@ -45,6 +45,10 @@ DEFAULT_KIND = "feature"
 # token threshold instead of stopping for a handoff.
 VALID_DIFFICULTY = ("normal", "hard")
 DEFAULT_DIFFICULTY = "normal"
+# `mvp` marks a step that the product scope in docs/decisions/mvp-scope.md needs; ready
+# milestone steps are offered before every other ready step, and a milestone step may not
+# wait on an unfinished step outside the milestone.
+VALID_MILESTONE = ("mvp",)
 MARKER_RE = re.compile(r"<!--\s*step:\s*([A-Za-z0-9._-]+)\s*-->")
 GROUP_RE = re.compile(r"[a-z0-9-]+")
 SAFE_ID_RE = re.compile(r"[A-Za-z0-9._-]+")
@@ -63,6 +67,7 @@ STEP_KEYS = (
     "regressed_step",
     "difficulty",
     "group",
+    "milestone",
 )
 
 
@@ -79,6 +84,7 @@ class Step:
     regressed_step: str = ""
     difficulty: str = DEFAULT_DIFFICULTY
     group: str = ""
+    milestone: str = ""
 
 
 def _step_from_raw(raw: dict) -> Step:
@@ -86,6 +92,8 @@ def _step_from_raw(raw: dict) -> Step:
         raise ValueError(f"{raw.get('id')}: depends_on must be a list of strings")
     if not isinstance(raw.get("group", ""), str):
         raise ValueError(f"{raw.get('id')}: group must be a string")
+    if not isinstance(raw.get("milestone", ""), str):
+        raise ValueError(f"{raw.get('id')}: milestone must be a string")
     return Step(
         id=raw["id"],
         title=raw.get("title", ""),
@@ -98,6 +106,7 @@ def _step_from_raw(raw: dict) -> Step:
         regressed_step=raw.get("regressed_step", ""),
         difficulty=raw.get("difficulty", DEFAULT_DIFFICULTY),
         group=raw.get("group", ""),
+        milestone=raw.get("milestone", ""),
     )
 
 
@@ -130,15 +139,17 @@ def load_manifest(package_dir: Path) -> list[Step]:
 
 
 def order_steps(steps: list[Step]) -> list[Step]:
-    """Topological order over depends_on; ready steps go by (group, id), ungrouped last.
+    """Topological order over depends_on; ready steps go by (kind, milestone, group, id).
+
+    Bug steps come first, then milestone steps; ungrouped steps come after grouped ones.
 
     The result depends only on the edges and labels, never on input order. Steps in a
     cycle follow every acyclic step, sorted the same way, so validate can report them.
     """
     by_id = {step.id: step for step in steps}
 
-    def key(step: Step) -> tuple[bool, str, str]:
-        return (not step.group, step.group, step.id)
+    def key(step: Step) -> tuple[bool, bool, bool, str, str]:
+        return (step.kind != "bug", not step.milestone, not step.group, step.group, step.id)
 
     waiting = {
         step.id: {dep for dep in step.depends_on if dep in by_id and dep != step.id}
@@ -208,6 +219,8 @@ def layout_problems(package_dir: Path) -> list[str]:
             problems.append(f"{path.name}: depends_on must be a list of strings")
         if not isinstance(raw.get("group", ""), str):
             problems.append(f"{path.name}: group must be a string")
+        if not isinstance(raw.get("milestone", ""), str):
+            problems.append(f"{path.name}: milestone must be a string")
         if "id" not in raw:
             problems.append(f"{path.name}: no id")
         elif raw["id"] != path.stem:
@@ -312,6 +325,8 @@ def validate(steps: list[Step], markers: list[str]) -> list[str]:
             problems.append(f"{step.id}: invalid difficulty {step.difficulty!r}")
         if step.group and not GROUP_RE.fullmatch(step.group):
             problems.append(f"{step.id}: invalid group {step.group!r}")
+        if step.milestone and step.milestone not in VALID_MILESTONE:
+            problems.append(f"{step.id}: invalid milestone {step.milestone!r}")
         if step.regressed_step and step.regressed_step not in ids:
             problems.append(f"{step.id}: unknown regressed_step {step.regressed_step!r}")
     problems.extend(_dependency_problems(steps))
@@ -339,6 +354,11 @@ def _dependency_problems(steps: list[Step]) -> list[str]:
                 problems.append(f"{step.id}: unknown dependency {dep!r}")
             elif step.status == "done" and dep not in done:
                 problems.append(f"{step.id}: done but dependency {dep!r} is not")
+            elif step.milestone and not by_id[dep].milestone and dep not in done:
+                problems.append(
+                    f"{step.id}: milestone {step.milestone!r} step waits on {dep!r}, "
+                    "which is neither done nor in the milestone"
+                )
     for cycle in _cycles(by_id):
         problems.append("dependency cycle: " + " -> ".join(cycle))
     return problems
@@ -493,6 +513,8 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 print(f"`{step.id}` — {step.title}")
                 print(f"acceptance: {step.acceptance}")
+                if step.milestone:
+                    print(f"milestone: {step.milestone}")
                 if step.difficulty != DEFAULT_DIFFICULTY:
                     print(f"difficulty: {step.difficulty}")
                 if step.verify:

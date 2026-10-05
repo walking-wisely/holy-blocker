@@ -279,9 +279,6 @@ class MigrateTest(unittest.TestCase):
             self.assertTrue(Path(tmp, "steps", "p.a.toml").exists())
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 class MalformedTypesTest(unittest.TestCase):
     def _run(self, command: str, extra: str):
@@ -309,3 +306,28 @@ class MalformedTypesTest(unittest.TestCase):
         code, err = self._run("validate", "depends_on = [[1]]\n")
         self.assertEqual(code, 1)
         self.assertIn("depends_on must be a list of strings", err)
+
+
+class MilestoneLayoutTest(unittest.TestCase):
+    def test_reads_milestone_from_step_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            write(tmp, "steps/p.a.toml", step_file("p.a", "pending", 'milestone = "mvp"\n'))
+            write(tmp, "steps/p.b.toml", step_file("p.b"))
+            steps = {s.id: s for s in ledger.load_manifest(Path(tmp))}
+            self.assertEqual(steps["p.a"].milestone, "mvp")
+            self.assertEqual(steps["p.b"].milestone, "")
+            self.assertEqual([s.id for s in ledger.load_manifest(Path(tmp))], ["p.a", "p.b"])
+
+    def test_milestone_is_a_known_key(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            write(tmp, "steps/p.a.toml", step_file("p.a", "pending", 'milestone = "mvp"\n'))
+            self.assertEqual(ledger.layout_problems(Path(tmp)), [])
+
+    def test_non_string_milestone_is_a_layout_problem(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            write(tmp, "steps/p.a.toml", step_file("p.a", "pending", "milestone = 3\n"))
+            self.assertTrue(any("milestone" in p for p in ledger.layout_problems(Path(tmp))))
+
+
+if __name__ == "__main__":
+    unittest.main()

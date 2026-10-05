@@ -1,0 +1,7 @@
+id = "engineering.dev-build-release-guard"
+title = "CI fails when a release artifact contains the development build's identifier or kill switch"
+status = "pending"
+evidence = ""
+acceptance = "code"
+group = "dev-build"
+milestone = "mvp"

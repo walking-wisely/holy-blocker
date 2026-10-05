@@ -13,6 +13,7 @@ Usage:
     python -m tools.plan.todos               # pending steps only
     python -m tools.plan.todos --all         # all steps (pending + done)
     python -m tools.plan.todos --blockers    # only worktrees with issues
+    python -m tools.plan.todos --milestone mvp   # only steps in the mvp milestone
 """
 
 from __future__ import annotations
@@ -43,6 +44,7 @@ class Todo:
     worktree_verdict: str
     worktree_reason: str
     kind: str = "feature"
+    milestone: str = ""
 
 
 def discover_manifests(root: Path) -> list[tuple[Path, str]]:
@@ -114,6 +116,7 @@ def collect(cwd: str, base: str = "master") -> list[Todo]:
                     worktree_verdict=verdict.verdict,
                     worktree_reason=verdict.reason,
                     kind=step.kind,
+                    milestone=step.milestone,
                 ))
     return todos
 
@@ -126,7 +129,9 @@ def format_blocker_flag(verdict: str) -> str:
     return ""
 
 
-def show(todos: list[Todo], show_all: bool, blockers_only: bool) -> None:
+def show(todos: list[Todo], show_all: bool, blockers_only: bool, milestone: str = "") -> None:
+    if milestone:
+        todos = [t for t in todos if t.milestone == milestone]
     by_tree: dict[str, list[Todo]] = {}
     for todo in todos:
         by_tree.setdefault(todo.worktree_path, []).append(todo)
@@ -154,10 +159,12 @@ def show(todos: list[Todo], show_all: bool, blockers_only: bool) -> None:
         if not pending and not show_all:
             print("   (no pending steps)")
         else:
-            display = ts if show_all else pending
+            display = sorted(ts if show_all else pending, key=lambda t: not t.milestone)
             for t in display:
                 pad = "     "
                 marker = f" {BUG_MARKER}" if t.kind == "bug" else ""
+                if t.milestone:
+                    marker += f" [{t.milestone}]"
                 print(f"{pad}{'⬜' if t.status == 'pending' else '✓'} {t.step_id}{marker}")
                 if t.title:
                     print(f"{pad}  {t.title}")
@@ -172,6 +179,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m tools.plan.todos")
     parser.add_argument("--all", action="store_true", help="show all steps, not just pending")
     parser.add_argument("--blockers", action="store_true", help="only worktrees in a blocking state")
+    parser.add_argument("--milestone", default="", help="only steps in this milestone, e.g. mvp")
     parser.add_argument("--base", default="master", help="base branch for ahead/behind count")
     args = parser.parse_args(argv)
 
@@ -181,7 +189,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
-    show(todos, show_all=args.all, blockers_only=args.blockers)
+    show(todos, show_all=args.all, blockers_only=args.blockers, milestone=args.milestone)
     return 0
 
 

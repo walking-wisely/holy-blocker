@@ -21,7 +21,10 @@ Follow the first branch that matches:
 2. **It matches a step marker** (`<!-- step: ... -->`) in a `docs/components/**/steps/*.toml`, or the
    request is "next step" / "continue X" → run `step-loop`. Find the step with
    `python -m tools.plan.ledger next docs/components/<component>`, or across every worktree with
-   `python -m tools.plan.todos`.
+   `python -m tools.plan.todos`. Steps marked `milestone = "mvp"` are offered first
+   ([MVP scope](docs/decisions/mvp-scope.md)); `todos --milestone mvp` lists only those. A PR for a
+   non-milestone feature step while MVP steps are pending gets an advisory `note:` from `loop check`,
+   never a failure.
 3. **It is a defect.** Reproduce it first. If it regresses a `done` step, file a `kind = "bug"` step
    with `regressed_step` set, then run `step-loop` on it. A fix that is the same file and the same
    test suite as the change in hand is made inline.

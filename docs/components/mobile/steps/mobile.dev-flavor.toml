@@ -1,0 +1,8 @@
+id = "mobile.dev-flavor"
+title = "A development flavor with its own application id and a compiled-in protection kill switch"
+status = "pending"
+evidence = ""
+acceptance = "observation"
+verify = "./gradlew assembleDevDebug assembleRelease from apps/mobile; the release APK contains neither the dev application id nor the kill switch entry point"
+group = "dev-build"
+milestone = "mvp"

@@ -164,6 +164,19 @@ def _names_step(body: str, manifests: list[Governed]) -> bool:
     return False
 
 
+def milestone_notes(body: str, steps: list[ledger.Step]) -> list[str]:
+    """Advisory lines for a PR whose step is outside the milestone while milestone work is pending."""
+    if not any(step.milestone and step.status == "pending" for step in steps):
+        return []
+    notes = []
+    for step in steps:
+        if step.milestone or step.kind == "bug":
+            continue
+        if re.search(rf"(?<![\w.-]){re.escape(step.id)}(?![\w.-])", body):
+            notes.append(f"note: {step.id} is not in a milestone while milestone steps are still pending")
+    return notes
+
+
 def check(body: str, changed_files: list[str], manifests: list[Governed]) -> list[str]:
     problems = [
         f"{f} is under a code root but no package.toml claims it; add it to a manifest's paths"
@@ -221,6 +234,13 @@ def _changed_files(args: argparse.Namespace) -> list[str]:
     return [line.strip() for line in text.splitlines() if line.strip()]
 
 
+def load_steps_with_notes(package: Path) -> tuple[list[ledger.Step], list[str]]:
+    try:
+        return ledger.load_manifest(package), []
+    except (OSError, ValueError, KeyError, TypeError) as err:
+        return [], [f"note: {package.name}: step manifest unreadable, milestone check skipped: {err!r}"]
+
+
 def _cmd_check(args: argparse.Namespace) -> int:
     try:
         body = Path(args.body_file).read_text(encoding="utf-8")
@@ -245,6 +265,14 @@ def _cmd_check(args: argparse.Namespace) -> int:
     problems = check(body, changed, governed)
     for problem in problems:
         print(problem, file=sys.stderr)
+    steps: list[ledger.Step] = []
+    notes: list[str] = []
+    for manifest in governed:
+        loaded, load_notes = load_steps_with_notes(Path(args.root) / manifest.package)
+        steps.extend(loaded)
+        notes.extend(load_notes)
+    for note in notes + milestone_notes(_sanitize(body), steps):
+        print(note, file=sys.stderr)
     return 1 if problems else 0
 
 

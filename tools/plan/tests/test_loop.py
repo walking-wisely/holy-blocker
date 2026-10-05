@@ -132,6 +132,48 @@ class CheckTest(unittest.TestCase):
         self.assertEqual(check(body, ["packages/net-shield/src/lib.rs"]), [])
 
 
+class MilestoneNotesTest(unittest.TestCase):
+    def _steps(self):
+        return [
+            ledger.Step("p.mvp", "t", "pending", "", milestone="mvp"),
+            ledger.Step("p.other", "t", "pending", ""),
+            ledger.Step("p.fix", "t", "pending", "", kind="bug"),
+        ]
+
+    def test_off_milestone_step_is_noted_while_milestone_work_is_pending(self):
+        notes = loop.milestone_notes("Step: `p.other`", self._steps())
+        self.assertEqual(len(notes), 1)
+        self.assertIn("p.other", notes[0])
+
+    def test_milestone_step_is_not_noted(self):
+        self.assertEqual(loop.milestone_notes("Step: `p.mvp`", self._steps()), [])
+
+    def test_bug_step_is_not_noted(self):
+        self.assertEqual(loop.milestone_notes("Step: `p.fix`", self._steps()), [])
+
+    def test_no_note_once_no_milestone_step_is_pending(self):
+        steps = [
+            ledger.Step("p.mvp", "t", "done", "pr #1", milestone="mvp"),
+            ledger.Step("p.other", "t", "pending", ""),
+        ]
+        self.assertEqual(loop.milestone_notes("Step: `p.other`", steps), [])
+
+    def test_prefix_of_a_real_id_is_not_matched(self):
+        self.assertEqual(loop.milestone_notes("Step: `p.oth`", self._steps()), [])
+
+
+class UnreadableManifestTest(unittest.TestCase):
+    def test_load_failure_is_reported_not_swallowed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            package = Path(tmp) / "pkg"
+            (package / "steps").mkdir(parents=True)
+            (package / "steps" / "p.a.toml").write_text("not toml", encoding="utf-8")
+            steps, notes = loop.load_steps_with_notes(package)
+        self.assertEqual(steps, [])
+        self.assertEqual(len(notes), 1)
+        self.assertIn("unreadable", notes[0])
+
+
 class RouteTest(unittest.TestCase):
     GOVERNED = [
         loop.Governed(
