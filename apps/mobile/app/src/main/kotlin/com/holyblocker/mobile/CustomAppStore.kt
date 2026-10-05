@@ -73,10 +73,14 @@ class CustomAppStore internal constructor(
             temp.delete()
             throw e
         }
+        changeListener?.invoke()
     }
 
-    private companion object {
-        const val FILE_NAME = "custom_apps.txt"
-        val LOCK = Any()
+    companion object {
+        @Volatile
+        var changeListener: (() -> Unit)? = null
+
+        private const val FILE_NAME = "custom_apps.txt"
+        private val LOCK = Any()
     }
 }

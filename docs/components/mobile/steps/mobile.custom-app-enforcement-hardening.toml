@@ -1,0 +1,10 @@
+id = "mobile.custom-app-enforcement-hardening"
+title = "Custom-app enforcement edge cases: overlay ownership, settings-guard ordering, throwing lookups, first-read failure"
+status = "pending"
+evidence = ""
+acceptance = "code"
+depends_on = ["mobile.custom-app-enforcement"]
+verify = "./gradlew testDebugUnitTest from apps/mobile"
+kind = "bug"
+regressed_step = "mobile.custom-app-enforcement"
+group = "custom-apps"

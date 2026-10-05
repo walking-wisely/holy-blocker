@@ -3,6 +3,7 @@ package com.holyblocker.mobile
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.provider.Settings
 import android.provider.Telephony
 import android.telecom.TelecomManager
 
@@ -23,6 +24,7 @@ private class AndroidProtectedPackages(private val context: Context) : Protected
         launcher()?.let(::add)
         dialer()?.let(::add)
         sms()?.let(::add)
+        inputMethod()?.let(::add)
     }
 
     private fun launcher(): String? {
@@ -34,6 +36,10 @@ private class AndroidProtectedPackages(private val context: Context) : Protected
 
     private fun dialer(): String? =
         context.getSystemService(TelecomManager::class.java)?.defaultDialerPackage
+
+    private fun inputMethod(): String? =
+        Settings.Secure.getString(context.contentResolver, Settings.Secure.DEFAULT_INPUT_METHOD)
+            ?.substringBefore('/')?.takeIf { it.isNotEmpty() }
 
     private fun sms(): String? = Telephony.Sms.getDefaultSmsPackage(context)
 
