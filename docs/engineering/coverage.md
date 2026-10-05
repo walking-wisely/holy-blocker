@@ -46,22 +46,25 @@ distinction is tracked here rather than in the status table.
 
 | Route | Layer that should cover it | Status | Where | Evidence / Notes |
 |---|---|---|---|---|
-| Explicit text in the frontmost window | mac-daemon `AccessibilityScanner` | **Covered** | branch `feat/mac-daemon-live-e2e-pass` | Live e2e pass: real AX walk → `text-policy` scoring Block at 0.80 → overlay on screen, torn down when the text goes |
+| Explicit text in the frontmost window | mac-daemon `AccessibilityScanner` | **Covered** | `master` | Observed on the pre-merge branch `feat/mac-daemon-live-e2e-pass`, which no longer exists on `origin`; `master` carries the BGRA capture fix and `WindowSuppression`, and the pass has not been repeated on the merged tree. Live e2e pass: real AX walk → `text-policy` scoring Block at 0.80 → overlay on screen, torn down when the text goes |
 | Explicit text in a window that is **not** frontmost | — | **Uncovered** | — | `SystemAXProbe.focusedRoot()` reads `NSWorkspace.frontmostApplication` + `kAXFocusedWindowAttribute` and walks nothing else. Click away and the overlay tears down while the content is still on screen |
-| Explicit imagery anywhere on screen | mac-daemon `ImageScanner` | **Unverified** | branch `feat/mac-daemon-image-scanner`, **not on master** | Focus-independent by construction. The classifier has never seen a real captured frame — `SCStream` and `ImageGuard` have only met through a synthetic buffer |
+| Explicit imagery anywhere on screen | mac-daemon `ImageScanner` | **Unverified** | `master` | Code is on `master`, and the agent runs it only when the model is bundled and both thresholds are set, so it is off by default. Focus-independent by construction. The classifier has never seen a real captured frame — `SCStream` and `ImageGuard` have only met through a synthetic buffer |
 | Explicit text rendered as pixels (image with text, canvas, video subtitle) | an OCR module | **Not built** | — | `ScanLoop` reserves an OCR cadence slot; there is no OCR module anywhere in the Layer 2 plan |
-| Blocked app kept visible after a block | `WindowSuppression` | **Covered** | `feat/mac-daemon-live-e2e-pass` | `NSRunningApplication.hide()`; block only, never warn; protected set never hidden |
+| Blocked app kept visible after a block | `WindowSuppression` | **Covered** | `master` | `NSRunningApplication.hide()`; block only, never warn; protected set never hidden |
 | Content visible through Mission Control | — | **Uncovered** | — | Mission Control renders live previews above `.screenSaver`. Filed in the mac-daemon backlog, not fixed |
-| Content in native fullscreen | overlay | **Unverified** | `feat/mac-daemon-live-e2e-pass` | Never observed over native-fullscreen video |
-| Content on a second display | overlay | **Unverified** | `feat/mac-daemon-live-e2e-pass` | Reconcile across display connect/disconnect never observed |
+| Content in native fullscreen | overlay | **Unverified** | `master` | Never observed over native-fullscreen video |
+| Content on a second display | overlay | **Unverified** | `master` | Reconcile across display connect/disconnect never observed |
 | DRM/HDCP-protected video | — | **Uncovered** | — | Captures as black by design (platform limit, not a defect) |
 | HTTPS page content via the proxy | Layer 1 `mitm-proxy` + `CATrust` | **Partial** | `master` | Firefox 152 renders an HTTPS page through the proxy with the CA installed. Condition: pinned clients (Firefox's own Mozilla endpoints) fail closed, as expected, and are not covered by this row |
 | Plain **HTTP** request content | `mitm-proxy` | **Uncovered** | `master` | `forward::forward_http` takes no `ScanHooks` at all — URL, body and image scanning apply only to CONNECT-tunnelled traffic |
 | OpenSSL-based clients through the proxy | `mitm-proxy` | **Uncovered** | `master` | Leaf certs carry no Authority Key Identifier; Python/Node/Linux curl reject them |
-| Blocking a user-chosen app | — | **Not built** | — | `WindowSuppression` hides an app only after a content block verdict; there is no per-app deny list. Steps: `mac-daemon.custom-app-blocking` |
-| Daemon survives logout and reboot, and a standard user cannot remove it | — | **Not built** | — | No launchd job installs the daemon, and nothing refuses its removal. Steps: `mac-daemon.persistence`, `mac-daemon.standard-user-tamper` |
+| Blocking a user-chosen app | — | **Not built** | — | `WindowSuppression` hides an app only after a content block verdict; there is no per-app deny list. Steps: `mac-daemon.custom-app-blocking` (inception), then `custom-app-core`, `custom-app-hide`, `custom-app-block`, `custom-app-panel` |
+| Daemon survives logout and reboot, and a standard user cannot remove it | — | **Not built** | — | No launchd job installs the daemon, and nothing refuses its removal. Steps: `mac-daemon.install`, `mac-daemon.persistence`, `mac-daemon.standard-user-tamper`, `mac-daemon.standard-user-removal` |
 | Revoking Screen Recording or Accessibility mid-session | `PermissionGate` | **Unverified** | `master` | A real grant is now observed; **a real revocation has never been** |
 | `tccutil reset` from a **standard** (non-admin) account | `PermissionGate` polling | **Unverified** | `master` | Measured only from an admin account. This single measurement blocks any tamper-resistance claim |
+| Listed domain through the HTTPS proxy | `mitm-proxy` | **Not built** | `master` | The proxy depends on `text-policy` only (`Cargo.toml`), so it scores URL text and has no domain list. Steps: `mitm-proxy.domain-blocklist`, `mac-daemon.proxy-blocklist-wiring` |
+| A macOS tamper log | — | **Not built** | — | `PermissionGate` yields reportable transitions and nothing stores them; no tamper-log file exists under `Sources/MacDaemon`. Step: `mac-daemon.tamper-log` |
+| Turning protection down on macOS | — | **Not built** | — | Android has request, cooldown, confirm; macOS has no equivalent. Step: `mac-daemon.protection-schedule` |
 | A protected user who is a local admin | — | **Uncovered** | — | By design, not by gap: open product decision in `docs/decisions/content-interception.md`; `assess()` reports `weakened` and does not refuse to run |
 
 ## Android
@@ -69,19 +72,20 @@ distinction is tracked here rather than in the status table.
 | Route | Layer that should cover it | Status | Where | Evidence / Notes |
 |---|---|---|---|---|
 | Explicit text on screen | `ScreenGuardService` (AccessibilityService) | **Covered** | `master` | Verified on an android-36 emulator, including split screen |
-| Explicit imagery on screen | MediaProjection capture → classifier | **Not built** | `feat/mobile-screen-capture` | Capture and gating are done; the sink is a counter. The classifier needs the LiteRT backbone + `packages/classifier-head`, neither of which exists |
-| Plaintext DNS to a blocked domain | `NetworkGuardService` | **Covered** | `feat/mobile-vpn-service` | `scripts/smoke-test-vpn.sh` on an android-36 emulator |
+| Explicit imagery on screen | MediaProjection capture → classifier | **Not built** | `master` | Capture and gating are done; the sink is a counter. The classifier needs the LiteRT backbone + `packages/classifier-head`, neither of which exists |
+| Plaintext DNS to a blocked domain | `NetworkGuardService` | **Covered** | `master` | `scripts/smoke-test-vpn.sh` on an android-36 emulator |
 | **DoH** (Chrome's default where the resolver supports it) | — | **Uncovered** | — | Never reaches port 53; the TUN's single `/32` route means the 443 flow never reaches us either |
 | **DoT** via Android's Private DNS toggle | — | **Uncovered** | — | System-wide, one Settings toggle, no signal |
 | Hardcoded resolver, DNS on a non-standard port, direct-IP connection | — | **Uncovered** | — | Same class. Forced by the `/32` route, which is itself forced by the platform |
-| A forged DNS answer from an off-path attacker | `NetworkGuardService.ask()` | **Uncovered** | `feat/mobile-vpn-service` | Live defect, not a stated design gap: `ask()` uses an unconnected `DatagramSocket`, no transaction-ID or question check; the answer is wrapped and written into the TUN |
+| A forged DNS answer from an off-path attacker | `NetworkGuardService.ask()` | **Uncovered** | `master` | Live defect, not a stated design gap, filed as bug step `mobile.dns-forged-answer`: `ask()` uses an unconnected `DatagramSocket`, no transaction-ID or question check; the answer is wrapped and written into the TUN |
+| Domain list on a fresh install | `BlocklistStore` | **Not built** | `master` | The list is read from `filesDir/blocklist.txt`, which only the smoke script writes; nothing ships a real one. Steps: `net-shield.ffi-artifact-load`, `mobile.blocklist-provisioning` |
 | SNI / IP-level filtering | `net-shield` | **Not built** | — | Not built on Android specifically — needs a userspace TCP stack; widening the route first black-holes the device |
-| Blocking a user-chosen app | — | **Not built** | — | Neither `ScreenGuardService` nor `SettingsGuard` checks which app owns a window; they watch content and settings screens. Steps: `mobile.custom-app-blocking` |
+| Blocking a user-chosen app | — | **Not built** | — | Neither `ScreenGuardService` nor `SettingsGuard` checks which app owns a window; they watch content and settings screens. Steps: `mobile.custom-app-blocking` (inception), then `custom-app-core`, `custom-app-enforcement`, `custom-app-panel` |
 | Uninstall or Device Admin removal while armed | Device Admin + `SettingsGuard` | **Covered** | `master` | Verified on an android-36 emulator |
 | Disabling the guard via `adb`, guest account, or an unrecognised OEM screen | `GuardStatusService` + `TamperLog` | **Covered** | `master` | Covered means *observed to record the event*, not to prevent it — records what it cannot prevent, by design |
-| Revoking the VPN from Settings | — | **Uncovered** | `feat/mobile-vpn-service` | Recorded (`NETWORK_GUARD_REVOKED`), not prevented. The VPN pane is deliberately not in `SettingsProfiles` — identifiers are dumped from a device, never inferred |
+| Revoking the VPN from Settings | — | **Uncovered** | `master` | Recorded (`NETWORK_GUARD_REVOKED`), not prevented. The VPN pane is deliberately not in `SettingsProfiles` — identifiers are dumped from a device, never inferred |
 | Swipe-kill from Recents on One UI / HyperOS | — | **Unverified** | — | Deferred, blocked on real hardware. Cannot be reproduced on an emulator, so no mitigation can be verified |
-| An empty, truncated, or deleted `blocklist.txt` | — | **Uncovered** | `feat/mobile-vpn-service` | An open guard with no signal |
+| An empty, truncated, or deleted `blocklist.txt` | — | **Uncovered** | `master` | An open guard with no signal. Step: `mobile.blocklist-provisioning` |
 
 ## MVP
 
@@ -91,10 +95,10 @@ names which.
 
 | Requirement | Decided by | Status | Notes |
 |---|---|---|---|
-| Block adult content | macOS and Android rows for text, DNS and the HTTPS proxy; imagery is out of scope | **Unverified** | Android text is Covered on `master` and DNS on a branch; macOS text and the proxy are on branches or Partial |
+| Block adult content | macOS and Android rows for text, DNS and the HTTPS proxy; imagery is out of scope | **Unverified** | Android text and DNS are Covered on `master`, but a fresh install has no domain list. macOS text is Covered on the frontmost window only and the proxy has no domain list |
 | Block user-chosen apps | the two "Blocking a user-chosen app" rows | **Not built** | No per-app deny check exists on either platform |
-| Not deletable | Android Device Admin and `SettingsGuard` rows, macOS permission, standard-user and persistence rows | **Unverified** | Android is Covered while armed; macOS removal resistance is not built and the standard-user measurement is missing |
-| Developer escape hatch | — | **Not built** | A build property, not a blocking route; steps `mobile.dev-flavor`, `mac-daemon.dev-build`, `engineering.dev-build-release-guard` |
+| Not deletable | Android Device Admin and `SettingsGuard` rows, macOS permission, standard-user and persistence rows | **Unverified** | Android is Covered while armed. macOS has no install, tamper log or protection-down path, and the standard-user measurement is missing |
+| Developer escape hatch | — | **Not built** | A build property, not a blocking route; steps `mobile.dev-flavor`, `mobile.dev-kill-switch`, `mobile.dev-sibling-event`, `mobile.release-signing`, `mac-daemon.dev-build`, `mac-daemon.dev-kill-switch`, `mac-daemon.dev-sibling-event`, `mac-daemon.release-identity`, `engineering.dev-build-release-guard`, `engineering.dev-build-release-guard-macos` |
 
 ## Windows
 
@@ -112,9 +116,9 @@ names which.
 
 | Question | Status | Notes |
 |---|---|---|
-| Can a user install this today and have anything blocked end to end? | **No** | The macOS text path is the closest and lives on an unmerged branch 20 commits behind `master` |
+| Can a user install this today and have anything blocked end to end? | **No** | Android text is observed on `master` and macOS text was observed before merge; no scenario under [e2e-scenario-contract.md](../decisions/e2e-scenario-contract.md) has recorded either, and macOS has no install path. Android is closer |
 | Is the MVP in [mvp-scope.md](../decisions/mvp-scope.md) met on both platforms? | **No** | See the MVP section above; it is met when the first row of this table reads Yes on both platforms and every MVP row is Covered |
 | Does any layer prove it is still alive, rather than merely not complaining? | **No** | Three separate fail-open-and-silent incidents so far, each fixed as an instance. No component asserts the permitted direction at runtime |
 | Is there one place a user-facing statement of coverage could be generated from? | **This file** | It is new and incomplete. Rows marked Unverified outnumber Covered |
-| DNS blocking via the signed blocklist artifact | `net-shield` `DnsShield` + `BlocklistArtifact` | **Unverified** | branch `feat/domain-blocklist-netshield` | The precedence table, mmap-backed artifact (`load` verifies signature + digest over the two-slot layout), and bounded-budget worker are implemented and tested against a two-slot artifact the *test helper* wrote. Module 7 `cli` is now done and does produce a real artifact (a fixture-mode dry run passes every gate; a real publish writes the slot layout; a second run rotates and re-gates against the loaded previous manifest — all verified live at runtime), but that producer's output has not yet been fed through `BlocklistArtifact::load` — the load path and the producer have implementations that agree on the byte layout by construction, but the two ends have not actually met in one run — and no device has observed it blocking |
-| SNI/IP-level blocking via the artifact | `net-shield` `NetShield` (Wintun) | **Not built** | branch `feat/domain-blocklist-netshield` | The FST is wired into the DNS path only; `NetShield::process_packet` still consults `DomainFilter` alone. Recorded narrowing, not an oversight — the plan's module-6 budget section targets `DnsShield` |
+| DNS blocking via the signed blocklist artifact | `net-shield` `DnsShield` + `BlocklistArtifact` | **Unverified** | `master` | The precedence table, mmap-backed artifact (`load` verifies signature + digest over the two-slot layout), and bounded-budget worker are implemented and tested against a two-slot artifact the *test helper* wrote. Module 7 `cli` is now done and does produce a real artifact (a fixture-mode dry run passes every gate; a real publish writes the slot layout; a second run rotates and re-gates against the loaded previous manifest — all verified live at runtime), but that producer's output has not yet been fed through `BlocklistArtifact::load` — the load path and the producer have implementations that agree on the byte layout by construction, but the two ends have not actually met in one run — and no device has observed it blocking |
+| SNI/IP-level blocking via the artifact | `net-shield` `NetShield` (Wintun) | **Not built** | `master` | The FST is wired into the DNS path only; `NetShield::process_packet` still consults `DomainFilter` alone. Recorded narrowing, not an oversight — the plan's module-6 budget section targets `DnsShield` |

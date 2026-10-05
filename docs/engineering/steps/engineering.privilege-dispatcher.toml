@@ -5,3 +5,4 @@ evidence = ""
 acceptance = "product"
 depends_on = ["engineering.mandatory-review-gates"]
 verify = "visudo -cf <drop-in>"
+milestone = "mvp"

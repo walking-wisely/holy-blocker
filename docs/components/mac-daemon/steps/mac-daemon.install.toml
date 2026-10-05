@@ -1,0 +1,8 @@
+id = "mac-daemon.install"
+title = "Installed layout: root-owned bundle, LaunchDaemon and LaunchAgent bootstrapped through the privilege dispatcher"
+status = "pending"
+evidence = ""
+acceptance = "observation"
+verify = "launchctl print shows the daemon and the agent loaded from the root-owned install path"
+group = "tamper"
+milestone = "mvp"

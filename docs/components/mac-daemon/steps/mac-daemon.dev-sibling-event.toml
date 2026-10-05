@@ -1,0 +1,8 @@
+id = "mac-daemon.dev-sibling-event"
+title = "The release build records an installed development-build sibling as a content-free tamper event"
+status = "pending"
+evidence = ""
+acceptance = "observation"
+depends_on = ["mac-daemon.dev-build", "mac-daemon.tamper-log"]
+group = "dev-build"
+milestone = "mvp"

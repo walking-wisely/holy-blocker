@@ -1,0 +1,7 @@
+id = "mac-daemon.tamper-log"
+title = "On-device tamper log: fixed content-free vocabulary, bounded, no package or bundle names"
+status = "pending"
+evidence = ""
+acceptance = "code"
+group = "tamper"
+milestone = "mvp"

@@ -1,0 +1,9 @@
+id = "mobile.custom-app-enforcement"
+title = "Enforce the mode from ScreenGuardService: hide covers the app with the overlay, block sends the user home and covers it"
+status = "pending"
+evidence = ""
+acceptance = "observation"
+depends_on = ["mobile.custom-app-core"]
+verify = "smoke script: a chosen app is covered or sent home, an unchosen app is untouched"
+group = "custom-apps"
+milestone = "mvp"

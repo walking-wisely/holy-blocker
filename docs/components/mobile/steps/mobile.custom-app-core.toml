@@ -1,0 +1,8 @@
+id = "mobile.custom-app-core"
+title = "Deny list with a per-app mode (block, hide, unblocked), the matcher and the on-device store; lowering a mode follows the disarm cooldown"
+status = "pending"
+evidence = ""
+acceptance = "code"
+depends_on = ["mobile.custom-app-blocking"]
+group = "custom-apps"
+milestone = "mvp"

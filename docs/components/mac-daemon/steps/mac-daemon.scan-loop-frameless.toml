@@ -1,0 +1,7 @@
+id = "mac-daemon.scan-loop-frameless"
+title = "AX text scanning runs without a Screen Recording grant, so the MVP build needs no capture"
+status = "pending"
+evidence = ""
+acceptance = "code"
+verify = "./scripts/test.sh from native-modules/mac-daemon"
+milestone = "mvp"

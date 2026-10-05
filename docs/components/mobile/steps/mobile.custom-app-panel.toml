@@ -1,0 +1,8 @@
+id = "mobile.custom-app-panel"
+title = "Searchable installed-app list in MainActivity to choose apps and set their mode"
+status = "pending"
+evidence = ""
+acceptance = "observation"
+depends_on = ["mobile.custom-app-core"]
+group = "custom-apps"
+milestone = "mvp"

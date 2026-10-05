@@ -1,0 +1,8 @@
+id = "mac-daemon.standard-user-removal"
+title = "Observe removal of the installed daemon, agent and bundle from a standard account"
+status = "pending"
+evidence = ""
+acceptance = "observation"
+depends_on = ["mac-daemon.install"]
+group = "tamper"
+milestone = "mvp"

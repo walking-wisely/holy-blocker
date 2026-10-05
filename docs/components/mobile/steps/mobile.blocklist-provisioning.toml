@@ -1,0 +1,7 @@
+id = "mobile.blocklist-provisioning"
+title = "A fresh install ships the signed domain list in the APK and loads it; a missing, empty or corrupt list is a recorded event. Needs net-shield.ffi-artifact-load merged first"
+status = "pending"
+evidence = ""
+acceptance = "observation"
+verify = "fresh install with no adb push: a name in the shipped list gets NXDOMAIN and a permitted name resolves"
+milestone = "mvp"

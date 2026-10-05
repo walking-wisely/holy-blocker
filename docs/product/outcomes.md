@@ -26,9 +26,8 @@ What actually gets blocked: [coverage ledger — MVP](../engineering/coverage.md
 
 ## Block adult content on Android without a cloud service
 
-**Status:** in progress, on an unmerged branch for part of it. The on-screen text path is observed
-working on `master`; DNS domain blocking is observed only on an unmerged branch, and imagery is not
-covered at all.
+**Status:** in progress. The on-screen text path and DNS blocking are observed on `master`, but a
+fresh install ships no domain list, and imagery is not covered at all.
 
 **Packages:** `apps/mobile`, `packages/text-policy`, `packages/text-policy-ffi`,
 `packages/net-shield`, `packages/net-shield-ffi`, `packages/domain-blocklist`,
@@ -39,9 +38,9 @@ Why local-only matters: [mission — local-first and private](../mission.md#loca
 
 ## Block adult content on macOS
 
-**Status:** in progress, on unmerged branches. The frontmost-window text path and the screen image
-path both live on branches that are not on `master`, and the image path has never run against a
-real captured frame.
+**Status:** in progress. The frontmost-window text path and the screen image path are on `master`;
+the text path was observed before merge, and the image path has never run against a real captured
+frame and is off by default.
 
 **Packages:** `native-modules/mac-daemon`, `packages/mitm-proxy`, `packages/text-policy`,
 `packages/text-policy-ffi`, `packages/image-sandbox`
