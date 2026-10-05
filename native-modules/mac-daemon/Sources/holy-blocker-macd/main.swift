@@ -30,7 +30,7 @@ let usage = """
       overlay [seconds] [passive]       cover every screen with a real overlay window
       image-scan <model.onnx> <sexy-threshold> <explicit-threshold> [size]
                                         classify a synthetic frame with the real ONNX model
-      bundle <output-dir> [identity] [ffi-lib-dir]
+      bundle <output-dir> [identity] [ffi-lib-dir] [model] [blocklist-dir] [blocklist-key-dir]
                                         assemble and sign HolyBlockerDaemon.app (default: ad-hoc)
       bundle-status                     report our own bundle and whether its grants will last
       launchd-plist <daemon|agent>      print the launchd job definition for one half
@@ -98,10 +98,19 @@ nonisolated(unsafe) var stopRequested: sig_atomic_t = 0
 /// Supervises the proxy until interrupted, then puts the machine back.
 func runSupervisor(binary: URL, workingDirectory: URL) throws {
     let configuration = ProxyConfiguration(runner: runner, snapshotPath: snapshotPath)
+    var proxyArguments: [String] = []
+    switch ProxyBlocklist.resolve(resources: Bundle.main.resourceURL) {
+    case .configured(let arguments):
+        proxyArguments = arguments
+        print("domain blocklist: bundled list")
+    case .unavailable(let failure):
+        print("domain blocklist: off (\(failure == .missing ? "none in bundle" : "no usable key"))")
+    }
     let supervisor = ProxySupervisor(
         host: proxyHost,
         port: proxyPort,
-        process: MitmProxyProcess(executable: binary, workingDirectory: workingDirectory),
+        process: MitmProxyProcess(
+            executable: binary, arguments: proxyArguments, workingDirectory: workingDirectory),
         probe: TCPListenerProbe(),
         settings: SystemProxySettings(
             configuration: configuration, runner: runner, host: proxyHost, port: proxyPort))
@@ -692,10 +701,18 @@ do {
         try AppBundle.assemble(
             at: root, identity: identity, executable: executable, libraries: libraries,
             resources: resources)
+
+        let layout = AppBundle.layout(root: root, identity: identity)
+        if rest.count > 5 {
+            try ProxyBlocklist.stage(
+                artifactDirectory: URL(fileURLWithPath: rest[4]),
+                keyDirectory: URL(fileURLWithPath: rest[5]), into: layout.resources)
+        } else {
+            print("warning: no domain blocklist given — the proxy will run without one")
+        }
         // Ad-hoc by default so the bundle is runnable with no certificate — but ad-hoc is exactly
         // the identity that does not survive a rebuild, so say so rather than leave it implied.
         let signingIdentity = rest.count > 1 ? rest[1] : "-"
-        let layout = AppBundle.layout(root: root, identity: identity)
         try CodeSigning(runner: runner).sign(
             bundle: root, identity: signingIdentity,
             nestedCode: try AppBundle.nestedCode(in: layout))

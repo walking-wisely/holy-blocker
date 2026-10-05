@@ -39,7 +39,14 @@ BINARY="$(swift build -c "$CONFIGURATION" --show-bin-path)/holy-blocker-macd"
 # bundle verb rather than failing — the text path does not depend on it.
 MODEL="${MODEL:-$PWD/../../data/models/baseline-v0.onnx}"
 
-"$BINARY" bundle "$OUTPUT" "$IDENTITY" "$PWD/.ffi/lib" "$MODEL"
+# The signed domain list is sealed the same way. BLOCKLIST_DIR is a `domain-blocklist` output
+# directory (current/ and previous/) and BLOCKLIST_KEY_DIR holds <key id>.pub raw public keys; set
+# both or neither.
+if [[ -n "${BLOCKLIST_DIR:-}" && -n "${BLOCKLIST_KEY_DIR:-}" ]]; then
+    "$BINARY" bundle "$OUTPUT" "$IDENTITY" "$PWD/.ffi/lib" "$MODEL" "$BLOCKLIST_DIR" "$BLOCKLIST_KEY_DIR"
+else
+    "$BINARY" bundle "$OUTPUT" "$IDENTITY" "$PWD/.ffi/lib" "$MODEL"
+fi
 
 echo
 echo "next: $OUTPUT/HolyBlockerDaemon.app/Contents/MacOS/holy-blocker-macd bundle-status"
