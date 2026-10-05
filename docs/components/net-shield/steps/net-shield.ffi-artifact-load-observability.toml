@@ -1,0 +1,9 @@
+id = "net-shield.ffi-artifact-load-observability"
+title = "Report which slot and version DnsGuard.with_artifact loaded and structure ArtifactLoadError, so a fallback to previous/ is a recordable event"
+status = "pending"
+evidence = ""
+acceptance = "code"
+depends_on = ["net-shield.ffi-artifact-load"]
+verify = "cargo test in packages/net-shield-ffi"
+kind = "bug"
+regressed_step = "net-shield.ffi-artifact-load"
