@@ -11,6 +11,7 @@ import android.net.NetworkRequest
 import android.net.VpnService
 import android.os.ParcelFileDescriptor
 import android.util.Log
+import com.holyblocker.mobile.policy.DnsAnswer
 import com.holyblocker.mobile.policy.NetworkGuard
 import com.holyblocker.mobile.policy.TamperEvent
 import java.io.FileInputStream
@@ -308,12 +309,17 @@ class NetworkGuardService : VpnService() {
             }
 
             socket.soTimeout = NetworkGuard.UPSTREAM_TIMEOUT_MILLIS
+            socket.connect(resolver, NetworkGuard.DNS_PORT)
             socket.send(DatagramPacket(query, query.size, resolver, NetworkGuard.DNS_PORT))
 
             val buffer = ByteArray(NetworkGuard.MAX_DNS_MESSAGE_BYTES)
             val response = DatagramPacket(buffer, buffer.size)
             socket.receive(response)
-            buffer.copyOf(response.length)
+            buffer.copyOf(response.length).takeIf { DnsAnswer.matches(query, it) }
+                ?: run {
+                    Log.w(TAG, "upstream answer did not match its query; dropped")
+                    null
+                }
         }
     } catch (e: IOException) {
         // Timeout, unreachable network, or a socket closed under us. The next
