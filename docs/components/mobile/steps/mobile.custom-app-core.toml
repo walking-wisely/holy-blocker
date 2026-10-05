@@ -1,7 +1,7 @@
 id = "mobile.custom-app-core"
 title = "Deny list, the matcher, the app rating and the on-device store; removing an app follows the disarm cooldown"
-status = "pending"
-evidence = ""
+status = "done"
+evidence = "policy/CustomApps.kt, policy/CustomAppListCodec.kt, CustomAppStore.kt; commits d5bf2ef and 02f8368 on feat/mobile-custom-app-core, 45 unit tests"
 acceptance = "code"
 depends_on = ["mobile.custom-app-blocking"]
 group = "custom-apps"
