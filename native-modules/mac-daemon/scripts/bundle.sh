@@ -29,9 +29,16 @@ OUTPUT="${OUTPUT:-.build}"
 # the bundled dylib must be the one the executable was linked against, not another build of it.
 ./scripts/build-ffi.sh
 
-swift build -c "$CONFIGURATION"
+# The development kill switch exists only in a binary compiled with HOLY_BLOCKER_DEV_BUILD, built
+# into its own scratch path so a release build never reuses its objects.
+BUILD_ARGS=(-c "$CONFIGURATION")
+if [[ "${HOLY_BLOCKER_BUNDLE_FLAVOR:-release}" == "development" ]]; then
+    BUILD_ARGS+=(--scratch-path .build-dev -Xswiftc -DHOLY_BLOCKER_DEV_BUILD)
+fi
 
-BINARY="$(swift build -c "$CONFIGURATION" --show-bin-path)/holy-blocker-macd"
+swift build "${BUILD_ARGS[@]}"
+
+BINARY="$(swift build "${BUILD_ARGS[@]}" --show-bin-path)/holy-blocker-macd"
 [[ -x "$BINARY" ]] || { echo "bundle.sh: no binary at $BINARY" >&2; exit 1; }
 
 # The classifier model is sealed inside the bundle. MODEL overrides where it comes from; the

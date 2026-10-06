@@ -1,8 +1,9 @@
 id = "mac-daemon.dev-kill-switch"
 title = "Compiled-in protection kill switch in the dev build: local action only, acts on the dev build's own process"
-status = "pending"
-evidence = ""
+status = "done"
+evidence = "feat/mac-dev-kill-switch"
 acceptance = "observation"
 depends_on = ["mac-daemon.dev-build"]
 group = "dev-build"
+verify = "./scripts/test.sh and ./scripts/test.sh --scratch-path .build-dev -Xswiftc -DHOLY_BLOCKER_DEV_BUILD from native-modules/mac-daemon; the dev bundle boots out its own agent while a release-labelled job keeps running"
 milestone = "mvp"

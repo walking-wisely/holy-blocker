@@ -154,6 +154,10 @@ jobs:
         working-directory: native-modules/mac-daemon
         run: ./scripts/test.sh
 
+      - name: Test (development configuration)
+        working-directory: native-modules/mac-daemon
+        run: ./scripts/test.sh --scratch-path .build-dev -Xswiftc -DHOLY_BLOCKER_DEV_BUILD
+
   android:
     name: android / mobile
     needs: changes
