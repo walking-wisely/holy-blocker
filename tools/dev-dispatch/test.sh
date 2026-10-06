@@ -47,6 +47,8 @@ check "usage: revoke takes none"             usage_ok revoke
 check "usage: unknown verb"                  usage_bad run-anything
 check "usage: empty verb"                    usage_bad ""
 
+die_message="$( ( source "$here/dispatch"; die "boom" 65 ) 2>&1 )"
+check "die: message excludes the exit code" test "$die_message" = "dispatch: boom"
 "$here/dispatch" bogus >/dev/null 2>&1
 check "unknown verb exits 64" test $? -eq 64
 "$here/dispatch" status >/dev/null 2>&1

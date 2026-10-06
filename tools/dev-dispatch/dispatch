@@ -27,7 +27,7 @@ readonly DAEMON_LABEL=com.holyblocker.daemon
 readonly DAEMON_PLIST=/Library/LaunchDaemons/com.holyblocker.daemon.plist
 
 die() {
-  echo "dispatch: $*" >&2
+  echo "dispatch: $1" >&2
   exit "${2:-1}"
 }
 
