@@ -33,7 +33,10 @@ check "usage: stage-app takes one path"      usage_ok stage-app /x
 check "usage: stage-app without path"        usage_bad stage-app
 check "usage: stage-app with extra"          usage_bad stage-app /x /y
 check "usage: stage-proxy takes one path"    usage_ok stage-proxy /x
-check "usage: ca-install takes one path"     usage_ok ca-install /x
+check "usage: ca-install takes none"         usage_ok ca-install
+check "usage: ca-install with arg"           usage_bad ca-install /x
+check "usage: ca-generate takes none"        usage_ok ca-generate
+check "usage: ca-generate with arg"          usage_bad ca-generate /x
 check "usage: ca-remove takes none"          usage_ok ca-remove
 check "usage: ca-remove with arg"            usage_bad ca-remove /x
 check "usage: daemon-bootstrap takes none"   usage_ok daemon-bootstrap
@@ -55,6 +58,10 @@ check "path: dotdot escape rejected"         not with_home resolve_user_path "$s
 check "path: symlink rejected"               not with_home resolve_user_path "$sandbox/home/link"
 check "path: missing rejected"               not with_home resolve_user_path "$sandbox/home/nope"
 check "path: newline rejected"               not with_home resolve_user_path "$sandbox/home/file"$'\n'"x"
+empty_home() { ( source "$here/dispatch"; caller_home() { echo ""; }; resolve_user_path "$sandbox/elsewhere/file" ) >/dev/null 2>&1; }
+root_home() { ( source "$here/dispatch"; caller_home() { echo "/"; }; resolve_user_path "$sandbox/elsewhere/file" ) >/dev/null 2>&1; }
+check "path: empty home lookup rejected"     not empty_home
+check "path: root as home rejected"          not root_home
 check "path: empty rejected"                 not with_home resolve_user_path ""
 check "app name: exact name accepted"        in_dispatch require_basename "$sandbox/home/HolyBlockerDaemon.app" HolyBlockerDaemon.app
 check "app name: other name rejected"        not in_dispatch require_basename "$sandbox/home/Other.app" HolyBlockerDaemon.app
@@ -89,13 +96,16 @@ make_cert() {
 make_cert "$sandbox/ca.cnf" "$sandbox/ca.pem"
 make_cert "$sandbox/other.cnf" "$sandbox/other.pem"
 make_cert "$sandbox/leaf.cnf" "$sandbox/leaf.pem"
-head -c 100000 /dev/zero > "$sandbox/big.pem"
+cat "$sandbox/ca.pem" "$sandbox/other.pem" > "$sandbox/two.pem"
+sed 's/^basicConstraints.*/basicConstraints = critical,CA:FALSE\nnsComment = "CA:TRUE"/' "$sandbox/ca.cnf" > "$sandbox/trick.cnf"
+make_cert "$sandbox/trick.cnf" "$sandbox/trick.pem"
 echo "not a certificate" > "$sandbox/junk.pem"
 
 check "ca: expected subject and CA flag accepted" in_dispatch ca_certificate_ok "$sandbox/ca.pem"
 check "ca: other subject rejected"                not in_dispatch ca_certificate_ok "$sandbox/other.pem"
 check "ca: non-CA certificate rejected"           not in_dispatch ca_certificate_ok "$sandbox/leaf.pem"
-check "ca: oversize file rejected"                not in_dispatch ca_certificate_ok "$sandbox/big.pem"
+check "ca: two-certificate bundle rejected"       not in_dispatch ca_certificate_ok "$sandbox/two.pem"
+check "ca: CA:TRUE only in a comment rejected"    not in_dispatch ca_certificate_ok "$sandbox/trick.pem"
 check "ca: junk rejected"                         not in_dispatch ca_certificate_ok "$sandbox/junk.pem"
 
 check "user: plain name accepted"     in_install valid_username dev_user1
@@ -113,6 +123,31 @@ check "dropin: exactly one rule line" test "$(grep -c '^devuser ' "$rendered")" 
 check "dropin: grants the dispatcher path only" \
   grep -qE '^devuser ALL=\(root\) NOPASSWD: NOSETENV: /usr/local/libexec/holy-blocker/dispatch$' "$rendered"
 check "dropin: no wildcard or ALL command" not grep -qE '(\*|NOPASSWD: ALL|: ALL$)' "$rendered"
+
+verb_boom() { false; echo continued; }
+verb_fine() { true; }
+boom_output="$( ( source "$here/dispatch"; run_verb boom ) 2>/dev/null )"
+check "run_verb: failing command stops the verb" test -z "$boom_output"
+verb_status_of() { ( source "$here/dispatch"; set +e; run_verb "$1" >/dev/null 2>&1; echo $? ); }
+check "run_verb: failure is reported"  test "$(verb_status_of boom)" -ne 0
+check "run_verb: success is reported"  test "$(verb_status_of fine)" -eq 0
+
+swap_dir="$sandbox/swap"
+mkdir -p "$swap_dir" && echo old > "$swap_dir/dest" && echo new > "$swap_dir/staged"
+in_dispatch swap_into_place "$swap_dir/staged" "$swap_dir/dest"
+check "swap: new content in place"     test "$(cat "$swap_dir/dest")" = new
+check "swap: previous removed"         test ! -e "$swap_dir/dest.previous"
+rm -f "$swap_dir/staged"
+in_dispatch swap_into_place "$swap_dir/missing" "$swap_dir/dest"
+check "swap: failure restores previous" test "$(cat "$swap_dir/dest")" = new
+
+log_probe="$sandbox/log"
+head -c 300000 /dev/zero > "$log_probe"
+in_dispatch rotate_log_if_large "$log_probe"
+check "log: oversize file rotated"     test -f "$log_probe.1" -a ! -f "$log_probe"
+echo small > "$log_probe"
+in_dispatch rotate_log_if_large "$log_probe"
+check "log: small file kept"           test -f "$log_probe"
 
 echo
 if [[ $failures -eq 0 ]]; then echo "all passed"; else echo "$failures failed"; exit 1; fi

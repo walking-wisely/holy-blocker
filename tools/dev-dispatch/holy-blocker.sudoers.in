@@ -1,1 +1,2 @@
+Defaults!/usr/local/libexec/holy-blocker/dispatch env_reset
 __USER__ ALL=(root) NOPASSWD: NOSETENV: /usr/local/libexec/holy-blocker/dispatch

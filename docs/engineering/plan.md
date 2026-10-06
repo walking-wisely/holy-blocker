@@ -496,6 +496,8 @@ is required before installation, covering argument smuggling and the copy-and-ve
 Acceptance: `product`. The owner installs it and confirms the verbs behave; no diff review can
 settle that. Verify: `visudo -cf` on the drop-in and the dispatcher's own tests.
 
+The files are in `tools/dev-dispatch/` (`dispatch`, `install.sh`, `holy-blocker.sudoers.in`, `test.sh`). The step stays pending until the owner installs them and confirms the verbs behave.
+
 ## What this does not cover
 
 - Automatic merge of `observation` steps. The loop never merges those.
@@ -507,6 +509,14 @@ settle that. Verify: `visudo -cf` on the drop-in and the dispatcher's own tests.
   planned ones). They have little to move.
 - A GDPR compliance audit against a lawyer's checklist. `privacy-review` (step 7)
   is a mechanical data-inventory gate, not a certification.
+
+### Bug — privilege dispatcher follow-ups
+
+<!-- step: engineering.privilege-dispatcher-hardening -->
+
+Open items from the dispatcher review that do not block installing it: `ca-remove` matches the common name as a substring; `daemon-bootout` reports success when the job is still loaded; the signature pin covers the main executable's leaf certificate and not nested code; `revoke` leaves the staged binaries, the launchd job and the dispatcher in place, so there is no uninstall; no test exercises a verb end to end, so a stubbed-tool harness is needed; the home-path argument could be reduced to a file name in the audit log.
+
+Acceptance: `code`. Verify: `tools/dev-dispatch/test.sh`.
 
 ### Bug — placeholder section content
 

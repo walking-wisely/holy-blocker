@@ -2,19 +2,25 @@
 set -euo pipefail
 PATH=/usr/bin:/bin:/usr/sbin:/sbin
 umask 022
+unset BASH_ENV ENV CDPATH
 
 readonly LIBEXEC=/usr/local/libexec/holy-blocker
 readonly PIN_FILE="$LIBEXEC/trusted-cert.sha256"
 readonly DROPIN=/etc/sudoers.d/holy-blocker
 readonly LOG_FILE=/var/log/holy-blocker-dispatch.log
-readonly APP_DEST=/Applications/HolyBlockerDaemon.app
+readonly APP_DEST="$LIBEXEC/HolyBlockerDaemon.app"
 readonly APP_NAME=HolyBlockerDaemon.app
 readonly APP_EXECUTABLE="$APP_DEST/Contents/MacOS/holy-blocker-macd"
-readonly PROXY_DEST=/usr/local/bin/mitm-proxy
+readonly PROXY_DEST="$LIBEXEC/mitm-proxy"
+readonly LEGACY_APP_PATH=/Applications/HolyBlockerDaemon.app
+readonly LEGACY_PROXY_PATH=/usr/local/bin/mitm-proxy
 readonly PROXY_NAME=mitm-proxy
 readonly CA_SUBJECT="CN=Holy Blocker Local CA"
 readonly CA_NAME="Holy Blocker Local CA"
-readonly CA_MAX_BYTES=65536
+readonly STATE_DIR="/Library/Application Support/HolyBlocker"
+readonly CA_DIR="$STATE_DIR/data/ca"
+readonly CA_VALID_DAYS=30
+readonly LOG_MAX_BYTES=262144
 readonly SYSTEM_KEYCHAIN=/Library/Keychains/System.keychain
 readonly DAEMON_LABEL=com.holyblocker.daemon
 readonly DAEMON_PLIST=/Library/LaunchDaemons/com.holyblocker.daemon.plist
@@ -28,8 +34,8 @@ check_usage() {
   local verb="${1:-}"
   shift || true
   case "$verb" in
-    stage-app | stage-proxy | ca-install) [[ $# -eq 1 ]] ;;
-    ca-remove | daemon-bootstrap | daemon-bootout | status | revoke) [[ $# -eq 0 ]] ;;
+    stage-app | stage-proxy) [[ $# -eq 1 ]] ;;
+    ca-generate | ca-install | ca-remove | daemon-bootstrap | daemon-bootout | status | revoke) [[ $# -eq 0 ]] ;;
     *) return 1 ;;
   esac
 }
@@ -44,7 +50,8 @@ resolve_user_path() {
   [[ ! -L "$raw" && -e "$raw" ]] || return 1
   local resolved home
   resolved="$(realpath "$raw")"
-  home="$(realpath "$(caller_home)")"
+  home="$(realpath "$(caller_home)")" || return 1
+  [[ "$home" == /?* && "$home" != / ]] || return 1
   [[ "$resolved" == "$home"/* ]] || return 1
   echo "$resolved"
 }
@@ -60,7 +67,16 @@ read_pin() {
   echo "$content"
 }
 
+rotate_log_if_large() {
+  local file="$1"
+  if [[ -f "$file" && "$(wc -c <"$file")" -gt "$LOG_MAX_BYTES" ]]; then
+    mv -f "$file" "$file.1"
+  fi
+}
+
 log_line() {
+  rotate_log_if_large "$LOG_FILE"
+  [[ -f "$LOG_FILE" ]] || install -m 600 -o root -g wheel /dev/null "$LOG_FILE"
   printf '%s caller=%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${SUDO_USER:-unknown}" "$*" >>"$LOG_FILE"
 }
 
@@ -83,13 +99,12 @@ verify_signature() {
 }
 
 ca_certificate_ok() {
-  local cert="$1" size subject
+  local cert="$1" subject
   [[ -f "$cert" && ! -L "$cert" ]] || return 1
-  size="$(wc -c <"$cert")"
-  [[ "$size" -gt 0 && "$size" -le "$CA_MAX_BYTES" ]] || return 1
+  [[ "$(grep -c 'BEGIN CERTIFICATE' "$cert")" -eq 1 ]] || return 1
   subject="$(openssl x509 -in "$cert" -noout -subject -nameopt RFC2253 2>/dev/null | sed 's/^subject= *//')" || return 1
   [[ "$subject" == "$CA_SUBJECT" ]] || return 1
-  openssl x509 -in "$cert" -noout -text 2>/dev/null | grep -q 'CA:TRUE'
+  openssl x509 -in "$cert" -noout -text 2>/dev/null | grep -A1 'Basic Constraints' | grep -q 'CA:TRUE'
 }
 
 need_user_path() {
@@ -99,53 +114,81 @@ need_user_path() {
 
 copy_to_root_owned() {
   local source="$1" scratch="$2" name="$3"
-  ditto "$source" "$scratch/$name"
-  chown -R root:wheel "$scratch/$name"
-  chmod -R go-w "$scratch/$name"
+  ditto --noacl --noextattr --norsrc --noqtn "$source" "$SCRATCH/$name"
+  chown -R root:wheel "$SCRATCH/$name"
+  chmod -RN "$SCRATCH/$name"
+  chmod -R u-s,g-s,go-w "$SCRATCH/$name"
 }
 
 swap_into_place() {
   local staged="$1" dest="$2" previous="$2.previous"
   rm -rf "$previous"
   [[ ! -e "$dest" ]] || mv "$dest" "$previous"
-  mv "$staged" "$dest"
+  if ! mv "$staged" "$dest"; then
+    [[ ! -e "$previous" ]] || mv "$previous" "$dest"
+    return 1
+  fi
   rm -rf "$previous"
 }
 
+make_scratch() {
+  SCRATCH="$(mktemp -d "$LIBEXEC/stage.XXXXXX")"
+}
+
 verb_stage_app() {
-  local source scratch
+  local source
   source="$(need_user_path "$1")"
   require_basename "$source" "$APP_NAME" || die "expected a bundle named $APP_NAME" 65
   [[ -d "$source" ]] || die "expected a directory" 65
-  scratch="$(mktemp -d "$LIBEXEC/stage.XXXXXX")"
-  copy_to_root_owned "$source" "$scratch" "$APP_NAME"
-  verify_signature "$scratch/$APP_NAME"
-  swap_into_place "$scratch/$APP_NAME" "$APP_DEST"
-  rm -rf "$scratch"
+  make_scratch
+  copy_to_root_owned "$source" "$SCRATCH" "$APP_NAME"
+  verify_signature "$SCRATCH/$APP_NAME"
+  swap_into_place "$SCRATCH/$APP_NAME" "$APP_DEST"
 }
 
 verb_stage_proxy() {
-  local source scratch
+  local source
   source="$(need_user_path "$1")"
   require_basename "$source" "$PROXY_NAME" || die "expected a file named $PROXY_NAME" 65
   [[ -f "$source" ]] || die "expected a regular file" 65
-  scratch="$(mktemp -d "$LIBEXEC/stage.XXXXXX")"
-  copy_to_root_owned "$source" "$scratch" "$PROXY_NAME"
-  chmod 755 "$scratch/$PROXY_NAME"
-  verify_signature "$scratch/$PROXY_NAME"
-  swap_into_place "$scratch/$PROXY_NAME" "$PROXY_DEST"
-  rm -rf "$scratch"
+  make_scratch
+  copy_to_root_owned "$source" "$SCRATCH" "$PROXY_NAME"
+  chmod 755 "$SCRATCH/$PROXY_NAME"
+  verify_signature "$SCRATCH/$PROXY_NAME"
+  swap_into_place "$SCRATCH/$PROXY_NAME" "$PROXY_DEST"
+}
+
+verb_ca_generate() {
+  if [[ -f "$CA_DIR/ca.crt" && -f "$CA_DIR/ca.key" ]]; then
+    echo "CA already present"
+    return 0
+  fi
+  make_scratch
+  cat >"$SCRATCH/ca.cnf" <<CNF
+[req]
+distinguished_name = dn
+x509_extensions = v3_ca
+prompt = no
+[dn]
+CN = $CA_NAME
+[v3_ca]
+basicConstraints = critical,CA:TRUE
+keyUsage = critical,keyCertSign,cRLSign
+CNF
+  openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:prime256v1 -out "$SCRATCH/ca.key"
+  openssl req -new -x509 -key "$SCRATCH/ca.key" -days "$CA_VALID_DAYS" -config "$SCRATCH/ca.cnf" -out "$SCRATCH/ca.crt"
+  install -d -m 755 -o root -g wheel "$STATE_DIR" "$STATE_DIR/data" "$CA_DIR"
+  install -m 600 -o root -g wheel "$SCRATCH/ca.key" "$CA_DIR/ca.key"
+  install -m 644 -o root -g wheel "$SCRATCH/ca.crt" "$CA_DIR/ca.crt"
 }
 
 verb_ca_install() {
-  local source scratch
-  source="$(need_user_path "$1")"
-  scratch="$(mktemp -d "$LIBEXEC/stage.XXXXXX")"
-  cp "$source" "$scratch/ca.pem"
-  chown root:wheel "$scratch/ca.pem"
-  ca_certificate_ok "$scratch/ca.pem" || die "not the expected Holy Blocker CA certificate" 65
-  security add-trusted-cert -d -r trustRoot -k "$SYSTEM_KEYCHAIN" "$scratch/ca.pem"
-  rm -rf "$scratch"
+  [[ -f "$CA_DIR/ca.crt" ]] || die "run ca-generate first" 69
+  make_scratch
+  cp "$CA_DIR/ca.crt" "$SCRATCH/ca.pem"
+  ca_certificate_ok "$SCRATCH/ca.pem" || die "stored CA certificate is not the expected one" 65
+  openssl x509 -in "$SCRATCH/ca.pem" -outform DER -out "$SCRATCH/ca.der"
+  security add-trusted-cert -d -r trustRoot -k "$SYSTEM_KEYCHAIN" "$SCRATCH/ca.der"
 }
 
 verb_ca_remove() {
@@ -160,12 +203,14 @@ verb_daemon_bootstrap() {
   [[ -x "$APP_EXECUTABLE" && -x "$PROXY_DEST" ]] || die "stage the app and the proxy first" 69
   verify_signature "$APP_DEST"
   verify_signature "$PROXY_DEST"
-  local scratch
-  scratch="$(mktemp -d "$LIBEXEC/stage.XXXXXX")"
-  "$APP_EXECUTABLE" launchd-plist daemon | sed -n '/^<?xml/,$p' >"$scratch/job.plist"
-  plutil -lint "$scratch/job.plist" >/dev/null
-  install -m 644 -o root -g wheel "$scratch/job.plist" "$DAEMON_PLIST"
-  rm -rf "$scratch"
+  make_scratch
+  "$APP_EXECUTABLE" launchd-plist daemon \
+    | sed -n '/^<?xml/,$p' \
+    | sed -e "s|$LEGACY_APP_PATH|$APP_DEST|g" -e "s|$LEGACY_PROXY_PATH|$PROXY_DEST|g" >"$SCRATCH/job.plist"
+  plutil -lint "$SCRATCH/job.plist" >/dev/null
+  grep -qF "$APP_EXECUTABLE" "$SCRATCH/job.plist" || die "generated job does not run the staged app" 65
+  ! grep -qF -e "$LEGACY_APP_PATH" -e "$LEGACY_PROXY_PATH" "$SCRATCH/job.plist" || die "generated job still names an unprotected path" 65
+  install -m 644 -o root -g wheel "$SCRATCH/job.plist" "$DAEMON_PLIST"
   launchctl bootout "system/$DAEMON_LABEL" >/dev/null 2>&1 || true
   launchctl bootstrap system "$DAEMON_PLIST"
 }
@@ -181,19 +226,33 @@ verb_status() {
   [[ -x "$PROXY_DEST" ]] && echo "proxy: staged" || echo "proxy: not staged"
   if launchctl print "system/$DAEMON_LABEL" >/dev/null 2>&1; then echo "daemon: loaded"; else echo "daemon: not loaded"; fi
   if security find-certificate -c "$CA_NAME" "$SYSTEM_KEYCHAIN" >/dev/null 2>&1; then echo "ca: installed"; else echo "ca: absent"; fi
+  [[ -f "$CA_DIR/ca.crt" ]] && echo "ca files: generated" || echo "ca files: not generated"
 }
 
 verb_revoke() {
   rm -f "$DROPIN"
 }
 
+run_verb() {
+  (
+    set -e
+    trap 'rm -rf "${SCRATCH:-}"' EXIT
+    "verb_${1//-/_}" "${@:2}"
+  )
+}
+
 main() {
-  local verb="${1:-}"
-  check_usage "$@" || die "usage: dispatch <stage-app|stage-proxy|ca-install> <path> | <ca-remove|daemon-bootstrap|daemon-bootout|status|revoke>" 64
+  local verb="${1:-}" status=0
+  if ! check_usage "$@"; then
+    [[ "$EUID" -ne 0 ]] || log_line "rejected usage verb=$(printf '%q' "$verb")"
+    die "usage: dispatch <stage-app|stage-proxy> <path> | <ca-generate|ca-install|ca-remove|daemon-bootstrap|daemon-bootout|status|revoke>" 64
+  fi
   [[ "$EUID" -eq 0 ]] || die "must run as root through sudo" 77
   log_line "verb=$verb args=$(printf '%q ' "${@:2}")"
-  local status=0
-  "verb_${verb//-/_}" "${@:2}" || status=$?
+  set +e
+  run_verb "$verb" "${@:2}"
+  status=$?
+  set -e
   log_line "verb=$verb exit=$status"
   return "$status"
 }
