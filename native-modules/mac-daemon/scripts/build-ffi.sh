@@ -68,6 +68,8 @@ for entry in "${crates[@]}"; do
     # the crate's target/ — and fails outright on any machine that has no such directory. Rewriting
     # the id to @rpath is what makes Contents/Frameworks work at all.
     install_name_tool -id "@rpath/$dylib" "$lib_out/$dylib"
+    # Xcode 27's ld writes a string pool it then refuses to link against; see tools/plan/macho_align.py.
+    (cd "$package_dir/../.." && python3 -m tools.plan.macho_align "$lib_out/$dylib")
     # The id rewrite invalidates the ad-hoc signature cargo's linker applied (Apple silicon refuses
     # an unsigned Mach-O), so re-sign. The bundle re-signs this with the real identity later.
     codesign --force --sign - "$lib_out/$dylib"
