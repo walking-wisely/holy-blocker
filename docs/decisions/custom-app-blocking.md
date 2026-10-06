@@ -135,6 +135,8 @@ neither platform has a per-app check. Measured 2026-10-05:
       `blocklist.rs`), exposed to Android over the existing UniFFI wrapper and to the macOS proxy
       through its own step. This is a cross-platform contract, so it is an owner question
       (owner question 2).
+    - A name under a private suffix (`github.io`, `blogspot.com`) never matches: its leading label
+      belongs to a tenant, not to the service. Owner answer 2026-10-06.
     - Heuristic by design: it misses a service whose domains do not carry its name, and it can
       block an unrelated site that does. It is sufficient for the MVP and revisited afterwards.
 13. **Data stays on the device and is not logged.**
@@ -160,11 +162,15 @@ neither platform has a per-app check. Measured 2026-10-05:
     is no liveness indication that a block fired, and the release wording says so. A lowering
     request is reserved as the content-free event a partner flow will emit once partners exist; it
     will carry no identity.
-15. **Two small pure modules, not a Rust crate.** The matcher and the lowering rule are about fifty
+15. **The lowering rule and token derivation are small pure modules; the matcher is not.** The
+    lowering rule and the derivation of tokens from an identity and a display name are about fifty
     lines each, written in Kotlin and Swift against the same test vectors, as
-    `mac-daemon.protection-schedule` ports `ProtectionSchedule`. A UniFFI crate would add a
-    cross-platform contract for logic that is neither a secret nor heavy. The shared contract is
-    the decisions 5 and 6 above and the rating and token rules of decisions 8 and 12.
+    `mac-daemon.protection-schedule` ports `ProtectionSchedule`. Matching a name against tokens,
+    token eligibility (the length minimum and the stoplist) and the match confidence live in
+    `net-shield` (decision 12), because both enforcement points, the Android DNS path and the macOS
+    proxy, are Rust and the matcher needs the public suffix list. The panels reach eligibility and
+    confidence through the existing UniFFI wrapper. The shared contract is decisions 5 and 6 above
+    and the rating and token rules of decisions 8 and 12.
 16. **macOS is advisory until its agent is observed.** The agent runs as the protected user, so a
     standard user can edit the list file or stop the agent. Decisions 5 and 6 on macOS are advisory
     until `mac-daemon.standard-user-tamper` observes whether the agent can be stopped, and release
@@ -172,12 +178,26 @@ neither platform has a per-app check. Measured 2026-10-05:
     (root-owned, written only through the daemon) is a trust-boundary change that passes through the
     owner after that result.
 
+### Keyword stoplist
+
+`net-shield::keyword::STOPLIST` is the list decision 12 refers to. Tokens under five characters
+never match, so the short words in decision 12's examples (`line`, `meta`, `mail`, `maps`) are
+listed only to record them. The words that carry weight are the longer common ones:
+
+`browser`, `calculator`, `calendar`, `camera`, `chat`, `clock`, `cloud`, `drive`, `email`, `files`,
+`games`, `line`, `mail`, `maps`, `media`, `meta`, `mobile`, `music`, `news`, `notes`, `phone`,
+`photo`, `photos`, `search`, `settings`, `shop`, `store`, `translate`, `video`, `videos`,
+`weather`, `world`.
+
+It changes only through this record. Brand names are deliberately absent: a token such as `google`
+is the person's own confirmed choice.
+
 ## Step requirements
 
 | Step | Must do, beyond its title |
 |---|---|
 | `mobile.custom-app-core` | Matcher, idempotent add, removal request/confirm/expiry, store with the backup test, protected-set resolution and the `never` rating at check time, token derivation, the vectors in decisions 5, 6, 8 and 12, a test that nothing writes an identity into `TamperEntry.detail` |
-| `mac-daemon.custom-app-core` | The same, with the monotonic sleep-surviving clock, the file mode and backup exclusion, and the no-logging gate. Depends on `mac-daemon.protection-schedule` |
+| `mac-daemon.custom-app-core` | The same, except the matcher and token eligibility come from `net-shield-ffi` and are not ported, with the monotonic sleep-surviving clock, the file mode and backup exclusion, and the no-logging gate. Depends on `mac-daemon.protection-schedule` |
 | `mobile.custom-app-enforcement` | Window-wide enforcement and a rescan on list change, removal of every package name from `Log.*` with its gate, observation of whether `block` can stop an app and how long content shows before cover |
 | `mac-daemon.custom-app-block` | Launch and activation observers, repeat-hide after the grace period, no use of `WindowSuppression`'s cooldown |
 | `mobile.custom-app-panel`, `mac-daemon.custom-app-panel` | The honest labels and the coverage note of decision 3, manual identity entry, the removal cost stated at add time, refusal of `never` identities, and the derived tokens shown for confirmation |
@@ -192,7 +212,7 @@ neither platform has a per-app check. Measured 2026-10-05:
 | Match on display name | Names are localized, renamed and spoofable; the identity is the only stable key |
 | `forceTerminate()` for macOS `block` | Discards unsaved work; `WindowSuppression.swift` chose hide over close for this reason |
 | `QUERY_ALL_PACKAGES` on Android | Broader than needed to list launchable apps and a wider package-visibility grant to hold |
-| A Rust crate with UniFFI for the matcher and the schedule | A new cross-platform contract for a trivial pure function |
+| A Rust crate with UniFFI for the lowering rule and token derivation | A new cross-platform contract for trivial pure functions. The matcher is the exception, for the reason in decision 15 |
 | Record each block in the tamper log | A usage history of the person's chosen apps; the log is for the guard, not for activity |
 | Immediate removal | Defeats requirement 3 as it would defeat it for disarm |
 | Check the protected set only when adding | The Android launcher role and a mutable macOS set change after add; a check at add time either exempts a listed launcher or loops home into the app |

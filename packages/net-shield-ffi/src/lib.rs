@@ -16,7 +16,7 @@ use std::time::Duration;
 use domain_blocklist::KeyId;
 use ed25519_dalek::VerifyingKey;
 use net_shield::{
-    Allowlist, ArtifactError, BlocklistArtifact, BlocklistLookup,
+    Allowlist, ArtifactError, BlocklistArtifact, BlocklistLookup, KeywordMatch, KeywordRules,
     dns_shield::{DnsShield, DnsVerdict},
     radix::{DomainFilter, FilterAction},
 };
@@ -114,6 +114,31 @@ fn builtin_rules() -> DomainFilter {
     DomainFilter::from_rules(&[("blocked.example", FilterAction::Block)])
 }
 
+/// The form of `raw` a keyword rule can use, or `None` when it is too short or on the stoplist.
+#[uniffi::export]
+pub fn normalize_keyword_token(raw: String) -> Option<String> {
+    net_shield::normalize_token(&raw)
+}
+
+/// How sure a keyword match is: `High` when the registrable domain's own label equals the token,
+/// `Medium` when some label contains it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum KeywordConfidence {
+    High,
+    Medium,
+}
+
+/// What a candidate `token` would match for `name`, so the panel can show each token's reach before
+/// the person confirms it. `None` for a refused token, a name that does not normalize, or no match.
+#[uniffi::export]
+pub fn match_keyword_token(token: String, name: String) -> Option<KeywordConfidence> {
+    let normalized = domain_normalize::normalize(&name).ok()?;
+    match KeywordRules::new(&[token]).matches(&normalized)? {
+        KeywordMatch::Exact => Some(KeywordConfidence::High),
+        KeywordMatch::Contains => Some(KeywordConfidence::Medium),
+    }
+}
+
 /// Handle held by the foreign caller for the lifetime of the VPN session.
 ///
 /// Construction builds the domain trie, so build it once per session rather
@@ -163,6 +188,13 @@ impl DnsGuard {
                 Some(lookup),
             ),
         }))
+    }
+
+    /// Replaces the confirmed keyword tokens. A name whose label equals or contains a token is
+    /// blocked unless an allowlist or explicit rule exempts it. Tokens that
+    /// [`normalize_keyword_token`] refuses are ignored.
+    pub fn set_keywords(&self, tokens: Vec<String>) {
+        self.inner.set_keywords(&tokens);
     }
 
     /// Classify one IPv4 packet read from the TUN. Never fails: anything it
@@ -241,6 +273,62 @@ mod tests {
             ),
             "the built-in placeholder must not survive an explicit rule set"
         );
+    }
+
+    #[test]
+    fn keywords_set_through_the_boundary_block_matching_names_only() {
+        let guard = DnsGuard::with_blocked_domains(vec![]);
+        guard.set_keywords(vec!["Instagram".into(), "meta".into()]);
+        for name in ["instagram.com", "cdninstagram.com"] {
+            assert!(
+                matches!(
+                    guard.inspect(query_packet(name)),
+                    DnsDecision::Blocked { .. }
+                ),
+                "{name}"
+            );
+        }
+        for name in ["meta.com", "example.com"] {
+            assert!(
+                matches!(
+                    guard.inspect(query_packet(name)),
+                    DnsDecision::Forward { .. }
+                ),
+                "{name}"
+            );
+        }
+        guard.set_keywords(vec![]);
+        assert!(matches!(
+            guard.inspect(query_packet("instagram.com")),
+            DnsDecision::Forward { .. }
+        ));
+    }
+
+    #[test]
+    fn candidate_token_confidence_is_exposed_for_the_panel() {
+        let m = |t: &str, n: &str| match_keyword_token(t.into(), n.into());
+        assert_eq!(
+            m("instagram", "www.instagram.com"),
+            Some(KeywordConfidence::High)
+        );
+        assert_eq!(
+            m("instagram", "cdninstagram.com"),
+            Some(KeywordConfidence::Medium)
+        );
+        assert_eq!(m("instagram", "example.com"), None);
+        assert_eq!(m("instagram", "instagram.github.io"), None);
+        assert_eq!(m("meta", "meta.com"), None);
+        assert_eq!(m("instagram", "not a name"), None);
+    }
+
+    #[test]
+    fn token_normalization_is_exposed_for_the_panel() {
+        assert_eq!(
+            normalize_keyword_token("Insta-Gram".into()).as_deref(),
+            Some("instagram")
+        );
+        assert_eq!(normalize_keyword_token("meta".into()), None);
+        assert_eq!(normalize_keyword_token("Photos".into()), None);
     }
 
     #[test]

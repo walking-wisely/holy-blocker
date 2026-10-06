@@ -1,0 +1,9 @@
+id = "net-shield.keyword-rule-hardening"
+title = "Keyword rule hardening: report which tokens set_keywords accepted, cap the token count, add a property test for the matcher, and record the normalization-failure and hyphenated-label misses in coverage"
+status = "pending"
+evidence = ""
+acceptance = "code"
+depends_on = ["net-shield.keyword-rule"]
+verify = "cargo test in packages/net-shield and packages/net-shield-ffi"
+kind = "bug"
+regressed_step = "net-shield.keyword-rule"

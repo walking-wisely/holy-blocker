@@ -427,6 +427,7 @@ dependencies = [
  "ed25519-dalek",
  "fst",
  "memmap2",
+ "psl",
  "serde",
  "sha2",
  "tempfile",
