@@ -146,6 +146,7 @@ pub fn match_keyword_token(token: String, name: String) -> Option<KeywordConfide
 #[derive(uniffi::Object)]
 pub struct DnsGuard {
     inner: DnsShield,
+    artifact_version: Option<u64>,
 }
 
 #[uniffi::export]
@@ -155,6 +156,7 @@ impl DnsGuard {
     pub fn with_builtin_rules() -> Arc<Self> {
         Arc::new(Self {
             inner: DnsShield::new(builtin_rules()),
+            artifact_version: None,
         })
     }
 
@@ -168,6 +170,7 @@ impl DnsGuard {
             .collect();
         Arc::new(Self {
             inner: DnsShield::new(DomainFilter::from_rules(&rules)),
+            artifact_version: None,
         })
     }
 
@@ -180,6 +183,7 @@ impl DnsGuard {
     ) -> Result<Arc<Self>, ArtifactLoadError> {
         let keys = verifying_keys(trusted_keys)?;
         let artifact = BlocklistArtifact::load(Path::new(&artifact_dir), &keys)?;
+        let artifact_version = Some(artifact.version());
         let lookup = BlocklistLookup::new(Arc::new(artifact), LOOKUP_BUDGET, LOOKUP_CACHE_CAPACITY);
         Ok(Arc::new(Self {
             inner: DnsShield::with_policy(
@@ -187,7 +191,14 @@ impl DnsGuard {
                 Allowlist::new(),
                 Some(lookup),
             ),
+            artifact_version,
         }))
+    }
+
+    /// The manifest version of the artifact this guard loaded; `None` when it was not built from
+    /// one. Compared with the `current/` manifest, it shows that the loader fell back to `previous/`.
+    pub fn artifact_version(&self) -> Option<u64> {
+        self.artifact_version
     }
 
     /// Replaces the confirmed keyword tokens. A name whose label equals or contains a token is
@@ -427,6 +438,10 @@ mod tests {
         }
 
         fn write_slot(base: &Path, slot: &str, domains: &[&str], seed: u8) {
+            write_slot_version(base, slot, domains, seed, 1);
+        }
+
+        fn write_slot_version(base: &Path, slot: &str, domains: &[&str], seed: u8, version: u64) {
             let entries: Vec<MergedEntry> = domains
                 .iter()
                 .map(|d| MergedEntry {
@@ -440,7 +455,7 @@ mod tests {
                 &entries,
                 LicenseId("MIT".into()),
                 Vec::new(),
-                1,
+                version,
                 1_700_000_000,
                 &[(KeyId(KEY_ID.into()), signing_key(seed))],
             )
@@ -520,6 +535,31 @@ mod tests {
                 guard.inspect(query_packet("old.example")),
                 DnsDecision::Blocked { .. }
             ));
+        }
+
+        #[test]
+        fn the_guard_reports_the_version_of_the_slot_it_loaded() {
+            let dir = tempdir().unwrap();
+            write_slot_version(dir.path(), "previous", &["old.example"], 7, 3);
+            write_slot_version(dir.path(), "current", &["new.example"], 7, 4);
+            assert_eq!(
+                DnsGuard::with_artifact(path(&dir), trusted(7))
+                    .unwrap()
+                    .artifact_version(),
+                Some(4)
+            );
+            std::fs::write(dir.path().join("current").join(ARTIFACT_FILE), b"corrupt").unwrap();
+            assert_eq!(
+                DnsGuard::with_artifact(path(&dir), trusted(7))
+                    .unwrap()
+                    .artifact_version(),
+                Some(3)
+            );
+        }
+
+        #[test]
+        fn a_guard_without_an_artifact_has_no_version() {
+            assert_eq!(DnsGuard::with_builtin_rules().artifact_version(), None);
         }
 
         #[test]

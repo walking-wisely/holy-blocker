@@ -57,4 +57,63 @@ class BlocklistProvisioningTest {
         assertEquals(TamperEvent.BLOCKLIST_MISSING, BlocklistProvisioning.eventFor(BlocklistFailure.MISSING))
         assertEquals(TamperEvent.BLOCKLIST_REJECTED, BlocklistProvisioning.eventFor(BlocklistFailure.REJECTED))
     }
+
+    private fun manifest(version: Long) =
+        ByteArray(8) { (version shr (8 * it)).toByte() } + byteArrayOf(9, 9)
+
+    @Test
+    fun `the manifest version is its first eight bytes, little endian`() {
+        assertEquals(1L, BlocklistProvisioning.manifestVersion(manifest(1)))
+        assertEquals(0x0102L, BlocklistProvisioning.manifestVersion(manifest(0x0102)))
+    }
+
+    @Test
+    fun `a manifest too short to carry a version has none`() {
+        assertNull(BlocklistProvisioning.manifestVersion(ByteArray(7)))
+    }
+
+    @Test
+    fun `a bundled slot older than the installed one is not installed`() {
+        assertFalse(BlocklistProvisioning.needsInstall(bundled = slot(manifest(3), 10), installed = slot(manifest(4), 10)))
+    }
+
+    @Test
+    fun `a bundled slot newer than the installed one is installed`() {
+        assertTrue(BlocklistProvisioning.needsInstall(bundled = slot(manifest(5), 10), installed = slot(manifest(4), 10)))
+    }
+
+    @Test
+    fun `an installed manifest with no readable version is replaced`() {
+        assertTrue(BlocklistProvisioning.needsInstall(bundled = slot(manifest(3), 10), installed = slot(byteArrayOf(1), 10)))
+    }
+
+    @Test
+    fun `the same version with a different artifact length is reinstalled`() {
+        assertTrue(BlocklistProvisioning.needsInstall(bundled = slot(manifest(4), 10), installed = slot(manifest(4), 4)))
+    }
+
+    @Test
+    fun `a load of the current slot is not a fallback`() {
+        assertFalse(BlocklistProvisioning.fellBackToPrevious(loadedVersion = 4, currentManifest = manifest(4)))
+    }
+
+    @Test
+    fun `a load of another version than the current slot is a fallback`() {
+        assertTrue(BlocklistProvisioning.fellBackToPrevious(loadedVersion = 3, currentManifest = manifest(4)))
+    }
+
+    @Test
+    fun `a load with no current slot installed is a fallback`() {
+        assertTrue(BlocklistProvisioning.fellBackToPrevious(loadedVersion = 3, currentManifest = null))
+    }
+
+    @Test
+    fun `no loaded version is never a fallback`() {
+        assertFalse(BlocklistProvisioning.fellBackToPrevious(loadedVersion = null, currentManifest = manifest(4)))
+    }
+
+    @Test
+    fun `the fallback is recorded as its own event`() {
+        assertEquals("list_fallback", TamperEvent.BLOCKLIST_FALLBACK.code)
+    }
 }

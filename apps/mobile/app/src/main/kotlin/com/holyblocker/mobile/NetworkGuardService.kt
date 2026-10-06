@@ -203,7 +203,10 @@ class NetworkGuardService : VpnService() {
         tunOutput = FileOutputStream(descriptor.fileDescriptor)
 
         guard = when (val loaded = BlocklistStore(this).load()) {
-            is BlocklistLoad.Loaded -> loaded.guard
+            is BlocklistLoad.Loaded -> {
+                if (loaded.fellBack) tamperLog.record(TamperEvent.BLOCKLIST_FALLBACK)
+                loaded.guard
+            }
             is BlocklistLoad.Failed -> {
                 tamperLog.record(BlocklistProvisioning.eventFor(loaded.failure))
                 DnsGuard.withBuiltinRules()
