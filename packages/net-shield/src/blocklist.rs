@@ -270,7 +270,8 @@ impl Allowlist {
 // ---------------------------------------------------------------------------
 
 /// Resolves a normalized domain against the precedence table the plan's module 6 fixes:
-/// device-local allowlist (1) → explicit `DomainFilter` rules (2) → FST blocklist (4) → default (5).
+/// device-local allowlist (1) → explicit `DomainFilter` rules (2) → keyword rules (2b) → FST blocklist
+/// (4) → default (5).
 /// Level 3 (overlay, module 8) is unbuilt; the caller passes `None` for the artifact to leave it out.
 ///
 /// Returns `None` only when the domain fell through levels 1–4 with no decision — the caller then
