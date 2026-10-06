@@ -356,6 +356,58 @@ async fn a_listed_connect_authority_is_refused_before_any_tunnel() {
     assert!(status.contains("403"), "got {status:?}");
 }
 
+fn hooks_with_keywords(tokens: &[&str]) -> ScanHooks {
+    let hooks = ScanHooks::default();
+    hooks.set_keywords(tokens);
+    hooks
+}
+
+#[tokio::test]
+async fn a_keyword_host_is_refused_on_plain_http_without_contacting_the_origin() {
+    let proxy_ca = make_ca();
+    let tls = Arc::new(TlsState::from_issuer(proxy_ca.issuer));
+    let origin_port = spawn_http_origin(b"must not be served").await;
+    let proxy_port = spawn_proxy_with(tls, hooks_with_keywords(&["instagram"])).await;
+
+    let client = proxy_client(proxy_port, &proxy_ca.der);
+    let resp = client
+        .get(format!("http://cdninstagram.com:{origin_port}/"))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 403);
+    assert_ne!(resp.bytes().await.unwrap().as_ref(), b"must not be served");
+}
+
+#[tokio::test]
+async fn a_keyword_connect_authority_is_refused_before_any_tunnel() {
+    let proxy_ca = make_ca();
+    let tls = Arc::new(TlsState::from_issuer(proxy_ca.issuer));
+    let proxy_port = spawn_proxy_with(tls, hooks_with_keywords(&["instagram"])).await;
+
+    let status = raw_connect_status(proxy_port, "www.instagram.com:443").await;
+
+    assert!(status.contains("403"), "got {status:?}");
+}
+
+#[tokio::test]
+async fn a_host_without_a_keyword_is_still_forwarded() {
+    let proxy_ca = make_ca();
+    let tls = Arc::new(TlsState::from_issuer(proxy_ca.issuer));
+    let origin_port = spawn_http_origin(b"hello from origin").await;
+    let proxy_port = spawn_proxy_with(tls, hooks_with_keywords(&["instagram"])).await;
+
+    let client = proxy_client(proxy_port, &proxy_ca.der);
+    let resp = client
+        .get(format!("http://127.0.0.1:{origin_port}/"))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 200);
+}
+
 async fn tls_handshake_through_connect(
     proxy_port: u16,
     proxy_ca_der: &CertificateDer<'static>,

@@ -67,6 +67,14 @@ async fn main() -> Result<()> {
         }
         None => None,
     };
+    let keyword_tokens = match options.keyword_file.as_deref() {
+        Some(path) => std::fs::read_to_string(path)
+            .map_err(|e| anyhow::anyhow!("reading the keyword file {}: {e}", path.display()))?
+            .lines()
+            .map(str::to_owned)
+            .collect(),
+        None => Vec::new(),
+    };
     let scan = {
         let url_engine = Arc::clone(&engine);
         let body_engine = Arc::clone(&engine);
@@ -86,6 +94,7 @@ async fn main() -> Result<()> {
         })
     };
 
+    scan.set_keywords(&keyword_tokens);
     let state = Arc::new(ProxyState { tls, scan, mode: mode_cell });
 
     let listener = TcpListener::bind(options.listen).await?;

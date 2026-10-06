@@ -28,6 +28,7 @@ usage: mitm-proxy [options]
                           slots); requires --blocklist-key
   --blocklist-key <id>:<hex>
                           trusted Ed25519 public key as 64 hex digits; repeatable
+  --keyword-file <path>  app-name tokens, one per line; a host carrying one is refused
   -h, --help             print this message";
 
 #[derive(Debug, Clone, PartialEq)]
@@ -48,6 +49,7 @@ pub struct Options {
     pub image_sexy_threshold: Option<f32>,
     pub blocklist_dir: Option<PathBuf>,
     pub blocklist_keys: Vec<(KeyId, VerifyingKey)>,
+    pub keyword_file: Option<PathBuf>,
 }
 
 impl Default for Options {
@@ -60,6 +62,7 @@ impl Default for Options {
             image_sexy_threshold: None,
             blocklist_dir: None,
             blocklist_keys: Vec::new(),
+            keyword_file: None,
         }
     }
 }
@@ -107,6 +110,7 @@ impl Options {
                 }
                 "--blocklist-dir" => options.blocklist_dir = Some(PathBuf::from(value()?)),
                 "--blocklist-key" => options.blocklist_keys.push(parse_trusted_key(&value()?)?),
+                "--keyword-file" => options.keyword_file = Some(PathBuf::from(value()?)),
                 "-h" | "--help" => {
                     println!("{USAGE}");
                     std::process::exit(0);
@@ -253,6 +257,17 @@ mod tests {
     }
 
     const KEY: &str = "k1:ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c";
+
+    #[test]
+    fn a_keyword_file_is_parsed() {
+        let options = parse(&["--keyword-file", "tokens.txt"]).unwrap();
+        assert_eq!(options.keyword_file, Some(PathBuf::from("tokens.txt")));
+    }
+
+    #[test]
+    fn a_keyword_file_without_its_value_is_rejected() {
+        assert!(parse(&["--keyword-file"]).is_err());
+    }
 
     #[test]
     fn a_blocklist_dir_with_a_key_is_parsed() {
