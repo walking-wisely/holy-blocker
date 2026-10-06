@@ -14,13 +14,14 @@ public enum ProxyBlocklistPolicy: Equatable, Sendable {
     public static let overrideHint =
         " (\(allowMissingVariable)=1 allows it for development)"
 
-    public init(environment: [String: String]) {
-        self = environment[Self.allowMissingVariable] == "1" ? .optional : .required
+    public init(environment: [String: String], identity: BundleIdentity) {
+        let optedIn = environment[Self.allowMissingVariable] == "1"
+        self = optedIn && identity == .development ? .optional : .required
     }
 #else
     public static let overrideHint = ""
 
-    public init(environment: [String: String]) {
+    public init(environment: [String: String], identity: BundleIdentity) {
         self = .required
     }
 #endif

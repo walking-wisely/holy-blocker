@@ -101,9 +101,9 @@ verify_signature() {
 }
 
 require_release_bundle_id() {
-  local actual
-  actual="$(plutil -extract CFBundleIdentifier raw -o - "$1/Contents/Info.plist" 2>/dev/null)" || return 1
-  [[ "$actual" == "$RELEASE_BUNDLE_ID" ]]
+  local raw
+  raw="$(plutil -extract CFBundleIdentifier raw -o - "$1/Contents/Info.plist" 2>/dev/null && printf x)" || return 1
+  [[ "$raw" == "$RELEASE_BUNDLE_ID"$'\nx' ]]
 }
 
 ca_certificate_ok() {

@@ -77,11 +77,15 @@ make_bundle_with_id() {
 make_bundle_with_id release.app com.holyblocker.daemon
 make_bundle_with_id dev.app com.holyblocker.daemon.dev
 make_bundle_with_id suffixed.app com.holyblocker.daemon.other
+make_bundle_with_id newline.app $'com.holyblocker.daemon\n'
 mkdir -p "$sandbox/noplist.app/Contents"
 check "bundle id: release identifier accepted"       in_dispatch require_release_bundle_id "$sandbox/release.app"
 check "bundle id: development identifier rejected"   not in_dispatch require_release_bundle_id "$sandbox/dev.app"
 check "bundle id: longer identifier rejected"        not in_dispatch require_release_bundle_id "$sandbox/suffixed.app"
 check "bundle id: missing Info.plist rejected"       not in_dispatch require_release_bundle_id "$sandbox/noplist.app"
+check "bundle id: trailing newline rejected"         not in_dispatch require_release_bundle_id "$sandbox/newline.app"
+check "bundle id: checked when staging the app"      grep -qE '^  require_release_bundle_id "\$SCRATCH/\$APP_NAME"' "$here/dispatch"
+check "bundle id: checked when bootstrapping"        grep -qE '^  require_release_bundle_id "\$APP_DEST"' "$here/dispatch"
 
 pin_file="$sandbox/pin"
 good_pin="$(printf 'a%.0s' {1..64})"

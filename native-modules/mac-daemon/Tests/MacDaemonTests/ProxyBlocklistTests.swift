@@ -153,7 +153,7 @@ struct ProxyBlocklistPolicyTests {
 
     @Test("requires a list by default")
     func requiredByDefault() {
-        let policy = ProxyBlocklistPolicy(environment: [:])
+        let policy = ProxyBlocklistPolicy(environment: [:], identity: .holyBlocker)
         #expect(policy == .required)
         #expect(policy.arguments(for: .unavailable(.missing)) == nil)
         #expect(policy.arguments(for: .unavailable(.rejected)) == nil)
@@ -169,21 +169,28 @@ struct ProxyBlocklistPolicyTests {
     @Test("runs unfiltered only on the explicit opt-in")
     func optIn() {
         let policy = ProxyBlocklistPolicy(
-            environment: [ProxyBlocklistPolicy.allowMissingVariable: "1"])
+            environment: [ProxyBlocklistPolicy.allowMissingVariable: "1"], identity: .development)
         #expect(policy.arguments(for: .unavailable(.missing)) == [])
+    }
+
+    @Test("ignores the opt-in when not running as the development identity")
+    func optInNeedsDevelopmentIdentity() {
+        let policy = ProxyBlocklistPolicy(
+            environment: [ProxyBlocklistPolicy.allowMissingVariable: "1"], identity: .holyBlocker)
+        #expect(policy == .required)
     }
 
     @Test("treats any other value as not opted in")
     func otherValues() {
         let policy = ProxyBlocklistPolicy(
-            environment: [ProxyBlocklistPolicy.allowMissingVariable: "true"])
+            environment: [ProxyBlocklistPolicy.allowMissingVariable: "true"], identity: .development)
         #expect(policy == .required)
     }
 #else
     @Test("ignores the development override in a release build")
     func overrideIgnored() {
         let policy = ProxyBlocklistPolicy(
-            environment: ["HOLY_BLOCKER_ALLOW_NO_BLOCKLIST": "1"])
+            environment: ["HOLY_BLOCKER_ALLOW_NO_BLOCKLIST": "1"], identity: .holyBlocker)
         #expect(policy == .required)
         #expect(policy.arguments(for: .unavailable(.missing)) == nil)
     }

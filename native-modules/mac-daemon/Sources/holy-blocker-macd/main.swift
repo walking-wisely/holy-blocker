@@ -102,8 +102,9 @@ func runSupervisor(binary: URL, workingDirectory: URL) throws {
     let configuration = ProxyConfiguration(runner: runner, snapshotPath: snapshotPath)
     let blocklist = ProxyBlocklist.resolve(resources: Bundle.main.resourceURL)
     guard
-        let proxyArguments = ProxyBlocklistPolicy(environment: ProcessInfo.processInfo.environment)
-            .arguments(for: blocklist)
+        let proxyArguments = ProxyBlocklistPolicy(
+            environment: ProcessInfo.processInfo.environment, identity: runningIdentity
+        ).arguments(for: blocklist)
     else {
         fail(
             "no usable signed domain blocklist in the bundle; refusing to route traffic"
@@ -719,7 +720,8 @@ do {
             try ProxyBlocklist.stage(
                 artifactDirectory: URL(fileURLWithPath: rest[4]),
                 keyDirectory: URL(fileURLWithPath: rest[5]), into: layout.resources)
-        } else if ProxyBlocklistPolicy(environment: ProcessInfo.processInfo.environment) == .required {
+        } else if ProxyBlocklistPolicy(
+            environment: ProcessInfo.processInfo.environment, identity: identity) == .required {
             try? FileManager.default.removeItem(at: root)
             fail(
                 "no domain blocklist given; pass <blocklist-dir> <blocklist-key-dir>"
