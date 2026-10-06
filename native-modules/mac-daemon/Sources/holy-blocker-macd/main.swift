@@ -673,6 +673,11 @@ do {
         guard let identity = BundleIdentity.forFlavor(flavor) else {
             fail("HOLY_BLOCKER_BUNDLE_FLAVOR must be release or development")
         }
+#if HOLY_BLOCKER_DEV_BUILD
+        guard identity == .development else {
+            fail("this binary carries the development kill switch and cannot be bundled as release")
+        }
+#endif
         let root = URL(fileURLWithPath: outputDirectory)
             .appendingPathComponent(identity.bundleFileName)
 
@@ -791,6 +796,18 @@ do {
 
     case "agent":
         try await runAgent()
+
+#if HOLY_BLOCKER_DEV_BUILD
+    case "dev-kill-switch":
+        let outcomes = try DevKillSwitch.engage(
+            identity: runningIdentity, uid: getuid(), runner: runner)
+        for (target, outcome) in zip(
+            try DevKillSwitch.targets(for: runningIdentity, uid: getuid()), outcomes)
+        {
+            print("\(target): exit \(outcome.exitCode)")
+        }
+        exit(outcomes.allSatisfy { $0.exitCode == 0 } ? 0 : 1)
+#endif
 
     case "overlay":
         runOverlay(
