@@ -30,7 +30,7 @@ let usage = """
       overlay [seconds] [passive]       cover every screen with a real overlay window
       image-scan <model.onnx> <sexy-threshold> <explicit-threshold> [size]
                                         classify a synthetic frame with the real ONNX model
-      bundle <output-dir> [identity] [ffi-lib-dir]
+      bundle <output-dir> [identity] [ffi-lib-dir] [model] [blocklist-dir] [blocklist-key-dir]
                                         assemble and sign HolyBlockerDaemon.app (default: ad-hoc)
       bundle-status                     report our own bundle and whether its grants will last
       launchd-plist <daemon|agent>      print the launchd job definition for one half
@@ -44,6 +44,9 @@ let usage = """
                                         (default: /Library/Application Support/HolyBlocker)
       HOLY_BLOCKER_PROXY_HOST           proxy listen host for `run` (default: 127.0.0.1)
       HOLY_BLOCKER_PROXY_PORT           proxy listen port for `run` (default: 8080)
+      HOLY_BLOCKER_ALLOW_NO_BLOCKLIST   set to 1 to let `bundle` assemble without a signed domain
+                                        list and `run` route traffic without one; without it both
+                                        refuse. Development only
       HOLY_BLOCKER_IMAGE_THRESHOLD      explicit score at or above which an image is blocked;
                                         required to enable image scanning, no built-in default —
                                         unset or unparseable degrades to allow-everything, the
@@ -98,10 +101,21 @@ nonisolated(unsafe) var stopRequested: sig_atomic_t = 0
 /// Supervises the proxy until interrupted, then puts the machine back.
 func runSupervisor(binary: URL, workingDirectory: URL) throws {
     let configuration = ProxyConfiguration(runner: runner, snapshotPath: snapshotPath)
+    let blocklist = ProxyBlocklist.resolve(resources: Bundle.main.resourceURL)
+    guard
+        let proxyArguments = ProxyBlocklistPolicy(environment: ProcessInfo.processInfo.environment)
+            .arguments(for: blocklist)
+    else {
+        fail(
+            "no usable signed domain blocklist in the bundle; refusing to route traffic "
+                + "(\(ProxyBlocklistPolicy.allowMissingVariable)=1 allows it for development)")
+    }
+    print(proxyArguments.isEmpty ? "domain blocklist: off (development override)" : "domain blocklist: bundled list")
     let supervisor = ProxySupervisor(
         host: proxyHost,
         port: proxyPort,
-        process: MitmProxyProcess(executable: binary, workingDirectory: workingDirectory),
+        process: MitmProxyProcess(
+            executable: binary, arguments: proxyArguments, workingDirectory: workingDirectory),
         probe: TCPListenerProbe(),
         settings: SystemProxySettings(
             configuration: configuration, runner: runner, host: proxyHost, port: proxyPort))
@@ -692,10 +706,23 @@ do {
         try AppBundle.assemble(
             at: root, identity: identity, executable: executable, libraries: libraries,
             resources: resources)
+
+        let layout = AppBundle.layout(root: root, identity: identity)
+        if rest.count > 5 {
+            try ProxyBlocklist.stage(
+                artifactDirectory: URL(fileURLWithPath: rest[4]),
+                keyDirectory: URL(fileURLWithPath: rest[5]), into: layout.resources)
+        } else if ProxyBlocklistPolicy(environment: ProcessInfo.processInfo.environment) == .required {
+            try? FileManager.default.removeItem(at: root)
+            fail(
+                "no domain blocklist given; pass <blocklist-dir> <blocklist-key-dir> "
+                    + "(\(ProxyBlocklistPolicy.allowMissingVariable)=1 allows a development bundle)")
+        } else {
+            print("warning: no domain blocklist given — the proxy will not start without the override")
+        }
         // Ad-hoc by default so the bundle is runnable with no certificate — but ad-hoc is exactly
         // the identity that does not survive a rebuild, so say so rather than leave it implied.
         let signingIdentity = rest.count > 1 ? rest[1] : "-"
-        let layout = AppBundle.layout(root: root, identity: identity)
         try CodeSigning(runner: runner).sign(
             bundle: root, identity: signingIdentity,
             nestedCode: try AppBundle.nestedCode(in: layout))
