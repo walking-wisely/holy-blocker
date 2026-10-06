@@ -1,0 +1,8 @@
+id = "mac-daemon.ffi-strtab-alignment"
+title = "Align the FFI dylib string pool so Xcode 27's ld can link the daemon against it"
+status = "done"
+evidence = "PR #132"
+acceptance = "code"
+verify = "python3 -m unittest discover -s tools/plan/tests -t . and ./scripts/test.sh from native-modules/mac-daemon"
+kind = "bug"
+group = "toolchain"
