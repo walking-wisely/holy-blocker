@@ -172,6 +172,20 @@ neither platform has a per-app check. Measured 2026-10-05:
     (root-owned, written only through the daemon) is a trust-boundary change that passes through the
     owner after that result.
 
+### Keyword stoplist
+
+`net-shield::keyword::STOPLIST` is the list decision 12 refers to. Tokens under five characters
+never match, so the short words in decision 12's examples (`line`, `meta`, `mail`, `maps`) are
+listed only to record them. The words that carry weight are the longer common ones:
+
+`browser`, `calculator`, `calendar`, `camera`, `chat`, `clock`, `cloud`, `drive`, `email`, `files`,
+`games`, `line`, `mail`, `maps`, `media`, `meta`, `mobile`, `music`, `news`, `notes`, `phone`,
+`photo`, `photos`, `search`, `settings`, `shop`, `store`, `translate`, `video`, `videos`,
+`weather`, `world`.
+
+It changes only through this record. Brand names are deliberately absent: a token such as `google`
+is the person's own confirmed choice.
+
 ## Step requirements
 
 | Step | Must do, beyond its title |

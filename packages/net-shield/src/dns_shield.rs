@@ -14,7 +14,10 @@
 //! former, and it is the step that decides whether a connection is attempted at
 //! all. SNI and IP filtering, which need the latter, come after.
 
+use std::sync::RwLock;
+
 use crate::blocklist::{Allowlist, BlocklistLookup, resolve_action};
+use crate::keyword::KeywordRules;
 use crate::dns;
 use crate::radix::{DomainFilter, FilterAction};
 use crate::udp::{self, Ipv4UdpDatagram};
@@ -45,6 +48,7 @@ pub enum DnsVerdict {
 pub struct DnsShield {
     explicit: DomainFilter,
     allowlist: Allowlist,
+    keywords: RwLock<KeywordRules>,
     blocklist: Option<BlocklistLookup>,
 }
 
@@ -53,6 +57,7 @@ impl DnsShield {
         DnsShield {
             explicit: domains,
             allowlist: Allowlist::new(),
+            keywords: RwLock::default(),
             blocklist: None,
         }
     }
@@ -65,8 +70,15 @@ impl DnsShield {
         DnsShield {
             explicit,
             allowlist,
+            keywords: RwLock::default(),
             blocklist,
         }
+    }
+
+    /// Replaces the confirmed keyword tokens; takes effect on the next query.
+    pub fn set_keywords<S: AsRef<str>>(&self, tokens: &[S]) {
+        let rules = KeywordRules::new(tokens);
+        *self.keywords.write().unwrap_or_else(|e| e.into_inner()) = rules;
     }
 
     /// Classify one IPv4 packet read from the TUN.
@@ -111,7 +123,8 @@ impl DnsShield {
             Ok(n) => n,
             Err(_) => return FilterAction::Proxy,
         };
-        match resolve_action(&normalized, &self.allowlist, &self.explicit, None) {
+        let keywords = self.keywords.read().unwrap_or_else(|e| e.into_inner());
+        match resolve_action(&normalized, &self.allowlist, &self.explicit, &keywords, None) {
             Some(action) => action,
             None => match &self.blocklist {
                 Some(worker) => worker.lookup(&normalized),
@@ -176,6 +189,38 @@ mod tests {
             ("ads.example.com", FilterAction::Block),
             ("safe.example.com", FilterAction::Allow),
         ]))
+    }
+
+    fn is_blocked(v: &DnsVerdict) -> bool {
+        matches!(v, DnsVerdict::Blocked { .. })
+    }
+
+    #[test]
+    fn a_keyword_set_at_runtime_blocks_names_that_carry_it() {
+        let s = shield();
+        assert!(!is_blocked(&s.inspect(&query_packet("cdninstagram.com"))));
+        s.set_keywords(&["instagram"]);
+        assert!(is_blocked(&s.inspect(&query_packet("cdninstagram.com"))));
+        assert!(is_blocked(&s.inspect(&query_packet("www.instagram.com"))));
+        assert!(!is_blocked(&s.inspect(&query_packet("example.org"))));
+    }
+
+    #[test]
+    fn replacing_the_keywords_drops_the_old_ones() {
+        let s = shield();
+        s.set_keywords(&["instagram"]);
+        s.set_keywords(&["telegram"]);
+        assert!(!is_blocked(&s.inspect(&query_packet("instagram.com"))));
+        assert!(is_blocked(&s.inspect(&query_packet("telegram.org"))));
+        s.set_keywords::<&str>(&[]);
+        assert!(!is_blocked(&s.inspect(&query_packet("telegram.org"))));
+    }
+
+    #[test]
+    fn an_explicit_allow_rule_exempts_a_keyword_hit() {
+        let s = shield();
+        s.set_keywords(&["example"]);
+        assert!(!is_blocked(&s.inspect(&query_packet("safe.example.com"))));
     }
 
     #[test]

@@ -28,6 +28,7 @@ use ed25519_dalek::VerifyingKey;
 use memmap2::{Mmap, MmapOptions};
 use sha2::{Digest, Sha256};
 
+use crate::keyword::KeywordRules;
 use crate::radix::{DomainFilter, FilterAction};
 
 // ---------------------------------------------------------------------------
@@ -279,6 +280,7 @@ pub fn resolve_action(
     normalized: &str,
     allowlist: &Allowlist,
     explicit: &DomainFilter,
+    keywords: &KeywordRules,
     artifact: Option<&BlocklistArtifact>,
 ) -> Option<FilterAction> {
     // Level 1: device-local allowlist, always wins.
@@ -293,6 +295,11 @@ pub fn resolve_action(
             return Some(action);
         }
         None => {}
+    }
+    // Level 2b: confirmed keyword tokens. Below the allowlist and the explicit rules so either can
+    // exempt a name; above the FST because a keyword hit needs no lookup.
+    if keywords.matches(normalized).is_some() {
+        return Some(FilterAction::Block);
     }
     // Level 4: the FST blocklist (through the worker in the DnsShield path).
     if let Some(artifact) = artifact {
@@ -800,7 +807,7 @@ mod tests {
         let allow = Allowlist::from_entries(&["example.com"]);
         let explicit = DomainFilter::from_rules(&[("example.com", FilterAction::Block)]);
         assert_eq!(
-            resolve_action("example.com", &allow, &explicit, Some(&artifact)),
+            resolve_action("example.com", &allow, &explicit, &KeywordRules::default(), Some(&artifact)),
             Some(FilterAction::Allow)
         );
     }
@@ -812,7 +819,7 @@ mod tests {
         let artifact = load(dir.path(), "k1", 1).unwrap();
         let explicit = DomainFilter::from_rules(&[("example.com", FilterAction::Proxy)]);
         assert_eq!(
-            resolve_action("example.com", &Allowlist::new(), &explicit, Some(&artifact)),
+            resolve_action("example.com", &Allowlist::new(), &explicit, &KeywordRules::default(), Some(&artifact)),
             Some(FilterAction::Proxy)
         );
     }
@@ -823,8 +830,53 @@ mod tests {
         write_artifact(dir.path(), CURRENT_SLOT, &[merged("example.com", RuleScope::Apex)], 1);
         let artifact = load(dir.path(), "k1", 1).unwrap();
         assert_eq!(
-            resolve_action("example.com", &Allowlist::new(), &DomainFilter::from_rules(&[]), Some(&artifact)),
+            resolve_action("example.com", &Allowlist::new(), &DomainFilter::from_rules(&[]), &KeywordRules::default(), Some(&artifact)),
             Some(FilterAction::Block)
+        );
+    }
+
+    #[test]
+    fn precedence_keyword_blocks_without_an_artifact() {
+        let kw = KeywordRules::new(&["instagram"]);
+        assert_eq!(
+            resolve_action("cdninstagram.com", &Allowlist::new(), &DomainFilter::from_rules(&[]), &kw, None),
+            Some(FilterAction::Block)
+        );
+    }
+
+    #[test]
+    fn precedence_allowlist_beats_a_keyword() {
+        let kw = KeywordRules::new(&["instagram"]);
+        let allow = Allowlist::from_entries(&["instagram.com"]);
+        assert_eq!(
+            resolve_action("www.instagram.com", &allow, &DomainFilter::from_rules(&[]), &kw, None),
+            Some(FilterAction::Allow)
+        );
+    }
+
+    #[test]
+    fn precedence_explicit_allow_beats_a_keyword() {
+        let kw = KeywordRules::new(&["instagram"]);
+        let explicit = DomainFilter::from_rules(&[("instagram.com", FilterAction::Allow)]);
+        assert_eq!(
+            resolve_action("instagram.com", &Allowlist::new(), &explicit, &kw, None),
+            Some(FilterAction::Allow)
+        );
+    }
+
+    #[test]
+    fn precedence_keyword_miss_falls_through_to_the_fst() {
+        let dir = tempdir().unwrap();
+        write_artifact(dir.path(), CURRENT_SLOT, &[merged("example.com", RuleScope::Apex)], 1);
+        let artifact = load(dir.path(), "k1", 1).unwrap();
+        let kw = KeywordRules::new(&["instagram"]);
+        assert_eq!(
+            resolve_action("example.com", &Allowlist::new(), &DomainFilter::from_rules(&[]), &kw, Some(&artifact)),
+            Some(FilterAction::Block)
+        );
+        assert_eq!(
+            resolve_action("unlisted.org", &Allowlist::new(), &DomainFilter::from_rules(&[]), &kw, Some(&artifact)),
+            None
         );
     }
 
@@ -834,7 +886,7 @@ mod tests {
         write_artifact(dir.path(), CURRENT_SLOT, &[merged("example.com", RuleScope::Apex)], 1);
         let artifact = load(dir.path(), "k1", 1).unwrap();
         assert_eq!(
-            resolve_action("unlisted.org", &Allowlist::new(), &DomainFilter::from_rules(&[]), Some(&artifact)),
+            resolve_action("unlisted.org", &Allowlist::new(), &DomainFilter::from_rules(&[]), &KeywordRules::default(), Some(&artifact)),
             None
         );
     }
