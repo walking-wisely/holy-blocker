@@ -67,6 +67,10 @@ async fn main() -> Result<()> {
         }
         None => None,
     };
+    let keyword_tokens = match options.keyword_file.as_deref() {
+        Some(path) => read_keyword_file(path)?,
+        None => Vec::new(),
+    };
     let scan = {
         let url_engine = Arc::clone(&engine);
         let body_engine = Arc::clone(&engine);
@@ -86,6 +90,17 @@ async fn main() -> Result<()> {
         })
     };
 
+    scan.set_keywords(&keyword_tokens);
+    let usable_keywords = keyword_tokens
+        .iter()
+        .filter(|t| net_shield::normalize_token(t).is_some())
+        .count();
+    if options.keyword_file.is_some() {
+        info!(usable_keywords, "keyword rule loaded");
+        if usable_keywords == 0 {
+            tracing::warn!("the keyword file has no usable token; keyword blocking is off");
+        }
+    }
     let state = Arc::new(ProxyState { tls, scan, mode: mode_cell });
 
     let listener = TcpListener::bind(options.listen).await?;
@@ -101,4 +116,22 @@ async fn main() -> Result<()> {
             }
         });
     }
+}
+
+const MAX_KEYWORD_FILE_BYTES: u64 = 64 * 1024;
+
+fn read_keyword_file(path: &std::path::Path) -> anyhow::Result<Vec<String>> {
+    let read = || -> std::io::Result<String> {
+        use std::io::Read;
+        let mut text = String::new();
+        std::fs::File::open(path)?
+            .take(MAX_KEYWORD_FILE_BYTES + 1)
+            .read_to_string(&mut text)?;
+        Ok(text)
+    };
+    let text = read().map_err(|e| anyhow::anyhow!("reading the keyword file {}: {e}", path.display()))?;
+    if text.len() as u64 > MAX_KEYWORD_FILE_BYTES {
+        anyhow::bail!("the keyword file {} exceeds {MAX_KEYWORD_FILE_BYTES} bytes", path.display());
+    }
+    Ok(text.lines().map(str::to_owned).collect())
 }

@@ -6,7 +6,9 @@ use hyper::body::Incoming;
 use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use std::convert::Infallible;
-use std::sync::Arc;
+use net_shield::KeywordRules;
+use std::net::IpAddr;
+use std::sync::{Arc, RwLock};
 use tokio::sync::{mpsc, Mutex};
 
 pub type ImageScanner = Box<dyn Fn(&[u8]) -> ScanResult + Send + Sync>;
@@ -25,6 +27,7 @@ pub struct ScanHooks {
     /// without scanning rather than blocked).
     pub body_limit: usize,
     pub host_blocklist: Option<Arc<HostBlocklist>>,
+    pub keyword_rules: RwLock<KeywordRules>,
 }
 
 impl ScanHooks {
@@ -32,6 +35,22 @@ impl ScanHooks {
         self.host_blocklist
             .as_ref()
             .is_some_and(|list| list.verdict(host) == HostVerdict::Block)
+            || self.keyword_matches(host)
+    }
+
+    pub fn set_keywords<S: AsRef<str>>(&self, tokens: &[S]) {
+        *self.keyword_rules.write().unwrap_or_else(|e| e.into_inner()) = KeywordRules::new(tokens);
+    }
+
+    fn keyword_matches(&self, host: &str) -> bool {
+        let rules = self.keyword_rules.read().unwrap_or_else(|e| e.into_inner());
+        if rules.is_empty() || host.trim_start_matches('[').trim_end_matches(']').parse::<IpAddr>().is_ok() {
+            return false;
+        }
+        match domain_normalize::normalize(host) {
+            Ok(normalized) => rules.matches(&normalized).is_some(),
+            Err(_) => true,
+        }
     }
 }
 
@@ -45,6 +64,7 @@ impl Default for ScanHooks {
             video_tx: tx,
             body_limit: 1024 * 1024,
             host_blocklist: None,
+            keyword_rules: RwLock::new(KeywordRules::default()),
         }
     }
 }
@@ -256,6 +276,59 @@ mod tests {
     use std::sync::Arc;
 
     type TestBody = http_body_util::combinators::BoxBody<Bytes, Infallible>;
+
+    fn hooks_with_keywords(tokens: &[&str]) -> ScanHooks {
+        let hooks = ScanHooks::default();
+        hooks.set_keywords(tokens);
+        hooks
+    }
+
+    #[test]
+    fn a_host_carrying_a_keyword_is_blocked() {
+        let hooks = hooks_with_keywords(&["instagram"]);
+        assert!(hooks.host_is_blocked("instagram.com"));
+        assert!(hooks.host_is_blocked("scontent.cdninstagram.com"));
+        assert!(hooks.host_is_blocked("WWW.Instagram.COM."));
+    }
+
+    #[test]
+    fn an_unrelated_host_is_not_blocked_by_keywords() {
+        let hooks = hooks_with_keywords(&["instagram"]);
+        assert!(!hooks.host_is_blocked("example.com"));
+        assert!(!hooks.host_is_blocked("instagram.github.io"));
+    }
+
+    #[test]
+    fn ip_literals_are_never_matched_by_keywords() {
+        let hooks = hooks_with_keywords(&["instagram"]);
+        assert!(!hooks.host_is_blocked("127.0.0.1"));
+        assert!(!hooks.host_is_blocked("[::1]"));
+    }
+
+    #[test]
+    fn no_keywords_blocks_nothing() {
+        assert!(!ScanHooks::default().host_is_blocked("instagram.com"));
+    }
+
+    #[test]
+    fn replacing_the_keywords_removes_the_old_rule() {
+        let hooks = hooks_with_keywords(&["instagram"]);
+        hooks.set_keywords::<&str>(&[]);
+        assert!(!hooks.host_is_blocked("instagram.com"));
+    }
+
+    #[test]
+    fn a_short_or_stoplisted_keyword_blocks_nothing() {
+        let hooks = hooks_with_keywords(&["abc", "browser"]);
+        assert!(!hooks.host_is_blocked("abc.com"));
+        assert!(!hooks.host_is_blocked("browser.com"));
+    }
+
+    #[test]
+    fn a_name_that_cannot_be_normalized_is_blocked_while_keywords_are_set() {
+        assert!(hooks_with_keywords(&["instagram"]).host_is_blocked("bad host"));
+        assert!(!ScanHooks::default().host_is_blocked("bad host"));
+    }
 
     fn tbody(s: &'static [u8]) -> TestBody {
         Full::new(Bytes::from_static(s)).map_err(|e: Infallible| match e {}).boxed()
