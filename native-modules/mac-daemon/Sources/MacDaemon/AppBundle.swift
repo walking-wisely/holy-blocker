@@ -40,9 +40,11 @@ public struct BundleIdentity: Equatable, Sendable {
         build: "1",
         minimumSystemVersion: "14.0")
 
+#if HOLY_BLOCKER_DEV_BUILD
     /// The development build. A separate identifier and file name keep it from sharing a TCC grant,
     /// an install path or a launchd label with the release build, per decision 6 in
-    /// docs/decisions/mvp-scope.md. It is never signed with the release identity.
+    /// docs/decisions/mvp-scope.md. It is never signed with the release identity. Compiled only
+    /// into the development configuration, so a release binary does not carry the identifier.
     public static let development = BundleIdentity(
         identifier: "com.holyblocker.daemon.dev",
         name: "Holy Blocker Dev",
@@ -53,17 +55,31 @@ public struct BundleIdentity: Equatable, Sendable {
         bundleFileName: "HolyBlockerDaemonDev.app")
 
     public static let developmentSigningIdentity = "Holy Blocker Dev"
+#endif
 
     public func permitsSigning(with identity: String) -> Bool {
+#if HOLY_BLOCKER_DEV_BUILD
         guard self == .development else { return true }
         return identity == "-" || identity == Self.developmentSigningIdentity
+#else
+        true
+#endif
     }
 
     public static func running(bundleIdentifier: String?) -> BundleIdentity {
-        bundleIdentifier == development.identifier ? .development : .holyBlocker
+#if HOLY_BLOCKER_DEV_BUILD
+        if bundleIdentifier == development.identifier { return .development }
+#endif
+        return .holyBlocker
     }
 
-    private var isDevelopment: Bool { self == .development }
+    private var isDevelopment: Bool {
+#if HOLY_BLOCKER_DEV_BUILD
+        self == .development
+#else
+        false
+#endif
+    }
     private var suffix: String { isDevelopment ? "-dev" : "" }
 
     public var daemonLabel: String { identifier }
@@ -80,7 +96,9 @@ public struct BundleIdentity: Equatable, Sendable {
     public static func forFlavor(_ flavor: String?) -> BundleIdentity? {
         switch flavor {
         case nil, "release": return .holyBlocker
+#if HOLY_BLOCKER_DEV_BUILD
         case "development": return .development
+#endif
         default: return nil
         }
     }

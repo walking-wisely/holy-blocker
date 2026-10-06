@@ -1,3 +1,4 @@
+#if HOLY_BLOCKER_DEV_BUILD
 import Foundation
 import Testing
 
@@ -119,3 +120,4 @@ struct DevelopmentInfoPlistTests {
         #expect(entries?["CFBundleName"] as? String == "Holy Blocker Dev")
     }
 }
+#endif

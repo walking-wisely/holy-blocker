@@ -32,7 +32,7 @@ let usage = """
                                         classify a synthetic frame with the real ONNX model
       bundle <output-dir> [identity] [ffi-lib-dir] [model] [blocklist-dir] [blocklist-key-dir]
                                         assemble and sign HolyBlockerDaemon.app (default: ad-hoc);
-                                        HOLY_BLOCKER_BUNDLE_FLAVOR=development builds HolyBlockerDaemonDev.app
+                                        HOLY_BLOCKER_BUNDLE_FLAVOR=development builds the development bundle
       bundle-status                     report our own bundle and whether its grants will last
       launchd-plist <daemon|agent>      print the launchd job definition for one half
       run <proxy-binary> <proxy-dir>    supervise the proxy: launch, wait, route, restore on exit
@@ -45,9 +45,6 @@ let usage = """
                                         (default: /Library/Application Support/HolyBlocker, or HolyBlockerDev for the development bundle)
       HOLY_BLOCKER_PROXY_HOST           proxy listen host for `run` (default: 127.0.0.1)
       HOLY_BLOCKER_PROXY_PORT           proxy listen port for `run` (default: 8080)
-      HOLY_BLOCKER_ALLOW_NO_BLOCKLIST   set to 1 to let `bundle` assemble without a signed domain
-                                        list and `run` route traffic without one; without it both
-                                        refuse. Development only
       HOLY_BLOCKER_IMAGE_THRESHOLD      explicit score at or above which an image is blocked;
                                         required to enable image scanning, no built-in default —
                                         unset or unparseable degrades to allow-everything, the
@@ -105,14 +102,15 @@ func runSupervisor(binary: URL, workingDirectory: URL) throws {
     let configuration = ProxyConfiguration(runner: runner, snapshotPath: snapshotPath)
     let blocklist = ProxyBlocklist.resolve(resources: Bundle.main.resourceURL)
     guard
-        let proxyArguments = ProxyBlocklistPolicy(environment: ProcessInfo.processInfo.environment)
-            .arguments(for: blocklist)
+        let proxyArguments = ProxyBlocklistPolicy(
+            environment: ProcessInfo.processInfo.environment, identity: runningIdentity
+        ).arguments(for: blocklist)
     else {
         fail(
-            "no usable signed domain blocklist in the bundle; refusing to route traffic "
-                + "(\(ProxyBlocklistPolicy.allowMissingVariable)=1 allows it for development)")
+            "no usable signed domain blocklist in the bundle; refusing to route traffic"
+                + ProxyBlocklistPolicy.overrideHint)
     }
-    print(proxyArguments.isEmpty ? "domain blocklist: off (development override)" : "domain blocklist: bundled list")
+    print(proxyArguments.isEmpty ? "domain blocklist: off" : "domain blocklist: bundled list")
     let supervisor = ProxySupervisor(
         host: proxyHost,
         port: proxyPort,
@@ -722,11 +720,12 @@ do {
             try ProxyBlocklist.stage(
                 artifactDirectory: URL(fileURLWithPath: rest[4]),
                 keyDirectory: URL(fileURLWithPath: rest[5]), into: layout.resources)
-        } else if ProxyBlocklistPolicy(environment: ProcessInfo.processInfo.environment) == .required {
+        } else if ProxyBlocklistPolicy(
+            environment: ProcessInfo.processInfo.environment, identity: identity) == .required {
             try? FileManager.default.removeItem(at: root)
             fail(
-                "no domain blocklist given; pass <blocklist-dir> <blocklist-key-dir> "
-                    + "(\(ProxyBlocklistPolicy.allowMissingVariable)=1 allows a development bundle)")
+                "no domain blocklist given; pass <blocklist-dir> <blocklist-key-dir>"
+                    + ProxyBlocklistPolicy.overrideHint)
         } else {
             print("warning: no domain blocklist given — the proxy will not start without the override")
         }
@@ -735,7 +734,11 @@ do {
         let signingIdentity = rest.count > 1 ? rest[1] : "-"
         guard identity.permitsSigning(with: signingIdentity) else {
             try? FileManager.default.removeItem(at: root)
+#if HOLY_BLOCKER_DEV_BUILD
             fail("the development bundle may only be signed ad-hoc or with \(BundleIdentity.developmentSigningIdentity)")
+#else
+            fail("signing identity not permitted")
+#endif
         }
         try CodeSigning(runner: runner).sign(
             bundle: root, identity: signingIdentity,

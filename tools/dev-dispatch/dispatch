@@ -24,6 +24,7 @@ readonly LOG_MAX_BYTES=262144
 readonly LOG_ARGS_MAX=300
 readonly SYSTEM_KEYCHAIN=/Library/Keychains/System.keychain
 readonly DAEMON_LABEL=com.holyblocker.daemon
+readonly RELEASE_BUNDLE_ID=com.holyblocker.daemon
 readonly DAEMON_PLIST=/Library/LaunchDaemons/com.holyblocker.daemon.plist
 
 die() {
@@ -99,6 +100,12 @@ verify_signature() {
   [[ "$actual" == "$pin" ]] || die "not signed by the pinned development certificate" 65
 }
 
+require_release_bundle_id() {
+  local raw
+  raw="$(plutil -extract CFBundleIdentifier raw -o - "$1/Contents/Info.plist" 2>/dev/null && printf x)" || return 1
+  [[ "$raw" == "$RELEASE_BUNDLE_ID"$'\nx' ]]
+}
+
 ca_certificate_ok() {
   local cert="$1" subject
   [[ -f "$cert" && ! -L "$cert" ]] || return 1
@@ -171,6 +178,7 @@ verb_stage_app() {
   [[ -d "$source" ]] || die "expected a directory" 65
   make_scratch
   copy_to_root_owned "$source" "$SCRATCH" "$APP_NAME"
+  require_release_bundle_id "$SCRATCH/$APP_NAME" || die "not the release bundle identifier $RELEASE_BUNDLE_ID" 65
   verify_signature "$SCRATCH/$APP_NAME"
   swap_into_place "$SCRATCH/$APP_NAME" "$APP_DEST"
 }
@@ -230,6 +238,7 @@ verb_ca_remove() {
 
 verb_daemon_bootstrap() {
   [[ -x "$APP_EXECUTABLE" && -x "$PROXY_DEST" ]] || die "stage the app and the proxy first" 69
+  require_release_bundle_id "$APP_DEST" || die "staged app is not the release bundle identifier $RELEASE_BUNDLE_ID" 65
   verify_signature "$APP_DEST"
   verify_signature "$PROXY_DEST"
   make_scratch
