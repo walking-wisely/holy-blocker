@@ -111,6 +111,17 @@ check "ca: two-certificate bundle rejected"       not in_dispatch ca_certificate
 check "ca: CA:TRUE only in a comment rejected"    not in_dispatch ca_certificate_ok "$sandbox/trick.pem"
 check "ca: junk rejected"                         not in_dispatch ca_certificate_ok "$sandbox/junk.pem"
 
+explicit_key="$sandbox/explicit.key"
+named_key="$sandbox/named.key"
+/usr/bin/openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:prime256v1 -pkeyopt ec_param_enc:explicit -out "$explicit_key" >/dev/null 2>&1
+in_dispatch generate_ec_key "$named_key"
+ec_cert() { /usr/bin/openssl req -new -x509 -key "$1" -days 1 -config "$sandbox/ca.cnf" -out "$2" >/dev/null 2>&1; }
+ec_cert "$explicit_key" "$sandbox/explicit.pem"
+ec_cert "$named_key" "$sandbox/named.pem"
+check "ca key: named-curve certificate accepted"   in_dispatch certificate_uses_named_curve "$sandbox/named.pem"
+check "ca key: explicit-parameter certificate rejected" not in_dispatch certificate_uses_named_curve "$sandbox/explicit.pem"
+check "ca key: generated key yields a named curve" test -s "$named_key"
+
 check "user: plain name accepted"     in_install valid_username dev_user1
 check "user: empty rejected"          not in_install valid_username ""
 check "user: space rejected"          not in_install valid_username "a b"

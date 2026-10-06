@@ -123,8 +123,19 @@ bounded_args() {
   echo "${text:0:$LOG_ARGS_MAX}"
 }
 
+generate_ec_key() {
+  openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:prime256v1 -pkeyopt ec_param_enc:named_curve -out "$1"
+}
+
+certificate_uses_named_curve() {
+  local text
+  text="$(openssl x509 -in "$1" -noout -text 2>/dev/null)" || return 1
+  grep -q 'ASN1 OID: prime256v1' <<<"$text" && ! grep -q 'Field Type' <<<"$text"
+}
+
 ca_files_usable() {
   [[ -f "$CA_DIR/ca.crt" && -f "$CA_DIR/ca.key" ]] || return 1
+  certificate_uses_named_curve "$CA_DIR/ca.crt" || return 1
   [[ "$(stat -f %u "$CA_DIR/ca.crt")" -eq 0 && "$(stat -f %u "$CA_DIR/ca.key")" -eq 0 ]] || return 1
   openssl x509 -in "$CA_DIR/ca.crt" -noout -checkend 86400 >/dev/null 2>&1
 }
@@ -193,7 +204,7 @@ CN = $CA_NAME
 basicConstraints = critical,CA:TRUE
 keyUsage = critical,keyCertSign,cRLSign
 CNF
-  openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:prime256v1 -out "$SCRATCH/ca.key"
+  generate_ec_key "$SCRATCH/ca.key"
   openssl req -new -x509 -key "$SCRATCH/ca.key" -days "$CA_VALID_DAYS" -config "$SCRATCH/ca.cnf" -out "$SCRATCH/ca.crt"
   install -d -m 755 -o root -g wheel "$STATE_DIR" "$STATE_DIR/data" "$CA_DIR"
   install -m 600 -o root -g wheel "$SCRATCH/ca.key" "$CA_DIR/ca.key"
