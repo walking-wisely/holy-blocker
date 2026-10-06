@@ -31,7 +31,8 @@ let usage = """
       image-scan <model.onnx> <sexy-threshold> <explicit-threshold> [size]
                                         classify a synthetic frame with the real ONNX model
       bundle <output-dir> [identity] [ffi-lib-dir] [model] [blocklist-dir] [blocklist-key-dir]
-                                        assemble and sign HolyBlockerDaemon.app (default: ad-hoc)
+                                        assemble and sign HolyBlockerDaemon.app (default: ad-hoc);
+                                        HOLY_BLOCKER_BUNDLE_FLAVOR=development builds HolyBlockerDaemonDev.app
       bundle-status                     report our own bundle and whether its grants will last
       launchd-plist <daemon|agent>      print the launchd job definition for one half
       run <proxy-binary> <proxy-dir>    supervise the proxy: launch, wait, route, restore on exit
@@ -41,7 +42,7 @@ let usage = """
 
     Environment:
       HOLY_BLOCKER_STATE_DIR            where the proxy snapshot is stored
-                                        (default: /Library/Application Support/HolyBlocker)
+                                        (default: /Library/Application Support/HolyBlocker, or HolyBlockerDev for the development bundle)
       HOLY_BLOCKER_PROXY_HOST           proxy listen host for `run` (default: 127.0.0.1)
       HOLY_BLOCKER_PROXY_PORT           proxy listen port for `run` (default: 8080)
       HOLY_BLOCKER_ALLOW_NO_BLOCKLIST   set to 1 to let `bundle` assemble without a signed domain
@@ -56,9 +57,10 @@ let usage = """
                                         scanning at all — see that variable
     """
 
+let runningIdentity = BundleIdentity.running(bundleIdentifier: Bundle.main.bundleIdentifier)
 let stateDirectory = URL(
     fileURLWithPath: ProcessInfo.processInfo.environment["HOLY_BLOCKER_STATE_DIR"]
-        ?? "/Library/Application Support/HolyBlocker")
+        ?? runningIdentity.stateDirectoryPath)
 let snapshotPath = stateDirectory.appendingPathComponent("proxy-snapshot.json")
 
 /// A threshold belongs to a model *and* a geometry, so there is no value this binary can supply
@@ -667,9 +669,12 @@ do {
     case "bundle":
         guard let outputDirectory = rest.first else { fail("expected <output-dir> [identity]") }
         guard let executable = Bundle.main.executableURL else { fail("cannot locate own binary") }
-        let identity = BundleIdentity.holyBlocker
+        let flavor = ProcessInfo.processInfo.environment["HOLY_BLOCKER_BUNDLE_FLAVOR"]
+        guard let identity = BundleIdentity.forFlavor(flavor) else {
+            fail("HOLY_BLOCKER_BUNDLE_FLAVOR must be release or development")
+        }
         let root = URL(fileURLWithPath: outputDirectory)
-            .appendingPathComponent("HolyBlockerDaemon.app")
+            .appendingPathComponent(identity.bundleFileName)
 
         // The UniFFI dylib the daemon links. `rest[2]` is where scripts/build-ffi.sh staged it;
         // a missing one is reported rather than skipped silently, since the bundle would assemble
@@ -723,6 +728,10 @@ do {
         // Ad-hoc by default so the bundle is runnable with no certificate — but ad-hoc is exactly
         // the identity that does not survive a rebuild, so say so rather than leave it implied.
         let signingIdentity = rest.count > 1 ? rest[1] : "-"
+        guard identity.permitsSigning(with: signingIdentity) else {
+            try? FileManager.default.removeItem(at: root)
+            fail("the development bundle may only be signed ad-hoc or with \(BundleIdentity.developmentSigningIdentity)")
+        }
         try CodeSigning(runner: runner).sign(
             bundle: root, identity: signingIdentity,
             nestedCode: try AppBundle.nestedCode(in: layout))
@@ -745,15 +754,15 @@ do {
 
     case "launchd-plist":
         guard let half = rest.first else { fail("expected <daemon|agent>") }
-        let executable = URL(fileURLWithPath: "/Applications/HolyBlockerDaemon.app")
-            .appendingPathComponent("Contents/MacOS/\(BundleIdentity.holyBlocker.executableName)")
+        let executable = URL(fileURLWithPath: runningIdentity.installPath)
+            .appendingPathComponent("Contents/MacOS/\(runningIdentity.executableName)")
         let job: LaunchdJob
         switch half {
         case "daemon":
             job = LaunchdJob.daemon(
-                label: "com.holyblocker.daemon", executable: executable,
-                arguments: ["run", "/usr/local/bin/mitm-proxy", "/Library/Application Support/HolyBlocker"],
-                logPath: URL(fileURLWithPath: "/var/log/holy-blocker-daemon.log"))
+                label: runningIdentity.daemonLabel, executable: executable,
+                arguments: ["run", "/usr/local/bin/mitm-proxy", runningIdentity.stateDirectoryPath],
+                logPath: URL(fileURLWithPath: "/var/log/\(runningIdentity.daemonLogName)"))
         case "agent":
             // The agent reads HOLY_BLOCKER_IMAGE_THRESHOLD/HOLY_BLOCKER_IMAGE_SEXY_THRESHOLD from
             // its own process environment, and a LaunchAgent's environment comes from its plist,
@@ -767,10 +776,10 @@ do {
                 }
             }
             job = LaunchdJob.agent(
-                label: "com.holyblocker.agent", executable: executable, arguments: ["agent"],
+                label: runningIdentity.agentLabel, executable: executable, arguments: ["agent"],
                 home: FileManager.default.homeDirectoryForCurrentUser, uid: getuid(),
                 logPath: FileManager.default.homeDirectoryForCurrentUser
-                    .appendingPathComponent("Library/Logs/holy-blocker-agent.log"),
+                    .appendingPathComponent("Library/Logs/\(runningIdentity.agentLogName)"),
                 environment: agentEnvironment)
         default:
             fail("expected <daemon|agent>")

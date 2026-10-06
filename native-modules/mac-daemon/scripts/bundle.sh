@@ -51,4 +51,6 @@ else
 fi
 
 echo
-echo "next: $OUTPUT/HolyBlockerDaemon.app/Contents/MacOS/holy-blocker-macd bundle-status"
+APP="HolyBlockerDaemon.app"
+[[ "${HOLY_BLOCKER_BUNDLE_FLAVOR:-release}" == "development" ]] && APP="HolyBlockerDaemonDev.app"
+echo "next: $OUTPUT/$APP/Contents/MacOS/holy-blocker-macd bundle-status"

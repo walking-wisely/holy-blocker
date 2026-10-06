@@ -1,0 +1,10 @@
+id = "mac-daemon.dev-build-hardening"
+title = "Dev build edges: make dev-dispatch refuse or handle the dev bundle explicitly, tie HOLY_BLOCKER_ALLOW_NO_BLOCKLIST to the development flavor, and keep the dev identifier out of the release binary once a bypass exists"
+status = "pending"
+evidence = ""
+acceptance = "code"
+verify = "./scripts/test.sh from native-modules/mac-daemon"
+kind = "bug"
+regressed_step = "mac-daemon.dev-build"
+group = "dev-build"
+depends_on = ["mac-daemon.dev-kill-switch"]
