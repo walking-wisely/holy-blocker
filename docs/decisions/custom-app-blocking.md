@@ -135,6 +135,8 @@ neither platform has a per-app check. Measured 2026-10-05:
       `blocklist.rs`), exposed to Android over the existing UniFFI wrapper and to the macOS proxy
       through its own step. This is a cross-platform contract, so it is an owner question
       (owner question 2).
+    - A name under a private suffix (`github.io`, `blogspot.com`) never matches: its leading label
+      belongs to a tenant, not to the service. Owner answer 2026-10-06.
     - Heuristic by design: it misses a service whose domains do not carry its name, and it can
       block an unrelated site that does. It is sufficient for the MVP and revisited afterwards.
 13. **Data stays on the device and is not logged.**

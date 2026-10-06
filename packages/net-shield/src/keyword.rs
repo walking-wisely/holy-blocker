@@ -64,9 +64,21 @@ pub fn normalize_token(raw: &str) -> Option<String> {
     usable.then_some(token)
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct KeywordRules {
     tokens: Vec<String>,
+}
+
+impl std::fmt::Debug for KeywordRules {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("KeywordRules")
+            .field("tokens", &format_args!("<{} redacted>", self.tokens.len()))
+            .finish()
+    }
+}
+
+fn under_private_suffix(normalized: &str) -> bool {
+    psl::suffix(normalized.as_bytes()).is_some_and(|s| s.typ() == Some(psl::Type::Private))
 }
 
 impl KeywordRules {
@@ -86,9 +98,10 @@ impl KeywordRules {
     }
 
     /// `normalized` must be the output of `domain_normalize::normalize`. A name that is itself a
-    /// public suffix has no label to match.
+    /// public suffix has no label to match, and a name under a private suffix (`github.io`,
+    /// `blogspot.com`) never matches: its leading label belongs to a tenant, not to the service.
     pub fn matches(&self, normalized: &str) -> Option<KeywordMatch> {
-        if self.tokens.is_empty() {
+        if self.tokens.is_empty() || under_private_suffix(normalized) {
             return None;
         }
         let registrable = psl::domain_str(normalized)?;
@@ -211,6 +224,31 @@ mod tests {
     fn exact_wins_over_contains_across_tokens() {
         let r = rules(&["instagram", "cdninstagram"]);
         assert_eq!(r.matches("cdninstagram.com"), Some(KeywordMatch::Exact));
+    }
+
+    #[test]
+    fn a_name_under_a_private_suffix_never_matches() {
+        let r = rules(&["instagram"]);
+        for name in [
+            "instagram.github.io",
+            "cdninstagram.github.io",
+            "foo.instagram.blogspot.com",
+            "instagram.s3.amazonaws.com",
+        ] {
+            assert_eq!(r.matches(name), None, "{name}");
+        }
+        assert_eq!(r.matches("instagram.com"), Some(KeywordMatch::Exact));
+    }
+
+    #[test]
+    fn debug_output_does_not_contain_the_tokens() {
+        let r = rules(&["instagram", "telegram"]);
+        let shown = format!("{r:?}");
+        assert!(
+            !shown.contains("instagram") && !shown.contains("telegram"),
+            "{shown}"
+        );
+        assert!(shown.contains('2'), "{shown}");
     }
 
     #[test]
