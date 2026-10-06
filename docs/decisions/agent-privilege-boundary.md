@@ -67,6 +67,16 @@ The security boundary is a **fixed list of operations**, not a transport.
 
 ## Limits
 
+- **The boundary is as strong as the signing key's protection.** `stage-app` and `stage-proxy`
+  accept anything signed by the pinned `Holy Blocker Dev` certificate, and a staged binary runs as
+  root. The key lives in the login keychain, so whatever runs as the development user can sign
+  with it unless the key requires a prompt per use. The owner accepted this: the development
+  machine is not a client machine and is treated as secure, so the dispatcher does not make a
+  misled agent harmless; it only removes the free-form root shell.
+- **The CA is created by root, not by the agent.** `ca-generate` writes the key and certificate
+  under the root-owned state directory and `ca-install` takes no path, so no user-minted
+  certificate can be trusted through the dispatcher.
+
 - **Dev machine only.** The development account is in the `admin` group, which is the
   unprotected configuration for the product's own tamper model. This setup must never ship and
   must not be mistaken for the product's privileged helper.

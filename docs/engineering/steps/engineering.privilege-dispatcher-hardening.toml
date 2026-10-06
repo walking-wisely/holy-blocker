@@ -1,0 +1,7 @@
+id = "engineering.privilege-dispatcher-hardening"
+title = "privilege dispatcher follow-ups: verb tests, uninstall, nested-code pin, substring matches"
+status = "pending"
+evidence = ""
+acceptance = "code"
+verify = "tools/dev-dispatch/test.sh"
+kind = "bug"
