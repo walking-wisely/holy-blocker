@@ -109,7 +109,7 @@ val checkReleaseBlocklist by tasks.registering {
         if (keys.isEmpty()) {
             throw GradleException("A release build needs -PblocklistTrustedKeyDir holding at least one <key id>.pub.")
         }
-        val devKeys = keys.filter { it.startsWith("dev") }
+        val devKeys = keys.filter { it.startsWith("dev", ignoreCase = true) }
         if (devKeys.isNotEmpty()) {
             throw GradleException("A release build must not trust development keys: $devKeys")
         }
