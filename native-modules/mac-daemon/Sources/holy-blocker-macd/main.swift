@@ -31,7 +31,8 @@ let usage = """
       image-scan <model.onnx> <sexy-threshold> <explicit-threshold> [size]
                                         classify a synthetic frame with the real ONNX model
       bundle <output-dir> [identity] [ffi-lib-dir] [model] [blocklist-dir] [blocklist-key-dir]
-                                        assemble and sign HolyBlockerDaemon.app (default: ad-hoc)
+                                        assemble and sign HolyBlockerDaemon.app (default: ad-hoc);
+                                        HOLY_BLOCKER_BUNDLE_FLAVOR=development builds HolyBlockerDaemonDev.app
       bundle-status                     report our own bundle and whether its grants will last
       launchd-plist <daemon|agent>      print the launchd job definition for one half
       run <proxy-binary> <proxy-dir>    supervise the proxy: launch, wait, route, restore on exit
@@ -667,9 +668,12 @@ do {
     case "bundle":
         guard let outputDirectory = rest.first else { fail("expected <output-dir> [identity]") }
         guard let executable = Bundle.main.executableURL else { fail("cannot locate own binary") }
-        let identity = BundleIdentity.holyBlocker
+        let flavor = ProcessInfo.processInfo.environment["HOLY_BLOCKER_BUNDLE_FLAVOR"]
+        guard let identity = BundleIdentity.forFlavor(flavor) else {
+            fail("HOLY_BLOCKER_BUNDLE_FLAVOR must be release or development")
+        }
         let root = URL(fileURLWithPath: outputDirectory)
-            .appendingPathComponent("HolyBlockerDaemon.app")
+            .appendingPathComponent(identity.bundleFileName)
 
         // The UniFFI dylib the daemon links. `rest[2]` is where scripts/build-ffi.sh staged it;
         // a missing one is reported rather than skipped silently, since the bundle would assemble

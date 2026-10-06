@@ -10,6 +10,7 @@ public struct BundleIdentity: Equatable, Sendable {
     public let version: String
     public let build: String
     public let minimumSystemVersion: String
+    public let bundleFileName: String
 
     public init(
         identifier: String,
@@ -17,7 +18,8 @@ public struct BundleIdentity: Equatable, Sendable {
         executableName: String,
         version: String,
         build: String,
-        minimumSystemVersion: String
+        minimumSystemVersion: String,
+        bundleFileName: String = "HolyBlockerDaemon.app"
     ) {
         self.identifier = identifier
         self.name = name
@@ -25,6 +27,7 @@ public struct BundleIdentity: Equatable, Sendable {
         self.version = version
         self.build = build
         self.minimumSystemVersion = minimumSystemVersion
+        self.bundleFileName = bundleFileName
     }
 
     /// The shipping identity. Changing `identifier` orphans every existing grant, so it is a
@@ -36,6 +39,28 @@ public struct BundleIdentity: Equatable, Sendable {
         version: "0.1.0",
         build: "1",
         minimumSystemVersion: "14.0")
+
+    /// The development build. A separate identifier and file name keep it from sharing a TCC grant,
+    /// an install path or a launchd label with the release build, per decision 6 in
+    /// docs/decisions/mvp-scope.md. It is never signed with the release identity.
+    public static let development = BundleIdentity(
+        identifier: "com.holyblocker.daemon.dev",
+        name: "Holy Blocker Dev",
+        executableName: "holy-blocker-macd",
+        version: "0.1.0",
+        build: "1",
+        minimumSystemVersion: "14.0",
+        bundleFileName: "HolyBlockerDaemonDev.app")
+
+    /// `nil` selects release. An unrecognised value yields `nil` so a typo cannot silently
+    /// produce a release bundle.
+    public static func forFlavor(_ flavor: String?) -> BundleIdentity? {
+        switch flavor {
+        case nil, "release": return .holyBlocker
+        case "development": return .development
+        default: return nil
+        }
+    }
 }
 
 /// Where each piece of an assembled `.app` lives.

@@ -27,6 +27,7 @@ public struct SuppressionPolicy: Sendable {
     /// SystemUIServer for the same reason one level down: they are the shell, not content.
     public static let defaultProtected: Set<String> = [
         "com.holyblocker.daemon",
+        "com.holyblocker.daemon.dev",
         "com.apple.finder",
         "com.apple.dock",
         "com.apple.systemuiserver",
