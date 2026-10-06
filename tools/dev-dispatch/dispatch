@@ -1,0 +1,203 @@
+#!/bin/bash
+set -euo pipefail
+PATH=/usr/bin:/bin:/usr/sbin:/sbin
+umask 022
+
+readonly LIBEXEC=/usr/local/libexec/holy-blocker
+readonly PIN_FILE="$LIBEXEC/trusted-cert.sha256"
+readonly DROPIN=/etc/sudoers.d/holy-blocker
+readonly LOG_FILE=/var/log/holy-blocker-dispatch.log
+readonly APP_DEST=/Applications/HolyBlockerDaemon.app
+readonly APP_NAME=HolyBlockerDaemon.app
+readonly APP_EXECUTABLE="$APP_DEST/Contents/MacOS/holy-blocker-macd"
+readonly PROXY_DEST=/usr/local/bin/mitm-proxy
+readonly PROXY_NAME=mitm-proxy
+readonly CA_SUBJECT="CN=Holy Blocker Local CA"
+readonly CA_NAME="Holy Blocker Local CA"
+readonly CA_MAX_BYTES=65536
+readonly SYSTEM_KEYCHAIN=/Library/Keychains/System.keychain
+readonly DAEMON_LABEL=com.holyblocker.daemon
+readonly DAEMON_PLIST=/Library/LaunchDaemons/com.holyblocker.daemon.plist
+
+die() {
+  echo "dispatch: $*" >&2
+  exit "${2:-1}"
+}
+
+check_usage() {
+  local verb="${1:-}"
+  shift || true
+  case "$verb" in
+    stage-app | stage-proxy | ca-install) [[ $# -eq 1 ]] ;;
+    ca-remove | daemon-bootstrap | daemon-bootout | status | revoke) [[ $# -eq 0 ]] ;;
+    *) return 1 ;;
+  esac
+}
+
+caller_home() {
+  dscl . -read "/Users/$SUDO_USER" NFSHomeDirectory | sed 's/^NFSHomeDirectory: //'
+}
+
+resolve_user_path() {
+  local raw="$1"
+  [[ -n "$raw" && "$raw" == /* && "$raw" != *$'\n'* ]] || return 1
+  [[ ! -L "$raw" && -e "$raw" ]] || return 1
+  local resolved home
+  resolved="$(realpath "$raw")"
+  home="$(realpath "$(caller_home)")"
+  [[ "$resolved" == "$home"/* ]] || return 1
+  echo "$resolved"
+}
+
+require_basename() {
+  [[ "$(basename "$1")" == "$2" ]]
+}
+
+read_pin() {
+  local content
+  content="$(cat "$1" 2>/dev/null)" || return 1
+  [[ "$content" =~ ^[0-9a-f]{64}$ ]] || return 1
+  echo "$content"
+}
+
+log_line() {
+  printf '%s caller=%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${SUDO_USER:-unknown}" "$*" >>"$LOG_FILE"
+}
+
+leaf_certificate_hash() {
+  local signed="$1" workdir
+  workdir="$(mktemp -d "$LIBEXEC/cert.XXXXXX")"
+  (cd "$workdir" && codesign -d --extract-certificates "$signed" >/dev/null 2>&1) || true
+  if [[ -f "$workdir/codesign0" ]]; then
+    shasum -a 256 "$workdir/codesign0" | cut -d' ' -f1
+  fi
+  rm -rf "$workdir"
+}
+
+verify_signature() {
+  local signed="$1" pin actual
+  pin="$(read_pin "$PIN_FILE")" || die "no valid pinned certificate at $PIN_FILE" 78
+  codesign --verify --deep --strict "$signed" >/dev/null 2>&1 || die "signature does not verify" 65
+  actual="$(leaf_certificate_hash "$signed")"
+  [[ "$actual" == "$pin" ]] || die "not signed by the pinned development certificate" 65
+}
+
+ca_certificate_ok() {
+  local cert="$1" size subject
+  [[ -f "$cert" && ! -L "$cert" ]] || return 1
+  size="$(wc -c <"$cert")"
+  [[ "$size" -gt 0 && "$size" -le "$CA_MAX_BYTES" ]] || return 1
+  subject="$(openssl x509 -in "$cert" -noout -subject -nameopt RFC2253 2>/dev/null | sed 's/^subject= *//')" || return 1
+  [[ "$subject" == "$CA_SUBJECT" ]] || return 1
+  openssl x509 -in "$cert" -noout -text 2>/dev/null | grep -q 'CA:TRUE'
+}
+
+need_user_path() {
+  [[ -n "${SUDO_USER:-}" ]] || die "must be called through sudo" 77
+  resolve_user_path "$1" || die "path must be an existing, non-symlink file or directory under the caller's home" 65
+}
+
+copy_to_root_owned() {
+  local source="$1" scratch="$2" name="$3"
+  ditto "$source" "$scratch/$name"
+  chown -R root:wheel "$scratch/$name"
+  chmod -R go-w "$scratch/$name"
+}
+
+swap_into_place() {
+  local staged="$1" dest="$2" previous="$2.previous"
+  rm -rf "$previous"
+  [[ ! -e "$dest" ]] || mv "$dest" "$previous"
+  mv "$staged" "$dest"
+  rm -rf "$previous"
+}
+
+verb_stage_app() {
+  local source scratch
+  source="$(need_user_path "$1")"
+  require_basename "$source" "$APP_NAME" || die "expected a bundle named $APP_NAME" 65
+  [[ -d "$source" ]] || die "expected a directory" 65
+  scratch="$(mktemp -d "$LIBEXEC/stage.XXXXXX")"
+  copy_to_root_owned "$source" "$scratch" "$APP_NAME"
+  verify_signature "$scratch/$APP_NAME"
+  swap_into_place "$scratch/$APP_NAME" "$APP_DEST"
+  rm -rf "$scratch"
+}
+
+verb_stage_proxy() {
+  local source scratch
+  source="$(need_user_path "$1")"
+  require_basename "$source" "$PROXY_NAME" || die "expected a file named $PROXY_NAME" 65
+  [[ -f "$source" ]] || die "expected a regular file" 65
+  scratch="$(mktemp -d "$LIBEXEC/stage.XXXXXX")"
+  copy_to_root_owned "$source" "$scratch" "$PROXY_NAME"
+  chmod 755 "$scratch/$PROXY_NAME"
+  verify_signature "$scratch/$PROXY_NAME"
+  swap_into_place "$scratch/$PROXY_NAME" "$PROXY_DEST"
+  rm -rf "$scratch"
+}
+
+verb_ca_install() {
+  local source scratch
+  source="$(need_user_path "$1")"
+  scratch="$(mktemp -d "$LIBEXEC/stage.XXXXXX")"
+  cp "$source" "$scratch/ca.pem"
+  chown root:wheel "$scratch/ca.pem"
+  ca_certificate_ok "$scratch/ca.pem" || die "not the expected Holy Blocker CA certificate" 65
+  security add-trusted-cert -d -r trustRoot -k "$SYSTEM_KEYCHAIN" "$scratch/ca.pem"
+  rm -rf "$scratch"
+}
+
+verb_ca_remove() {
+  local removed=0
+  while security delete-certificate -c "$CA_NAME" -t "$SYSTEM_KEYCHAIN" >/dev/null 2>&1; do
+    removed=$((removed + 1))
+  done
+  echo "removed $removed certificate(s) named \"$CA_NAME\""
+}
+
+verb_daemon_bootstrap() {
+  [[ -x "$APP_EXECUTABLE" && -x "$PROXY_DEST" ]] || die "stage the app and the proxy first" 69
+  verify_signature "$APP_DEST"
+  verify_signature "$PROXY_DEST"
+  local scratch
+  scratch="$(mktemp -d "$LIBEXEC/stage.XXXXXX")"
+  "$APP_EXECUTABLE" launchd-plist daemon | sed -n '/^<?xml/,$p' >"$scratch/job.plist"
+  plutil -lint "$scratch/job.plist" >/dev/null
+  install -m 644 -o root -g wheel "$scratch/job.plist" "$DAEMON_PLIST"
+  rm -rf "$scratch"
+  launchctl bootout "system/$DAEMON_LABEL" >/dev/null 2>&1 || true
+  launchctl bootstrap system "$DAEMON_PLIST"
+}
+
+verb_daemon_bootout() {
+  launchctl bootout "system/$DAEMON_LABEL" >/dev/null 2>&1 || true
+  rm -f "$DAEMON_PLIST"
+}
+
+verb_status() {
+  [[ -f "$PIN_FILE" ]] && echo "pin: present" || echo "pin: missing"
+  [[ -d "$APP_DEST" ]] && echo "app: staged" || echo "app: not staged"
+  [[ -x "$PROXY_DEST" ]] && echo "proxy: staged" || echo "proxy: not staged"
+  if launchctl print "system/$DAEMON_LABEL" >/dev/null 2>&1; then echo "daemon: loaded"; else echo "daemon: not loaded"; fi
+  if security find-certificate -c "$CA_NAME" "$SYSTEM_KEYCHAIN" >/dev/null 2>&1; then echo "ca: installed"; else echo "ca: absent"; fi
+}
+
+verb_revoke() {
+  rm -f "$DROPIN"
+}
+
+main() {
+  local verb="${1:-}"
+  check_usage "$@" || die "usage: dispatch <stage-app|stage-proxy|ca-install> <path> | <ca-remove|daemon-bootstrap|daemon-bootout|status|revoke>" 64
+  [[ "$EUID" -eq 0 ]] || die "must run as root through sudo" 77
+  log_line "verb=$verb args=$(printf '%q ' "${@:2}")"
+  local status=0
+  "verb_${verb//-/_}" "${@:2}" || status=$?
+  log_line "verb=$verb exit=$status"
+  return "$status"
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi
