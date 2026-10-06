@@ -28,13 +28,16 @@ identity_certificate_pem() {
   echo "$pem"
 }
 
+scratch=""
+
 install_all() {
   [[ "$EUID" -eq 0 && -n "${SUDO_USER:-}" ]] || { echo "run with sudo" >&2; exit 77; }
   valid_username "$SUDO_USER" || { echo "unsupported user name" >&2; exit 65; }
-  local here home pin scratch
+  local here home pin
   here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  unset TMPDIR
   scratch="$(mktemp -d)"
-  trap 'rm -rf "$scratch"' EXIT
+  trap 'rm -rf "${scratch:-}"' EXIT
   cp "$here/dispatch" "$here/holy-blocker.sudoers.in" "$scratch/"
   home="$(dscl . -read "/Users/$SUDO_USER" NFSHomeDirectory | sed 's/^NFSHomeDirectory: //')"
   local pem

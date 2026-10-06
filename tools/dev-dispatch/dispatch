@@ -131,10 +131,11 @@ ca_files_usable() {
 
 copy_to_root_owned() {
   local source="$1" scratch="$2" name="$3"
-  ditto --noacl --noextattr --norsrc --noqtn "$source" "$SCRATCH/$name"
-  chown -R root:wheel "$SCRATCH/$name"
-  chmod -RN "$SCRATCH/$name"
-  chmod -R u-s,g-s,go-w "$SCRATCH/$name"
+  ditto --noacl --noextattr --norsrc --noqtn "$source" "$scratch/$name"
+  chflags -R nouchg,noschg "$scratch/$name"
+  chown -R root:wheel "$scratch/$name"
+  strip_acls "$scratch/$name"
+  chmod -R u-s,g-s,go-w "$scratch/$name"
 }
 
 swap_into_place() {

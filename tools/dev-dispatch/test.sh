@@ -161,6 +161,14 @@ check "acl: copied file cleared"          test "$(ls -le "$acl_tree/tree/inner" 
 check "acl: symlink target untouched"     test "$(ls -lde "$acl_tree/target" | wc -l)" -eq 2
 
 chmod -N "$acl_tree/target"
+chmod +a "everyone deny delete" "$acl_tree/target"
+call_site="$sandbox/call"
+mkdir -p "$call_site/src" "$call_site/dest"
+ln -s "$acl_tree/target" "$call_site/src/link"
+( source "$here/dispatch"; chown() { :; }; copy_to_root_owned "$call_site/src" "$call_site/dest" copy ) >/dev/null 2>&1
+check "copy: symlink target ACL untouched via the real call site" test "$(ls -lde "$acl_tree/target" | wc -l)" -eq 2
+check "copy: no symlink-following chmod remains" not grep -q 'chmod -RN' "$here/dispatch"
+chmod -N "$acl_tree/target"
 long_args="$(in_dispatch_out bounded_args "$(head -c 2000 /dev/zero | tr '\0' a)" b)"
 check "log: arguments truncated"          test "${#long_args}" -le 300
 
