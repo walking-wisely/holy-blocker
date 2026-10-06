@@ -496,7 +496,7 @@ is required before installation, covering argument smuggling and the copy-and-ve
 Acceptance: `product`. The owner installs it and confirms the verbs behave; no diff review can
 settle that. Verify: `visudo -cf` on the drop-in and the dispatcher's own tests.
 
-The files are in `tools/dev-dispatch/` (`dispatch`, `install.sh`, `holy-blocker.sudoers.in`, `test.sh`). The step stays pending until the owner installs them and confirms the verbs behave.
+The files are in `tools/dev-dispatch/` (`dispatch`, `install.sh`, `holy-blocker.sudoers.in`, `test.sh`). **Done.** The owner installed the dispatcher and confirmed the verbs behave (2026-10-06).
 
 ## What this does not cover
 

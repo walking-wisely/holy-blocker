@@ -1,7 +1,7 @@
 id = "engineering.privilege-dispatcher"
 title = "privileged dispatcher and sudoers drop-in for local e2e"
-status = "pending"
-evidence = ""
+status = "done"
+evidence = "PR #129; owner installed the dispatcher and confirmed the verbs behave on 2026-10-06"
 acceptance = "product"
 depends_on = ["engineering.mandatory-review-gates"]
 verify = "visudo -cf <drop-in>"
