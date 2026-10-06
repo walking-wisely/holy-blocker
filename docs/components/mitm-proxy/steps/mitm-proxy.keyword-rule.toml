@@ -1,7 +1,7 @@
 id = "mitm-proxy.keyword-rule"
 title = "Refuse a CONNECT authority or plain HTTP host that a keyword rule matches"
-status = "pending"
-evidence = ""
+status = "done"
+evidence = "packages/mitm-proxy/src/tunnel.rs ScanHooks::keyword_rules and set_keywords, cli.rs --keyword-file; cargo test green in packages/mitm-proxy"
 acceptance = "code"
 depends_on = ["mitm-proxy.domain-blocklist"]
 verify = "cargo test from packages/mitm-proxy"
