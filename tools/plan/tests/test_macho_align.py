@@ -62,6 +62,28 @@ class AlignStringPoolTests(unittest.TestCase):
         with self.assertRaises(macho_align.AlignError):
             macho_align.align_string_pool(data)
 
+    def test_refuses_a_truncated_load_command_table(self):
+        data, _ = build(stroff=132, strsize=40, sig_off=176)
+        with self.assertRaises(macho_align.AlignError):
+            macho_align.align_string_pool(data[:40])
+
+    def test_refuses_a_zero_sized_load_command(self):
+        data, _ = build(stroff=132, strsize=40, sig_off=176)
+        broken = bytearray(data)
+        struct.pack_into("<I", broken, 32 + 4, 0)
+        with self.assertRaises(macho_align.AlignError):
+            macho_align.align_string_pool(bytes(broken))
+
+    def test_refuses_when_another_blob_starts_in_the_shift_window(self):
+        data, _ = build(stroff=132, strsize=40, sig_off=176)
+        overlapping = bytearray(data)
+        struct.pack_into("<I", overlapping, 32 + 24 + 8, 172)
+        with self.assertRaises(macho_align.AlignError):
+            macho_align.align_string_pool(bytes(overlapping))
+
+    def test_cli_reports_a_missing_file_without_a_traceback(self):
+        self.assertEqual(macho_align.main(["/nonexistent/lib.dylib"]), 1)
+
     def test_cli_rewrites_the_file_in_place(self):
         data, strings = build(stroff=132, strsize=40, sig_off=176)
         with tempfile.TemporaryDirectory() as directory:
