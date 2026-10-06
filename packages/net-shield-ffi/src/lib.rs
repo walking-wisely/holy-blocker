@@ -281,13 +281,19 @@ mod tests {
         guard.set_keywords(vec!["Instagram".into(), "meta".into()]);
         for name in ["instagram.com", "cdninstagram.com"] {
             assert!(
-                matches!(guard.inspect(query_packet(name)), DnsDecision::Blocked { .. }),
+                matches!(
+                    guard.inspect(query_packet(name)),
+                    DnsDecision::Blocked { .. }
+                ),
                 "{name}"
             );
         }
         for name in ["meta.com", "example.com"] {
             assert!(
-                matches!(guard.inspect(query_packet(name)), DnsDecision::Forward { .. }),
+                matches!(
+                    guard.inspect(query_packet(name)),
+                    DnsDecision::Forward { .. }
+                ),
                 "{name}"
             );
         }
@@ -301,8 +307,14 @@ mod tests {
     #[test]
     fn candidate_token_confidence_is_exposed_for_the_panel() {
         let m = |t: &str, n: &str| match_keyword_token(t.into(), n.into());
-        assert_eq!(m("instagram", "www.instagram.com"), Some(KeywordConfidence::High));
-        assert_eq!(m("instagram", "cdninstagram.com"), Some(KeywordConfidence::Medium));
+        assert_eq!(
+            m("instagram", "www.instagram.com"),
+            Some(KeywordConfidence::High)
+        );
+        assert_eq!(
+            m("instagram", "cdninstagram.com"),
+            Some(KeywordConfidence::Medium)
+        );
         assert_eq!(m("instagram", "example.com"), None);
         assert_eq!(m("instagram", "instagram.github.io"), None);
         assert_eq!(m("meta", "meta.com"), None);
@@ -311,7 +323,10 @@ mod tests {
 
     #[test]
     fn token_normalization_is_exposed_for_the_panel() {
-        assert_eq!(normalize_keyword_token("Insta-Gram".into()).as_deref(), Some("instagram"));
+        assert_eq!(
+            normalize_keyword_token("Insta-Gram".into()).as_deref(),
+            Some("instagram")
+        );
         assert_eq!(normalize_keyword_token("meta".into()), None);
         assert_eq!(normalize_keyword_token("Photos".into()), None);
     }
