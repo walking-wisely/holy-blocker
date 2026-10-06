@@ -28,7 +28,9 @@ usage: mitm-proxy [options]
                           slots); requires --blocklist-key
   --blocklist-key <id>:<hex>
                           trusted Ed25519 public key as 64 hex digits; repeatable
-  --keyword-file <path>  app-name tokens, one per line; a host carrying one is refused
+  --keyword-file <path>  app-name tokens, one per line (no comments; non-alphanumerics are
+                          dropped, tokens under 5 characters are ignored); a host
+                          carrying one is refused
   -h, --help             print this message";
 
 #[derive(Debug, Clone, PartialEq)]
