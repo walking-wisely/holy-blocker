@@ -12,6 +12,7 @@ check() {
 
 not() { ! "$@"; }
 in_dispatch() { ( source "$here/dispatch"; "$@" ) >/dev/null 2>&1; }
+in_dispatch_out() { ( source "$here/dispatch"; "$@" ) 2>/dev/null; }
 in_install() { ( source "$here/install.sh"; "$@" ) >/dev/null 2>&1; }
 
 sandbox="$(realpath "$(mktemp -d)")"
@@ -148,6 +149,20 @@ check "log: oversize file rotated"     test -f "$log_probe.1" -a ! -f "$log_prob
 echo small > "$log_probe"
 in_dispatch rotate_log_if_large "$log_probe"
 check "log: small file kept"           test -f "$log_probe"
+
+acl_tree="$sandbox/acl"
+mkdir -p "$acl_tree/tree" "$acl_tree/target"
+touch "$acl_tree/tree/inner"
+chmod +a "everyone deny delete" "$acl_tree/target"
+chmod +a "$(id -un) allow write" "$acl_tree/tree/inner"
+ln -s "$acl_tree/target" "$acl_tree/tree/link"
+in_dispatch strip_acls "$acl_tree/tree"
+check "acl: copied file cleared"          test "$(ls -le "$acl_tree/tree/inner" | wc -l)" -eq 1
+check "acl: symlink target untouched"     test "$(ls -lde "$acl_tree/target" | wc -l)" -eq 2
+
+chmod -N "$acl_tree/target"
+long_args="$(in_dispatch_out bounded_args "$(head -c 2000 /dev/zero | tr '\0' a)" b)"
+check "log: arguments truncated"          test "${#long_args}" -le 300
 
 echo
 if [[ $failures -eq 0 ]]; then echo "all passed"; else echo "$failures failed"; exit 1; fi

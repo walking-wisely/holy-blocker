@@ -11,9 +11,8 @@ valid_username() {
 }
 
 render_dropin() {
-  local here
-  here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  sed "s/__USER__/$1/" "$here/holy-blocker.sudoers.in"
+  local source_dir="${2:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
+  sed "s/__USER__/$1/" "$source_dir/holy-blocker.sudoers.in"
 }
 
 identity_certificate_pem() {
@@ -21,9 +20,11 @@ identity_certificate_pem() {
   keychain="$home/Library/Keychains/login.keychain-db"
   matches="$(sudo -u "$user" security find-identity -v -p codesigning "$keychain" | grep -cF "\"$IDENTITY\"" || true)"
   [[ "$matches" -eq 1 ]] || return 1
-  local pem
+  local pem subject
   pem="$(sudo -u "$user" security find-certificate -c "$IDENTITY" -p "$keychain")"
   [[ "$(grep -c 'BEGIN CERTIFICATE' <<<"$pem")" -eq 1 ]] || return 1
+  subject="$(openssl x509 -noout -subject -nameopt RFC2253 <<<"$pem" | sed 's/^subject= *//')"
+  [[ "$subject" == "CN=$IDENTITY" ]] || return 1
   echo "$pem"
 }
 
@@ -32,6 +33,9 @@ install_all() {
   valid_username "$SUDO_USER" || { echo "unsupported user name" >&2; exit 65; }
   local here home pin scratch
   here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  scratch="$(mktemp -d)"
+  trap 'rm -rf "$scratch"' EXIT
+  cp "$here/dispatch" "$here/holy-blocker.sudoers.in" "$scratch/"
   home="$(dscl . -read "/Users/$SUDO_USER" NFSHomeDirectory | sed 's/^NFSHomeDirectory: //')"
   local pem
   pem="$(identity_certificate_pem "$SUDO_USER" "$home")" \
@@ -40,23 +44,21 @@ install_all() {
   echo "identity to pin:"
   openssl x509 -noout -subject -dates <<<"$pem"
   echo "sha256: $pin"
-  echo "dispatch sha256:        $(shasum -a 256 "$here/dispatch" | cut -d' ' -f1)"
-  echo "sudoers template sha256: $(shasum -a 256 "$here/holy-blocker.sudoers.in" | cut -d' ' -f1)"
+  echo "dispatch sha256:        $(shasum -a 256 "$scratch/dispatch" | cut -d' ' -f1)"
+  echo "sudoers template sha256: $(shasum -a 256 "$scratch/holy-blocker.sudoers.in" | cut -d' ' -f1)"
   local answer
   read -r -p "Install and pin this identity? [y/N] " answer </dev/tty
   [[ "$answer" == y || "$answer" == Y ]] || { echo "aborted" >&2; exit 1; }
 
-  scratch="$(mktemp -d)"
-  render_dropin "$SUDO_USER" >"$scratch/dropin"
+  render_dropin "$SUDO_USER" "$scratch" >"$scratch/dropin"
   visudo -cf "$scratch/dropin" >/dev/null
 
   install -d -m 755 -o root -g wheel "$LIBEXEC"
-  install -m 755 -o root -g wheel "$here/dispatch" "$LIBEXEC/dispatch"
+  install -m 755 -o root -g wheel "$scratch/dispatch" "$LIBEXEC/dispatch"
   printf '%s\n' "$pin" >"$LIBEXEC/trusted-cert.sha256"
   chown root:wheel "$LIBEXEC/trusted-cert.sha256"
   chmod 644 "$LIBEXEC/trusted-cert.sha256"
   install -m 440 -o root -g wheel "$scratch/dropin" "$DROPIN"
-  rm -rf "$scratch"
 
   echo "installed $LIBEXEC/dispatch"
   echo "pinned certificate sha256: $pin"

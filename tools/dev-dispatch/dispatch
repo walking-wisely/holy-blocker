@@ -21,6 +21,7 @@ readonly STATE_DIR="/Library/Application Support/HolyBlocker"
 readonly CA_DIR="$STATE_DIR/data/ca"
 readonly CA_VALID_DAYS=30
 readonly LOG_MAX_BYTES=262144
+readonly LOG_ARGS_MAX=300
 readonly SYSTEM_KEYCHAIN=/Library/Keychains/System.keychain
 readonly DAEMON_LABEL=com.holyblocker.daemon
 readonly DAEMON_PLIST=/Library/LaunchDaemons/com.holyblocker.daemon.plist
@@ -112,6 +113,22 @@ need_user_path() {
   resolve_user_path "$1" || die "path must be an existing, non-symlink file or directory under the caller's home" 65
 }
 
+strip_acls() {
+  find "$1" ! -type l -exec chmod -N {} +
+}
+
+bounded_args() {
+  local text
+  text="$(printf '%q ' "$@")"
+  echo "${text:0:$LOG_ARGS_MAX}"
+}
+
+ca_files_usable() {
+  [[ -f "$CA_DIR/ca.crt" && -f "$CA_DIR/ca.key" ]] || return 1
+  [[ "$(stat -f %u "$CA_DIR/ca.crt")" -eq 0 && "$(stat -f %u "$CA_DIR/ca.key")" -eq 0 ]] || return 1
+  openssl x509 -in "$CA_DIR/ca.crt" -noout -checkend 86400 >/dev/null 2>&1
+}
+
 copy_to_root_owned() {
   local source="$1" scratch="$2" name="$3"
   ditto --noacl --noextattr --norsrc --noqtn "$source" "$SCRATCH/$name"
@@ -159,7 +176,7 @@ verb_stage_proxy() {
 }
 
 verb_ca_generate() {
-  if [[ -f "$CA_DIR/ca.crt" && -f "$CA_DIR/ca.key" ]]; then
+  if ca_files_usable; then
     echo "CA already present"
     return 0
   fi
@@ -248,7 +265,7 @@ main() {
     die "usage: dispatch <stage-app|stage-proxy> <path> | <ca-generate|ca-install|ca-remove|daemon-bootstrap|daemon-bootout|status|revoke>" 64
   fi
   [[ "$EUID" -eq 0 ]] || die "must run as root through sudo" 77
-  log_line "verb=$verb args=$(printf '%q ' "${@:2}")"
+  log_line "verb=$verb args=$(bounded_args "${@:2}")"
   set +e
   run_verb "$verb" "${@:2}"
   status=$?
