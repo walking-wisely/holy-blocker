@@ -514,7 +514,7 @@ The files are in `tools/dev-dispatch/` (`dispatch`, `install.sh`, `holy-blocker.
 
 <!-- step: engineering.privilege-dispatcher-hardening -->
 
-Open items from the dispatcher review that do not block installing it: `ca-remove` matches the common name as a substring; `daemon-bootout` reports success when the job is still loaded; the signature pin covers the main executable's leaf certificate and not nested code; `revoke` leaves the staged binaries, the launchd job and the dispatcher in place, so there is no uninstall; no test exercises a verb end to end, so a stubbed-tool harness is needed; the home-path argument could be reduced to a file name in the audit log.
+Open items from the dispatcher review that do not block installing it: `ca-remove` matches the common name as a substring; `daemon-bootout` reports success when the job is still loaded; the signature pin covers the main executable's leaf certificate and not nested code; `revoke` leaves the staged binaries, the launchd job and the dispatcher in place, so there is no uninstall; no test exercises a verb end to end, so a stubbed-tool harness is needed; the home-path argument could be reduced to a file name in the audit log; the copy-path test stubs `chown`, so it does not assert the order of the flag clearing, ownership change and ACL strip, and nothing covers the installer's cleanup trap.
 
 Acceptance: `code`. Verify: `tools/dev-dispatch/test.sh`.
 
