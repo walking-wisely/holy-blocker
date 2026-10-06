@@ -165,6 +165,7 @@ struct ProxyBlocklistPolicyTests {
         #expect(ProxyBlocklistPolicy.optional.arguments(for: configured) == ["--blocklist-dir", "/x"])
     }
 
+#if HOLY_BLOCKER_DEV_BUILD
     @Test("runs unfiltered only on the explicit opt-in")
     func optIn() {
         let policy = ProxyBlocklistPolicy(
@@ -178,4 +179,13 @@ struct ProxyBlocklistPolicyTests {
             environment: [ProxyBlocklistPolicy.allowMissingVariable: "true"])
         #expect(policy == .required)
     }
+#else
+    @Test("ignores the development override in a release build")
+    func overrideIgnored() {
+        let policy = ProxyBlocklistPolicy(
+            environment: ["HOLY_BLOCKER_ALLOW_NO_BLOCKLIST": "1"])
+        #expect(policy == .required)
+        #expect(policy.arguments(for: .unavailable(.missing)) == nil)
+    }
+#endif
 }

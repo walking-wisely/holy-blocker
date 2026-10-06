@@ -25,14 +25,19 @@ public struct SuppressionPolicy: Sendable {
     /// Ourselves, because hiding this process takes the overlay off screen — the exact opposite of
     /// the intent. Finder, because hiding it takes the desktop with it. The Dock and
     /// SystemUIServer for the same reason one level down: they are the shell, not content.
-    public static let defaultProtected: Set<String> = [
-        BundleIdentity.holyBlocker.identifier,
-        BundleIdentity.development.identifier,
-        "com.apple.finder",
-        "com.apple.dock",
-        "com.apple.systemuiserver",
-        "com.apple.loginwindow",
-    ]
+    public static let defaultProtected: Set<String> = {
+        var identifiers: Set<String> = [
+            BundleIdentity.holyBlocker.identifier,
+            "com.apple.finder",
+            "com.apple.dock",
+            "com.apple.systemuiserver",
+            "com.apple.loginwindow",
+        ]
+#if HOLY_BLOCKER_DEV_BUILD
+        identifiers.insert(BundleIdentity.development.identifier)
+#endif
+        return identifiers
+    }()
 
     /// How long to leave an application alone after asking it to hide. The scan cadence is ~1s and
     /// a hide can legitimately not take effect; without this, an application that refuses would be
