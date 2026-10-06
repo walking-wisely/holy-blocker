@@ -3,10 +3,8 @@ import Foundation
 
 /// Launches `mitm-proxy` as a child process.
 ///
-/// The proxy currently takes no command-line arguments: it hardcodes `127.0.0.1:8080` and loads
-/// its CA from the relative path `data/ca`, so the working directory is load-bearing and the port
-/// is not yet selectable. `arguments` exists so this side needs no change once the Rust binary
-/// grows a real CLI — see the note in docs/components/mac-daemon/plan.md.
+/// The proxy loads its CA from the relative path `data/ca` by default, so the working directory is
+/// load-bearing. `arguments` carries the proxy's own flags, such as the bundled blocklist.
 public final class MitmProxyProcess: ProxyProcessHandle {
     private let executable: URL
     private let arguments: [String]
