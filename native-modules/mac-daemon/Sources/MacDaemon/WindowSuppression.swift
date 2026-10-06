@@ -26,8 +26,8 @@ public struct SuppressionPolicy: Sendable {
     /// the intent. Finder, because hiding it takes the desktop with it. The Dock and
     /// SystemUIServer for the same reason one level down: they are the shell, not content.
     public static let defaultProtected: Set<String> = [
-        "com.holyblocker.daemon",
-        "com.holyblocker.daemon.dev",
+        BundleIdentity.holyBlocker.identifier,
+        BundleIdentity.development.identifier,
         "com.apple.finder",
         "com.apple.dock",
         "com.apple.systemuiserver",

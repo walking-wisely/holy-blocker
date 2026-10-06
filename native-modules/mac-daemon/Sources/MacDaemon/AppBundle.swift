@@ -52,6 +52,29 @@ public struct BundleIdentity: Equatable, Sendable {
         minimumSystemVersion: "14.0",
         bundleFileName: "HolyBlockerDaemonDev.app")
 
+    public static let developmentSigningIdentity = "Holy Blocker Dev"
+
+    public func permitsSigning(with identity: String) -> Bool {
+        guard self == .development else { return true }
+        return identity == "-" || identity == Self.developmentSigningIdentity
+    }
+
+    public static func running(bundleIdentifier: String?) -> BundleIdentity {
+        bundleIdentifier == development.identifier ? .development : .holyBlocker
+    }
+
+    private var isDevelopment: Bool { self == .development }
+    private var suffix: String { isDevelopment ? "-dev" : "" }
+
+    public var daemonLabel: String { identifier }
+    public var agentLabel: String { isDevelopment ? "\(identifier).agent" : "com.holyblocker.agent" }
+    public var stateDirectoryPath: String {
+        "/Library/Application Support/HolyBlocker\(isDevelopment ? "Dev" : "")"
+    }
+    public var daemonLogName: String { "holy-blocker-daemon\(suffix).log" }
+    public var agentLogName: String { "holy-blocker-agent\(suffix).log" }
+    public var installPath: String { "/Applications/\(bundleFileName)" }
+
     /// `nil` selects release. An unrecognised value yields `nil` so a typo cannot silently
     /// produce a release bundle.
     public static func forFlavor(_ flavor: String?) -> BundleIdentity? {

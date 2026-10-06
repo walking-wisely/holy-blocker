@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 
 @testable import MacDaemon
@@ -52,5 +53,69 @@ struct BundleFlavorTests {
     func unknown() {
         #expect(BundleIdentity.forFlavor("dev ") == nil)
         #expect(BundleIdentity.forFlavor("") == nil)
+    }
+}
+
+@Suite("BundleIdentity shared-state names")
+struct BundleStateNamesTests {
+    @Test("release names are the ones already shipped")
+    func releaseNames() {
+        let release = BundleIdentity.holyBlocker
+        #expect(release.daemonLabel == "com.holyblocker.daemon")
+        #expect(release.agentLabel == "com.holyblocker.agent")
+        #expect(release.stateDirectoryPath == "/Library/Application Support/HolyBlocker")
+        #expect(release.daemonLogName == "holy-blocker-daemon.log")
+        #expect(release.agentLogName == "holy-blocker-agent.log")
+        #expect(release.installPath == "/Applications/HolyBlockerDaemon.app")
+    }
+
+    @Test("no name is shared between the two builds")
+    func noSharedNames() {
+        let release = BundleIdentity.holyBlocker
+        let development = BundleIdentity.development
+        let names: (BundleIdentity) -> [String] = {
+            [
+                $0.daemonLabel, $0.agentLabel, $0.stateDirectoryPath, $0.daemonLogName,
+                $0.agentLogName, $0.installPath,
+            ]
+        }
+        #expect(Set(names(release)).isDisjoint(with: names(development)))
+    }
+
+    @Test("the running identity is development only for the development bundle id")
+    func running() {
+        #expect(BundleIdentity.running(bundleIdentifier: nil) == .holyBlocker)
+        #expect(BundleIdentity.running(bundleIdentifier: "com.holyblocker.daemon") == .holyBlocker)
+        #expect(BundleIdentity.running(bundleIdentifier: "com.holyblocker.daemon.dev") == .development)
+        #expect(BundleIdentity.running(bundleIdentifier: "com.example.other") == .holyBlocker)
+    }
+}
+
+@Suite("BundleIdentity.permitsSigning")
+struct BundleSigningTests {
+    @Test("development accepts ad-hoc and the development certificate only")
+    func development() {
+        #expect(BundleIdentity.development.permitsSigning(with: "-"))
+        #expect(BundleIdentity.development.permitsSigning(with: "Holy Blocker Dev"))
+        #expect(!BundleIdentity.development.permitsSigning(with: "Holy Blocker Release"))
+        #expect(!BundleIdentity.development.permitsSigning(with: ""))
+    }
+
+    @Test("release signing is not restricted by this guard")
+    func release() {
+        #expect(BundleIdentity.holyBlocker.permitsSigning(with: "Holy Blocker Dev"))
+        #expect(BundleIdentity.holyBlocker.permitsSigning(with: "-"))
+    }
+}
+
+@Suite("AppBundle.infoPlist for the development identity")
+struct DevelopmentInfoPlistTests {
+    @Test("carries the development identifier and name")
+    func plist() throws {
+        let data = try AppBundle.infoPlist(for: .development)
+        let entries =
+            try PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any]
+        #expect(entries?["CFBundleIdentifier"] as? String == "com.holyblocker.daemon.dev")
+        #expect(entries?["CFBundleName"] as? String == "Holy Blocker Dev")
     }
 }
