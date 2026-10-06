@@ -278,8 +278,13 @@ scaffolding and will fail at load time if they fall out of sync with the `.so`.
     `filesDir/blocklist-artifact` by `BlocklistStore` (see `mobile.blocklist-provisioning`); the
     trusted public keys are bundled beside it. The Gradle properties `blocklistArtifactDir` and
     `blocklistTrustedKeyDir` name what to bundle; a build without them carries no list, and the
-    guard records `list_missing` and runs on the placeholder rules. A bundled slot replaces the
-    installed one whenever their manifests differ; there is no on-device version high-water mark.
+    guard records `list_missing` and runs on the placeholder rules. A **release** build without
+    them fails (`checkReleaseBlocklist`), as does one whose key directory holds a key id starting
+    with `dev`. A bundled slot replaces the installed one whenever their manifests differ, except
+    that one with a lower manifest version never does (the version is the first eight bytes of the
+    manifest, little-endian). The loader's fall back from `current/` to `previous/` is recorded as
+    `list_fallback`, detected by `DnsGuard.artifact_version()` differing from the installed
+    `current/` manifest's version. A failed load logs its cause.
 
     Without `setAlwaysOnVpnPackage` (owner-only) the VPN can be turned off in Settings like
     anything else. **The identifier for that screen is deliberately not in `SettingsProfiles`
