@@ -62,6 +62,25 @@ public struct BundleIdentity: Equatable, Sendable {
         return identity == "-" || identity == permitted
     }
 
+    public enum SigningCheck: Equatable, Sendable {
+        case matches
+        case foreign(String)
+        case adhoc
+        case unsigned
+    }
+
+    /// Compares the leaf the bundle is actually signed with against the one this flavor requires,
+    /// so a keychain that holds two distinct certificates cannot vouch for a bundle signed with
+    /// the wrong one.
+    public func signingCheck(of signature: SigningIdentity) -> SigningCheck {
+        switch signature {
+        case .unsigned: return .unsigned
+        case .adhoc: return .adhoc
+        case .signed(let authority):
+            return permitsSigning(with: authority) ? .matches : .foreign(authority)
+        }
+    }
+
     public static func running(bundleIdentifier: String?) -> BundleIdentity {
         bundleIdentifier == development.identifier ? .development : .holyBlocker
     }
