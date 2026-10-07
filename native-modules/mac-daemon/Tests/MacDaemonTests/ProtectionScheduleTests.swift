@@ -56,53 +56,106 @@ struct ProtectionScheduleTests {
 
     @Test("the constants are the mechanism")
     func constants() {
-        #expect(ProtectionSchedule.cooldownMillis >= 10 * 60_000)
-        #expect(ProtectionSchedule.disarmWindowMillis >= 5 * 60_000)
+        #expect(ProtectionSchedule.cooldownMillis == 15 * 60_000)
+        #expect(ProtectionSchedule.readyWindowMillis == 5 * 60_000)
+        #expect(ProtectionSchedule.disarmWindowMillis == 10 * 60_000)
     }
 
-    @Test("the clock counts through sleep, unlike systemUptime")
-    func clockIsNotUptime() {
+    @Test("the clock never runs behind systemUptime, which stops during sleep")
+    func clockIsNotBehindUptime() {
         let a = ProtectionClock.nowMillis()
         let b = ProtectionClock.nowMillis()
         #expect(b >= a)
         #expect(a >= Int64(ProcessInfo.processInfo.systemUptime * 1000) - 1000)
     }
 
+    private let boot = "boot-a"
+
     @Test("disarming needs request, cooldown and confirmation, in that order")
     func transitions() {
         var record = ProtectionRecord()
-        #expect(record.requestDisarm(now: 0) == nil)
+        #expect(record.requestDisarm(now: 0, bootID: boot) == nil)
         #expect(record.arm() == .protectionArmed)
-        #expect(record.confirmDisarm(now: 0) == nil)
-        #expect(record.requestDisarm(now: 1_000) == .disarmRequested)
-        #expect(record.requestDisarm(now: 2_000) == nil)
+        #expect(record.arm() == nil)
+        #expect(record.confirmDisarm(now: 0, bootID: boot) == nil)
+        #expect(record.requestDisarm(now: 1_000, bootID: boot) == .disarmRequested)
+        #expect(record.requestDisarm(now: 2_000, bootID: boot) == nil)
         #expect(record.requestedAt == 1_000)
-        #expect(record.confirmDisarm(now: 1_000 + ProtectionSchedule.cooldownMillis - 1) == nil)
+        let early = 1_000 + ProtectionSchedule.cooldownMillis - 1
+        #expect(record.confirmDisarm(now: early, bootID: boot) == nil)
         let ready = 1_000 + ProtectionSchedule.cooldownMillis
-        #expect(record.confirmDisarm(now: ready) == .disarmConfirmed)
-        #expect(record.state(now: ready).phase == .disarmed)
-        #expect(record.confirmDisarm(now: ready) == nil)
+        #expect(record.confirmDisarm(now: ready, bootID: boot) == .disarmConfirmed)
+        #expect(record.state(now: ready, bootID: boot).phase == .disarmed)
+        #expect(record.confirmDisarm(now: ready, bootID: boot) == nil)
     }
 
     @Test("arming clears an open window and cancel only logs a real request")
     func armAndCancel() {
-        var record = ProtectionRecord(armed: true, requestedAt: nil, disarmedAt: 1_000)
+        var record = ProtectionRecord(armed: true, requestedAt: nil, disarmedAt: 1_000, bootID: boot)
         #expect(record.arm() == .protectionArmed)
         #expect(record.disarmedAt == nil)
-        #expect(record.cancelDisarm() == nil)
-        _ = record.requestDisarm(now: 5)
-        #expect(record.cancelDisarm() == .disarmCancelled)
-        #expect(record.state(now: 6).phase == .armed)
+        #expect(record.cancelDisarm(now: 0, bootID: boot) == nil)
+        _ = record.requestDisarm(now: 5, bootID: boot)
+        #expect(record.cancelDisarm(now: 6, bootID: boot) == .disarmCancelled)
+        #expect(record.state(now: 6, bootID: boot).phase == .armed)
     }
 
     @Test("a second disarm works after the first window has expired")
     func repeatable() {
         var record = ProtectionRecord(armed: true)
-        _ = record.requestDisarm(now: 0)
+        _ = record.requestDisarm(now: 0, bootID: boot)
         let first = ProtectionSchedule.cooldownMillis
-        _ = record.confirmDisarm(now: first)
+        _ = record.confirmDisarm(now: first, bootID: boot)
         let later = first + ProtectionSchedule.disarmWindowMillis + 1
-        #expect(record.requestDisarm(now: later) == .disarmRequested)
-        #expect(record.state(now: later).phase == .disarmPending)
+        #expect(record.requestDisarm(now: later, bootID: boot) == .disarmRequested)
+        #expect(record.state(now: later, bootID: boot).phase == .disarmPending)
+    }
+
+    @Test("a disarm from an earlier boot cannot reopen once the new clock catches up")
+    func rebootReplay() {
+        var record = ProtectionRecord(armed: true)
+        _ = record.requestDisarm(now: 100_000, bootID: boot)
+        let confirmedAt = 100_000 + ProtectionSchedule.cooldownMillis
+        _ = record.confirmDisarm(now: confirmedAt, bootID: boot)
+        #expect(record.state(now: confirmedAt + 1, bootID: boot).phase == .disarmed)
+        #expect(record.state(now: confirmedAt + 1, bootID: "boot-b").phase == .armed)
+        #expect(record.state(now: confirmedAt + 1, bootID: nil).phase == .armed)
+    }
+
+    @Test("a lapsed request cannot be cancelled")
+    func lapsedCancel() {
+        var record = ProtectionRecord(armed: true)
+        _ = record.requestDisarm(now: 0, bootID: boot)
+        let lapsed = ProtectionSchedule.cooldownMillis + ProtectionSchedule.readyWindowMillis
+        #expect(record.cancelDisarm(now: lapsed, bootID: boot) == nil)
+        #expect(record.cancelDisarm(now: 1, bootID: "boot-b") == nil)
+    }
+
+    @Test("a request from an earlier boot cannot be confirmed")
+    func rebootVoidsRequest() {
+        var record = ProtectionRecord(armed: true)
+        _ = record.requestDisarm(now: 0, bootID: boot)
+        let ready = ProtectionSchedule.cooldownMillis
+        #expect(record.confirmDisarm(now: ready, bootID: "boot-b") == nil)
+    }
+
+    @Test("an unknown boot cannot start a request")
+    func unknownBoot() {
+        var record = ProtectionRecord(armed: true)
+        #expect(record.requestDisarm(now: 0, bootID: nil) == nil)
+    }
+
+    @Test("the boot identifier is readable and stable within a boot")
+    func bootIDReadable() {
+        #expect(ProtectionClock.bootID() != nil)
+        #expect(ProtectionClock.bootID() == ProtectionClock.bootID())
+    }
+
+    @Test("a corrupt timestamp reads as armed instead of trapping")
+    func overflowIsArmed() {
+        for bad in [Int64.min, Int64.max] {
+            #expect(ProtectionSchedule.evaluate(armed: true, requestedAt: nil, disarmedAt: bad, now: 5).phase == .armed)
+            #expect(ProtectionSchedule.evaluate(armed: true, requestedAt: bad, disarmedAt: nil, now: 5).phase == .armed)
+        }
     }
 }
