@@ -759,6 +759,10 @@ do {
         let signature = try CodeSigning(runner: runner).identity(of: CodeSigning.currentCodePath)
         print("signature: \(signature)")
         print("grants survive a rebuild: \(signature.isStable)")
+        if case .foreign(let authority) = runningIdentity.signingCheck(of: signature) {
+            print("signing leaf: \(authority) is not this bundle's identity")
+            exit(1)
+        }
         switch try SigningIdentities.inspect(runner: runner) {
         case .distinct: print("release and development identities: distinct")
         case .same:

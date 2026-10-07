@@ -56,8 +56,9 @@ fi
 if [[ -n "$existing" && "$ROTATE" -eq 1 ]]; then
   echo "rotating: removing existing \"$IDENTITY_NAME\" from $KEYCHAIN"
   echo "this invalidates every TCC grant made to the old certificate."
-  sha1="$(echo "$existing" | sed -n 's/^ *[0-9]*) \([0-9A-F]*\).*/\1/p')"
-  security delete-identity -Z "$sha1" "$KEYCHAIN"
+  while IFS= read -r sha1; do
+    security delete-identity -Z "$sha1" "$KEYCHAIN"
+  done < <(echo "$existing" | sed -n 's/^ *[0-9]*) \([0-9A-F]*\).*/\1/p')
 fi
 
 workdir="$(mktemp -d)"
@@ -76,7 +77,7 @@ p12_pass="$("$OPENSSL" rand -base64 24)"
   -inkey "$workdir/dev.key" -in "$workdir/dev.crt" \
   -out "$workdir/dev.p12" -passout "pass:$p12_pass"
 
-security import "$workdir/dev.p12" -k "$KEYCHAIN" -P "$p12_pass" -T /usr/bin/codesign -A
+security import "$workdir/dev.p12" -k "$KEYCHAIN" -P "$p12_pass" -T /usr/bin/codesign
 security add-trusted-cert -p codeSign -k "$KEYCHAIN" "$workdir/dev.crt"
 
 echo
