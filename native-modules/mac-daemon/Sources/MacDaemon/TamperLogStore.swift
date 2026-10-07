@@ -73,7 +73,10 @@ public final class TamperLogStore: @unchecked Sendable {
     /// a full re-read, on every following append.
     private func trimLocked() {
         let result = TamperLog.trim(readLinesLocked(), maxEntries: maxEntries)
-        guard result.dropped > 0 else { return }
+        guard result.dropped > 0 else {
+            lineCount = result.kept.count
+            return
+        }
         let temporary = directory.appendingPathComponent(Self.fileName + ".tmp")
         unlink(temporary.path)
         let descriptor = open(
@@ -147,7 +150,9 @@ public final class TamperLogStore: @unchecked Sendable {
         guard descriptor >= 0 else { return [] }
         defer { close(descriptor) }
         guard isOwnRegularFile(descriptor) else { return [] }
-        let data = FileHandle(fileDescriptor: descriptor, closeOnDealloc: false).readDataToEndOfFile()
+        guard
+            let data = try? FileHandle(fileDescriptor: descriptor, closeOnDealloc: false).readToEnd()
+        else { return [] }
         return String(decoding: data, as: UTF8.self)
             .split(separator: "\n", omittingEmptySubsequences: true).map(String.init)
     }

@@ -1,5 +1,5 @@
 id = "mac-daemon.tamper-log-hardening"
-title = "Tamper log edges: an unreadable or deleted log reads as a first run, no fsync after append, a reboot between a kill and the next start reads as an unclean stop, and the agent's read path is undecided"
+title = "Tamper log edges: an unreadable or deleted log reads as a first run, no fsync after append, a reboot between a kill and the next start reads as an unclean stop, a session of more than 2,000 entries trims away its own start boundary, and the agent's read path is undecided"
 status = "pending"
 evidence = ""
 acceptance = "code"
