@@ -6,3 +6,4 @@ acceptance = "code"
 depends_on = ["mac-daemon.tamper-log"]
 group = "tamper"
 milestone = "mvp"
+verify = "./scripts/test.sh from native-modules/mac-daemon"
