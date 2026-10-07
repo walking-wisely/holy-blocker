@@ -1,0 +1,21 @@
+# Shared by apps/mobile ProtectionScheduleTest and native-modules/mac-daemon ProtectionScheduleTests.
+# Constants: cooldown 900000, ready window 300000, disarm window 600000 (milliseconds).
+# Columns: name, armed (0/1), requested-at, disarmed-at, now, phase, remaining. "-" means absent.
+# Phases: off, armed, disarm_pending, disarm_ready, disarmed.
+not-armed	0	-	-	0	off	0
+not-armed-ignores-stale-disarm	0	-	0	1000	off	0
+armed	1	-	-	0	armed	0
+request-starts-cooldown	1	1000	-	1000	disarm_pending	900000
+pending-last-millisecond	1	1000	-	900999	disarm_pending	1
+ready-at-cooldown	1	1000	-	901000	disarm_ready	300000
+ready-last-millisecond	1	1000	-	1200999	disarm_ready	1
+unconfirmed-request-expires	1	1000	-	1201000	armed	0
+unconfirmed-request-expires-a-day-later	1	1000	-	87601000	armed	0
+disarm-opens-window	1	-	1000	1000	disarmed	600000
+disarm-last-millisecond	1	-	1000	600999	disarmed	1
+disarm-window-closes	1	-	1000	601000	armed	0
+live-disarm-outranks-request	1	1000	901000	901000	disarmed	600000
+second-disarm-after-first-expired	1	602001	1000	602001	disarm_pending	900000
+spent-disarm-stays-spent	1	-	1000	87601000	armed	0
+reboot-voids-request	1	500000	-	1000	armed	0
+reboot-ends-disarm-window	1	-	500000	1000	armed	0

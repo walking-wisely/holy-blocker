@@ -1,0 +1,8 @@
+id = "mobile.protection-reboot-replay"
+title = "A stored disarm timestamp reopens the disarm window after a reboot once elapsedRealtime reaches it again, with no cooldown; store a boot identity with the timestamps"
+status = "pending"
+evidence = ""
+acceptance = "code"
+verify = "./gradlew testDebugUnitTest from apps/mobile"
+kind = "bug"
+group = "tamper"
