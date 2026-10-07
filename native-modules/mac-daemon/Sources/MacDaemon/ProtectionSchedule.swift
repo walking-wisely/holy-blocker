@@ -27,8 +27,7 @@ public struct ProtectionState: Equatable, Sendable {
 /// test-vectors/protection-schedule.tsv.
 ///
 /// Inputs are start timestamps on `ProtectionClock`, never the wall clock, which the user can set.
-/// A stored timestamp later than `now` means the clock restarted, and both such cases resolve to
-/// `.armed`.
+/// A timestamp later than `now`, or one whose difference overflows, resolves to `.armed`.
 public enum ProtectionSchedule {
     public static let cooldownMillis: Int64 = 15 * 60_000
     public static let readyWindowMillis: Int64 = 5 * 60_000
