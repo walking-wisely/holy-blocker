@@ -101,9 +101,11 @@ struct BundleSigningTests {
         #expect(!BundleIdentity.development.permitsSigning(with: ""))
     }
 
-    @Test("release signing is not restricted by this guard")
+    @Test("release accepts ad-hoc and the release certificate only")
     func release() {
-        #expect(BundleIdentity.holyBlocker.permitsSigning(with: "Holy Blocker Dev"))
+        #expect(!BundleIdentity.holyBlocker.permitsSigning(with: "Holy Blocker Dev"))
+        #expect(!BundleIdentity.holyBlocker.permitsSigning(with: "072F00A821D686310784A8790781567CE04ACEBF"))
+        #expect(!BundleIdentity.holyBlocker.permitsSigning(with: "Blocker Dev"))
         #expect(BundleIdentity.holyBlocker.permitsSigning(with: "-"))
     }
 }
