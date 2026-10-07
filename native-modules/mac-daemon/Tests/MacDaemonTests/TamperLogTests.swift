@@ -141,7 +141,7 @@ struct TamperLogTests {
         for (event, code, detail) in mapped {
             let result = TamperLog.record(for: event)
             #expect(result.code == code)
-            #expect(result.detail == detail)
+            #expect(result.detail.text == detail)
         }
     }
 }
@@ -161,9 +161,9 @@ struct TamperLogStoreTests {
     func appendAndRead() throws {
         let (store, _) = try makeStore()
         #expect(store.record(.daemonStarted, wallMillis: 1, uptimeMillis: 1))
-        #expect(store.record(.permissionLost, detail: "accessibility", wallMillis: 2, uptimeMillis: 2))
+        #expect(store.record(.permissionLost, detail: .capability(.accessibility), wallMillis: 2, uptimeMillis: 2))
         #expect(store.entries().map(\.code) == [.daemonStarted, .permissionLost])
-        #expect(store.recentEntries(count: 1).map(\.code) == [.permissionLost])
+        #expect(store.sessionEntries().map(\.code) == [.daemonStarted, .permissionLost])
     }
 
     @Test("a second store over the same directory sees the first one's entries")
@@ -199,13 +199,13 @@ struct TamperLogStoreTests {
     func boundedWithMarker() throws {
         let (store, _) = try makeStore(maxEntries: 10, slack: 3)
         for index in 0..<40 {
-            store.record(.permissionGranted, detail: "\(index)", wallMillis: 0, uptimeMillis: Int64(index))
+            store.record(.permissionGranted, detail: .dropped(index), wallMillis: 0, uptimeMillis: Int64(index))
         }
         let entries = store.entries()
         #expect(entries.count <= 10 + 3 + 1)
         #expect(entries.contains { $0.code == .logTrimmed })
-        #expect(entries.last?.detail == "39" || entries.last?.code == .logTrimmed)
-        #expect(!entries.contains { $0.detail == "0" })
+        #expect(entries.last?.detail == "dropped=39" || entries.last?.code == .logTrimmed)
+        #expect(!entries.contains { $0.detail == "dropped=0" })
     }
 
     @Test("an unwritable directory never throws and reports no write")
@@ -213,5 +213,68 @@ struct TamperLogStoreTests {
         let store = TamperLogStore(directory: URL(fileURLWithPath: "/dev/null/nope"))
         #expect(!store.record(.daemonStarted, wallMillis: 1, uptimeMillis: 1))
         #expect(store.entries().isEmpty)
+    }
+
+    @Test("an append after a torn tail starts on its own line")
+    func appendAfterTear() throws {
+        let (store, directory) = try makeStore()
+        store.record(.daemonStarted, wallMillis: 1, uptimeMillis: 1)
+        let handle = try FileHandle(
+            forWritingTo: directory.appendingPathComponent(TamperLogStore.fileName))
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data("5\t200\tperm".utf8))
+        try handle.close()
+        let reopened = TamperLogStore(directory: directory)
+        reopened.record(.daemonStarted, wallMillis: 9, uptimeMillis: 300)
+        #expect(reopened.entries().map(\.code) == [.daemonStarted, .daemonStarted])
+    }
+
+    @Test("the session window reaches back past any number of later entries")
+    func sessionWindowIsNotFixed() throws {
+        let (store, _) = try makeStore()
+        store.record(.daemonStarted, wallMillis: 1, uptimeMillis: 1)
+        for index in 0..<200 {
+            store.record(
+                index.isMultiple(of: 2) ? .permissionLost : .permissionGranted,
+                detail: .capability(.accessibility), wallMillis: 2, uptimeMillis: Int64(2 + index))
+        }
+        let session = store.sessionEntries()
+        #expect(session.first?.code == .daemonStarted)
+        #expect(TamperLog.classifyStart(recent: session, nowUptime: 5_000) == .uncleanStop)
+    }
+
+    @Test("a symlinked log file is refused, not followed")
+    func refusesSymlink() throws {
+        let (store, directory) = try makeStore()
+        store.record(.daemonStarted, wallMillis: 1, uptimeMillis: 1)
+        let target = directory.appendingPathComponent("victim")
+        try Data("keep\n".utf8).write(to: target)
+        let log = directory.appendingPathComponent(TamperLogStore.fileName)
+        try FileManager.default.removeItem(at: log)
+        try FileManager.default.createSymbolicLink(at: log, withDestinationURL: target)
+        let fresh = TamperLogStore(directory: directory)
+        #expect(!fresh.record(.daemonStopped, wallMillis: 2, uptimeMillis: 2))
+        #expect(try String(contentsOf: target, encoding: .utf8) == "keep\n")
+    }
+
+    @Test("a state directory others can write to is refused")
+    func refusesLooseDirectory() throws {
+        let (store, directory) = try makeStore()
+        store.record(.daemonStarted, wallMillis: 1, uptimeMillis: 1)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o777], ofItemAtPath: directory.path)
+        let fresh = TamperLogStore(directory: directory)
+        #expect(!fresh.record(.daemonStopped, wallMillis: 2, uptimeMillis: 2))
+    }
+
+    @Test("the log keeps its mode after a trim")
+    func modeSurvivesTrim() throws {
+        let (store, directory) = try makeStore(maxEntries: 5, slack: 2)
+        for index in 0..<20 {
+            store.record(.permissionGranted, detail: .dropped(index), wallMillis: 0, uptimeMillis: Int64(index))
+        }
+        let attributes = try FileManager.default.attributesOfItem(
+            atPath: directory.appendingPathComponent(TamperLogStore.fileName).path)
+        #expect((attributes[.posixPermissions] as? Int) == 0o600)
     }
 }

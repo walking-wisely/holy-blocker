@@ -19,6 +19,20 @@ public enum TamperCode: String, CaseIterable, Equatable, Sendable {
     var isSessionBoundary: Bool { self == .daemonStarted || self == .daemonStopped }
 }
 
+public enum TamperDetail: Equatable, Sendable {
+    case none
+    case capability(Capability)
+    case dropped(Int)
+
+    public var text: String {
+        switch self {
+        case .none: return ""
+        case .capability(let capability): return capability.rawValue
+        case .dropped(let count): return "dropped=\(count)"
+        }
+    }
+}
+
 public struct TamperEntry: Equatable, Sendable {
     public let wallMillis: Int64
     public let uptimeMillis: Int64
@@ -43,13 +57,12 @@ public enum SessionStart: Equatable, Sendable {
 }
 
 /// Records what happened to the guard, never what was on the screen. Codes are the on-disk format;
-/// details are closed identifiers the maintainer already has, never user, app, host or bundle names.
+/// writers can only attach a `TamperDetail`, so no user, app, host or bundle name has a way in.
 public enum TamperLog {
     private static let separator: Character = "\t"
 
     public static let maxDetailCharacters = 120
     public static let maxEntries = 2_000
-    public static let classifyTail = 64
 
     public static func format(_ entry: TamperEntry) -> String {
         [
@@ -98,18 +111,18 @@ public enum TamperLog {
     }
 
     /// User names are dropped: the log needs to show that an account appeared, not who it is.
-    public static func record(for event: TamperEvent) -> (code: TamperCode, detail: String) {
+    public static func record(for event: TamperEvent) -> (code: TamperCode, detail: TamperDetail) {
         switch event {
-        case .permissionGranted(let capability): return (.permissionGranted, capability.rawValue)
-        case .permissionLost(let capability): return (.permissionLost, capability.rawValue)
-        case .systemIntegrityProtectionDisabled: return (.sipDisabled, "")
-        case .systemIntegrityProtectionEnabled: return (.sipEnabled, "")
-        case .localUserAdded: return (.userAdded, "")
-        case .localUserRemoved: return (.userRemoved, "")
-        case .administratorAdded: return (.adminAdded, "")
-        case .administratorRemoved: return (.adminRemoved, "")
-        case .protectedUserBecameAdministrator: return (.becameAdministrator, "")
-        case .rebooted: return (.rebooted, "")
+        case .permissionGranted(let capability): return (.permissionGranted, .capability(capability))
+        case .permissionLost(let capability): return (.permissionLost, .capability(capability))
+        case .systemIntegrityProtectionDisabled: return (.sipDisabled, .none)
+        case .systemIntegrityProtectionEnabled: return (.sipEnabled, .none)
+        case .localUserAdded: return (.userAdded, .none)
+        case .localUserRemoved: return (.userRemoved, .none)
+        case .administratorAdded: return (.adminAdded, .none)
+        case .administratorRemoved: return (.adminRemoved, .none)
+        case .protectedUserBecameAdministrator: return (.becameAdministrator, .none)
+        case .rebooted: return (.rebooted, .none)
         }
     }
 
