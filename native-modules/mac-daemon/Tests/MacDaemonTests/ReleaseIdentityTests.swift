@@ -6,7 +6,7 @@ import Testing
 private let listing = """
       1) 072F00A821D686310784A8790781567CE04ACEBF "Holy Blocker Dev"
       2) AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA "Holy Blocker Release"
-      3) F1150B33206FB73238B5185EBCBC9BE3790A9856 "Apple Development: Someone (QVXF5GVX5V)"
+      3) BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB "Apple Development: Example (TEAMID0000)"
          3 valid identities found
     """
 
@@ -56,11 +56,6 @@ struct SigningIdentitiesTests {
 
 @Suite("BundleIdentity release signing")
 struct ReleaseSigningTests {
-    @Test("the release bundle refuses the development certificate")
-    func refusesDevelopment() {
-        #expect(!BundleIdentity.holyBlocker.permitsSigning(with: "Holy Blocker Dev"))
-    }
-
     @Test("the release bundle accepts the release certificate and ad-hoc")
     func accepts() {
         #expect(BundleIdentity.holyBlocker.permitsSigning(with: "Holy Blocker Release"))

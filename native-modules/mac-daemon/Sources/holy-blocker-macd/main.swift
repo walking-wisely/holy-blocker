@@ -761,8 +761,12 @@ do {
         print("grants survive a rebuild: \(signature.isStable)")
         switch try SigningIdentities.inspect(runner: runner) {
         case .distinct: print("release and development identities: distinct")
-        case .same: print("release and development identities: SAME certificate")
-        case .missing(let names): print("release and development identities: missing \(names.joined(separator: ", "))")
+        case .same:
+            print("release and development identities: SAME certificate")
+            exit(1)
+        case .missing(let names):
+            print("release and development identities: missing \(names.joined(separator: ", "))")
+            exit(1)
         }
 
     case "launchd-plist":

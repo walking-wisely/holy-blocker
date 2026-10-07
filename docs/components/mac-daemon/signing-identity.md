@@ -47,10 +47,11 @@ never created on this machine, was deleted, or the keychain was reset (new machi
   (add `--rotate` to replace it). Same properties as the development identity: self-signed, login
   keychain, never backed up or committed, and a different certificate, so it has a different TCC
   identity.
-- `bundle` refuses to sign the release bundle with `Holy Blocker Dev`, and the development bundle
+- `bundle` signs the release bundle only ad-hoc or with exactly `Holy Blocker Release` (a
+  Developer ID path will need this widened deliberately), and the development bundle
   with anything but ad-hoc or `Holy Blocker Dev`.
 - `bundle-status` ends with `release and development identities: distinct`. `SAME certificate`
-  or `missing <name>` means the two are not separate; fix that before signing anything.
+  or `missing <name>` exits non-zero; fix that before signing anything.
 
 ```bash
 scripts/create-dev-signing-identity.sh --release
