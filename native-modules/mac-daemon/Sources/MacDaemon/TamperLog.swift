@@ -15,6 +15,10 @@ public enum TamperCode: String, CaseIterable, Equatable, Sendable {
     case becameAdministrator = "became_administrator"
     case rebooted = "rebooted"
     case logTrimmed = "log_trimmed"
+    case protectionArmed = "armed"
+    case disarmRequested = "disarm_requested"
+    case disarmConfirmed = "disarm_confirmed"
+    case disarmCancelled = "disarm_cancelled"
 
     var isSessionBoundary: Bool { self == .daemonStarted || self == .daemonStopped }
 }

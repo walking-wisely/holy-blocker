@@ -1,7 +1,7 @@
 id = "mac-daemon.protection-schedule"
 title = "Arm, request, cooldown, confirm for turning protection down, ported from apps/mobile with shared test vectors"
-status = "pending"
-evidence = ""
+status = "done"
+evidence = "ProtectionSchedule.swift in native-modules/mac-daemon; ProtectionScheduleTests; test-vectors/protection-schedule.tsv"
 acceptance = "code"
 depends_on = ["mac-daemon.tamper-log"]
 group = "tamper"
