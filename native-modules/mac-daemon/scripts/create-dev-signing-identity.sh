@@ -16,9 +16,13 @@
 # notarization. See the runbook for the Developer ID path required before
 # shipping to anyone else.
 #
+# With --release it creates "Holy Blocker Release" instead: a second, unrelated certificate, so the
+# release bundle and the development bundle never share a signing identity.
+#
 # Usage:
 #   scripts/create-dev-signing-identity.sh            # create if absent, else no-op
 #   scripts/create-dev-signing-identity.sh --rotate    # delete and recreate
+#   scripts/create-dev-signing-identity.sh --release   # the release identity; combine with --rotate
 #
 # After running, export HOLY_BLOCKER_SIGNING_IDENTITY to the printed name and
 # re-run scripts/bundle.sh. Rotating invalidates every existing TCC grant made
@@ -27,12 +31,16 @@
 set -euo pipefail
 
 IDENTITY_NAME="Holy Blocker Dev"
+# The system LibreSSL, by absolute path: OpenSSL 3 (Homebrew) writes a PKCS12 MAC that
+# `security import` rejects as "MAC verification failed".
+OPENSSL=/usr/bin/openssl
 KEYCHAIN="$HOME/Library/Keychains/login.keychain-db"
 ROTATE=0
 
 for arg in "$@"; do
   case "$arg" in
     --rotate) ROTATE=1 ;;
+    --release) IDENTITY_NAME="Holy Blocker Release" ;;
     *) echo "create-dev-signing-identity.sh: unknown argument $arg" >&2; exit 1 ;;
   esac
 done
@@ -55,7 +63,7 @@ fi
 workdir="$(mktemp -d)"
 trap 'rm -rf "$workdir"' EXIT
 
-openssl req -x509 -newkey rsa:2048 \
+"$OPENSSL" req -x509 -newkey rsa:2048 \
   -keyout "$workdir/dev.key" -out "$workdir/dev.crt" \
   -days 3650 -nodes \
   -subj "/CN=$IDENTITY_NAME" \
@@ -63,8 +71,8 @@ openssl req -x509 -newkey rsa:2048 \
   -addext "keyUsage=critical,digitalSignature" \
   -addext "basicConstraints=critical,CA:true"
 
-p12_pass="$(openssl rand -base64 24)"
-openssl pkcs12 -export \
+p12_pass="$("$OPENSSL" rand -base64 24)"
+"$OPENSSL" pkcs12 -export \
   -inkey "$workdir/dev.key" -in "$workdir/dev.crt" \
   -out "$workdir/dev.p12" -passout "pass:$p12_pass"
 

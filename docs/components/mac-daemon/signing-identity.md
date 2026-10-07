@@ -41,6 +41,26 @@ Should print a line containing `"Holy Blocker Dev"`. If that line is missing, th
 never created on this machine, was deleted, or the keychain was reset (new machine, OS reinstall,
 `security delete-identity`, etc.) — go to "Recreating it" below.
 
+## Release identity
+
+- **Name:** `Holy Blocker Release`, created with `scripts/create-dev-signing-identity.sh --release`
+  (add `--rotate` to replace it). Same properties as the development identity: self-signed, login
+  keychain, never backed up or committed, and a different certificate, so it has a different TCC
+  identity.
+- `bundle` refuses to sign the release bundle with `Holy Blocker Dev`, and the development bundle
+  with anything but ad-hoc or `Holy Blocker Dev`.
+- `bundle-status` ends with `release and development identities: distinct`. `SAME certificate`
+  or `missing <name>` means the two are not separate; fix that before signing anything.
+
+```bash
+scripts/create-dev-signing-identity.sh --release
+HOLY_BLOCKER_SIGNING_IDENTITY="Holy Blocker Release" scripts/bundle.sh
+.build/HolyBlockerDaemon.app/Contents/MacOS/holy-blocker-macd bundle-status
+```
+
+The script calls `/usr/bin/openssl`: Homebrew's OpenSSL 3 writes a PKCS12 that `security import`
+rejects with "MAC verification failed".
+
 ## Recreating it (identity lost)
 
 Losing the identity is expected on a fresh machine or after a keychain reset — this certificate is

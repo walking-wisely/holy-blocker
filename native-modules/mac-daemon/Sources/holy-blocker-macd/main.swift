@@ -735,7 +735,10 @@ do {
         let signingIdentity = rest.count > 1 ? rest[1] : "-"
         guard identity.permitsSigning(with: signingIdentity) else {
             try? FileManager.default.removeItem(at: root)
-            fail("the development bundle may only be signed ad-hoc or with \(BundleIdentity.developmentSigningIdentity)")
+            fail(
+                identity == .development
+                    ? "the development bundle may only be signed ad-hoc or with \(BundleIdentity.developmentSigningIdentity)"
+                    : "the release bundle must not be signed with \(BundleIdentity.developmentSigningIdentity)")
         }
         try CodeSigning(runner: runner).sign(
             bundle: root, identity: signingIdentity,
@@ -756,6 +759,11 @@ do {
         let signature = try CodeSigning(runner: runner).identity(of: CodeSigning.currentCodePath)
         print("signature: \(signature)")
         print("grants survive a rebuild: \(signature.isStable)")
+        switch try SigningIdentities.inspect(runner: runner) {
+        case .distinct: print("release and development identities: distinct")
+        case .same: print("release and development identities: SAME certificate")
+        case .missing(let names): print("release and development identities: missing \(names.joined(separator: ", "))")
+        }
 
     case "launchd-plist":
         guard let half = rest.first else { fail("expected <daemon|agent>") }

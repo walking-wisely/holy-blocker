@@ -101,9 +101,9 @@ struct BundleSigningTests {
         #expect(!BundleIdentity.development.permitsSigning(with: ""))
     }
 
-    @Test("release signing is not restricted by this guard")
+    @Test("release refuses the development certificate")
     func release() {
-        #expect(BundleIdentity.holyBlocker.permitsSigning(with: "Holy Blocker Dev"))
+        #expect(!BundleIdentity.holyBlocker.permitsSigning(with: "Holy Blocker Dev"))
         #expect(BundleIdentity.holyBlocker.permitsSigning(with: "-"))
     }
 }

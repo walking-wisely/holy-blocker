@@ -54,8 +54,10 @@ public struct BundleIdentity: Equatable, Sendable {
 
     public static let developmentSigningIdentity = "Holy Blocker Dev"
 
+    public static let releaseSigningIdentity = "Holy Blocker Release"
+
     public func permitsSigning(with identity: String) -> Bool {
-        guard self == .development else { return true }
+        guard self == .development else { return identity != Self.developmentSigningIdentity }
         return identity == "-" || identity == Self.developmentSigningIdentity
     }
 
