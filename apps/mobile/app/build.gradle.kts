@@ -94,6 +94,29 @@ val stageBlocklist by tasks.registering(Sync::class) {
 android.sourceSets["main"].assets.srcDir(blocklistAssets)
 tasks.matching { it.name.matches(Regex("merge.*Assets")) }.configureEach { dependsOn(stageBlocklist) }
 
+// A release APK without a list guards nothing, and one trusting a development key accepts lists
+// signed by a key that is not secret. Development keys are the ones whose id starts with "dev".
+val checkReleaseBlocklist by tasks.registering {
+    val artifactDir = providers.gradleProperty("blocklistArtifactDir")
+    val keyDir = providers.gradleProperty("blocklistTrustedKeyDir")
+    doLast {
+        val slots = artifactDir.orNull?.let { file("$it/current/manifest.bin").exists() } ?: false
+        if (!slots) {
+            throw GradleException("A release build needs -PblocklistArtifactDir pointing at a signed list with a current/ slot.")
+        }
+        val keys = keyDir.orNull?.let { file(it).listFiles { f -> f.name.endsWith(".pub") }?.map { it.name.removeSuffix(".pub") } }
+            .orEmpty()
+        if (keys.isEmpty()) {
+            throw GradleException("A release build needs -PblocklistTrustedKeyDir holding at least one <key id>.pub.")
+        }
+        val devKeys = keys.filter { it.startsWith("dev", ignoreCase = true) }
+        if (devKeys.isNotEmpty()) {
+            throw GradleException("A release build must not trust development keys: $devKeys")
+        }
+    }
+}
+tasks.matching { it.name == "mergeReleaseAssets" }.configureEach { dependsOn(checkReleaseBlocklist) }
+
 tasks.named("preBuild") { dependsOn(checkFfiBindings) }
 
 dependencies {

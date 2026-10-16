@@ -12,7 +12,7 @@ import java.io.File
 import java.io.IOException
 
 sealed interface BlocklistLoad {
-    class Loaded(val guard: DnsGuard) : BlocklistLoad
+    class Loaded(val guard: DnsGuard, val fellBack: Boolean) : BlocklistLoad
     class Failed(val failure: BlocklistFailure) : BlocklistLoad
 }
 
@@ -22,7 +22,8 @@ sealed interface BlocklistLoad {
  * Assets: `blocklist/{current,previous}/{artifact.fst,manifest.bin}` and
  * `blocklist/keys/<key id>.pub` (raw 32-byte Ed25519 public keys). The loader
  * mmaps files, so the assets are copied out; a slot is recopied whenever its
- * bundled manifest differs from the installed one.
+ * bundled manifest differs from the installed one, unless the bundled manifest
+ * carries an older version.
  */
 class BlocklistStore(context: Context) {
 
@@ -36,22 +37,24 @@ class BlocklistStore(context: Context) {
             try {
                 install(slot)
             } catch (e: IOException) {
-                Log.w(TAG, "could not install the $slot slot")
+                Log.w(TAG, "could not install the $slot slot", e)
             }
         }
         return try {
             val guard = DnsGuard.withArtifact(root.path, trustedKeys())
-            Log.i(TAG, "blocklist loaded")
-            BlocklistLoad.Loaded(guard)
+            val current = File(root, "current/$MANIFEST").takeIf { it.exists() }?.readBytes()
+            val fellBack = BlocklistProvisioning.fellBackToPrevious(guard.artifactVersion()?.toLong(), current)
+            Log.i(TAG, "blocklist loaded, version ${guard.artifactVersion()}, fell back to previous: $fellBack")
+            BlocklistLoad.Loaded(guard, fellBack)
         } catch (e: ArtifactLoadException.Missing) {
-            failed(BlocklistFailure.MISSING)
+            failed(BlocklistFailure.MISSING, e)
         } catch (e: Exception) {
-            failed(BlocklistFailure.REJECTED)
+            failed(BlocklistFailure.REJECTED, e)
         }
     }
 
-    private fun failed(failure: BlocklistFailure): BlocklistLoad {
-        Log.w(TAG, "blocklist not loaded: $failure")
+    private fun failed(failure: BlocklistFailure, cause: Exception): BlocklistLoad {
+        Log.w(TAG, "blocklist not loaded: $failure", cause)
         return BlocklistLoad.Failed(failure)
     }
 

@@ -105,6 +105,9 @@ enum class TamperEvent(
     /** A signed blocklist was present but failed verification, so the placeholder rules are in force. */
     BLOCKLIST_REJECTED("list_rejected"),
 
+    /** The signed blocklist's `current` slot failed verification and the guard is running on `previous`. */
+    BLOCKLIST_FALLBACK("list_fallback"),
+
     /** A screen-capture session began, with the user's per-session consent. */
     SCREEN_CAPTURE_STARTED("capture_on"),
 
