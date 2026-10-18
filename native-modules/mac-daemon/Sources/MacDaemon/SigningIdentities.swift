@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 /// The release and development certificates in the login keychain, compared by fingerprint.
@@ -30,6 +31,18 @@ public enum SigningIdentities {
         let missing = [release, development].filter { found[$0] == nil }
         guard missing.isEmpty else { return .missing(missing) }
         return found[release] == found[development] ? .same : .distinct
+    }
+
+    public static func fingerprint(ofCertificate der: Data) -> String {
+        Insecure.SHA1.hash(data: der).map { String(format: "%02X", $0) }.joined()
+    }
+
+    public static func leafMatches(
+        _ flavor: BundleIdentity, fingerprint: String, listing: String
+    ) -> Bool {
+        let name = flavor == .development
+            ? BundleIdentity.developmentSigningIdentity : BundleIdentity.releaseSigningIdentity
+        return parse(listing)[name]?.uppercased() == fingerprint.uppercased()
     }
 
     public static func inspect(runner: CommandRunner) throws -> Distinction {

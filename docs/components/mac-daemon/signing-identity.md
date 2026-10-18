@@ -103,7 +103,8 @@ scripts/create-dev-signing-identity.sh --rotate
 ```
 
 This deletes the existing `Holy Blocker Dev` identity from the login keychain first, then creates a
-fresh one. As with recreation-after-loss, every existing grant is invalidated — re-grant Screen
+fresh one, including any duplicate under the same name whose certificate is untrusted. The script then
+asks for the login keychain password once, to let `codesign` use the new key without a prompt. As with recreation-after-loss, every existing grant is invalidated — re-grant Screen
 Recording / Accessibility after the next `scripts/bundle.sh` + agent bootstrap.
 
 ## Why it isn't backed up

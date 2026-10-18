@@ -81,6 +81,14 @@ public struct BundleIdentity: Equatable, Sendable {
         }
     }
 
+    public func accepts(_ check: SigningCheck) -> Bool {
+        switch check {
+        case .matches: return true
+        case .adhoc: return self == .development
+        case .unsigned, .foreign: return false
+        }
+    }
+
     public static func running(bundleIdentifier: String?) -> BundleIdentity {
         bundleIdentifier == development.identifier ? .development : .holyBlocker
     }

@@ -759,9 +759,25 @@ do {
         let signature = try CodeSigning(runner: runner).identity(of: CodeSigning.currentCodePath)
         print("signature: \(signature)")
         print("grants survive a rebuild: \(signature.isStable)")
-        if case .foreign(let authority) = runningIdentity.signingCheck(of: signature) {
+        let check = runningIdentity.signingCheck(of: signature)
+        if case .foreign(let authority) = check {
             print("signing leaf: \(authority) is not this bundle's identity")
             exit(1)
+        }
+        if !runningIdentity.accepts(check) {
+            print("signing: \(check) is not acceptable for this bundle")
+            exit(1)
+        }
+        if case .signed = signature {
+            let listing = try runner.run(
+                SystemTool.security, ["find-identity", "-p", "codesigning"]
+            ).standardOutput
+            let leaf = try CodeSigning(runner: runner).leafFingerprint(
+                of: CodeSigning.currentCodePath)
+            if !SigningIdentities.leafMatches(runningIdentity, fingerprint: leaf, listing: listing) {
+                print("signing leaf: certificate \(leaf) is not the keychain's identity for this bundle")
+                exit(1)
+            }
         }
         switch try SigningIdentities.inspect(runner: runner) {
         case .distinct: print("release and development identities: distinct")

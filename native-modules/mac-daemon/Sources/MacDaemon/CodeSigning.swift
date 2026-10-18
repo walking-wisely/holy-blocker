@@ -73,6 +73,22 @@ public struct CodeSigning {
         return Self.parseIdentity(output)
     }
 
+    public func leafFingerprint(of bundle: URL) throws -> String {
+        let scratch = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: scratch) }
+
+        let prefix = scratch.appendingPathComponent("cert").path
+        let result = try runner.run(
+            SystemTool.codesign, ["-d", "--extract-certificates=\(prefix)", bundle.path])
+        guard result.succeeded else {
+            throw CodeSigningError.inspectionFailed(result.standardError)
+        }
+        let leaf = try Data(contentsOf: URL(fileURLWithPath: prefix + "0"))
+        return SigningIdentities.fingerprint(ofCertificate: leaf)
+    }
+
     /// What to hand `codesign` to inspect a running process's own signature.
     ///
     /// `Bundle.main.bundleURL` is the bundle only when there *is* one; for a bare executable it is
