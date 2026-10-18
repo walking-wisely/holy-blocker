@@ -196,8 +196,10 @@ public final class ScanLoop {
         guard mode != .off else { return [] }
         guard eligibility.isEligible else { return [] }
 
+        // An empty frame means no capture (no Screen Recording grant at launch, or a stream that has
+        // not delivered yet). A grant revoked mid-run keeps returning the last frame instead. The image scanner needs pixels and is skipped; the text scanner reads the
+        // AX tree, not the frame, and keeps running.
         let frame = capture.currentFrame()
-        guard !frame.isEmpty else { return [] }
 
         // Resolve any pending debounced event exactly once, on the first tick at or after the
         // quiet window — this is the "immediately after a foreground change" trigger for OCR.
@@ -209,7 +211,7 @@ public final class ScanLoop {
 
         var verdicts: [ScanVerdict] = []
 
-        if shouldRunImageClassifier(now: now) {
+        if !frame.isEmpty, shouldRunImageClassifier(now: now) {
             lastImageScanAt = now
             let verdict = imageScanner.scan(frame)
             verdicts.append(applyProtectionMode(mode, to: verdict))
@@ -246,7 +248,8 @@ public final class ScanLoop {
         let elapsed = now.timeIntervalSince(last)
         let dueByMaxInterval = elapsed >= config.ocrMaxInterval
         let dueByMinInterval = elapsed >= config.ocrMinInterval
-        let frameChanged = fingerprint != lastOCRFingerprint
+        // An empty frame carries no signal that the screen is unchanged, so it counts as changed.
+        let frameChanged = fingerprint.width == 0 || fingerprint != lastOCRFingerprint
 
         return forcedByEvent || dueByMaxInterval || (dueByMinInterval && frameChanged)
     }

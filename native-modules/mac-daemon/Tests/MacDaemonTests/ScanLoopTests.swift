@@ -257,14 +257,58 @@ struct ScanLoopEligibilityTests {
         #expect(scanner.callCount == 0)
     }
 
-    @Test("skips when capture returns an empty frame")
-    func skipsEmptyFrame() {
+    @Test("an empty frame skips the image scanner but still runs the text scanner")
+    func emptyFrameRunsTextOnly() {
         let capture = FakeScreenCapture(frame: .empty(captured: date(0)))
-        let scanner = SpyScanner()
-        let loop = ScanLoop(capture: capture, scanner: scanner)
+        let image = SpyScanner()
+        let text = SpyScanner(fallback: ScanVerdict(action: .allow, rawAction: .allow, score: 0, source: .text))
+        let loop = ScanLoop(capture: capture, imageScanner: image, textScanner: text)
 
-        #expect(loop.tick(now: date(0)).isEmpty)
-        #expect(scanner.callCount == 0)
+        let verdicts = loop.tick(now: date(0))
+
+        #expect(verdicts.map(\.source) == [.text])
+        #expect(image.callCount == 0)
+        #expect(text.callCount == 1)
+    }
+
+    @Test("a frameless text scan repeats on the minimum interval, not only the maximum")
+    func framelessTextCadence() {
+        let capture = FakeScreenCapture(frame: .empty(captured: date(0)))
+        let text = SpyScanner()
+        let loop = ScanLoop(capture: capture, imageScanner: SpyScanner(), textScanner: text)
+
+        loop.tick(now: date(0))
+        loop.tick(now: date(0.5))
+        #expect(text.callCount == 1)
+        loop.tick(now: date(1.0))
+        #expect(text.callCount == 2)
+    }
+
+    @Test("the first real frame after frameless ticks runs both scanners")
+    func firstFrameAfterFrameless() {
+        let capture = FakeScreenCapture(frame: .empty(captured: date(0)))
+        let image = SpyScanner()
+        let text = SpyScanner()
+        let loop = ScanLoop(capture: capture, imageScanner: image, textScanner: text)
+
+        loop.tick(now: date(0))
+        capture.set(makeFrame(byte: 7))
+        loop.tick(now: date(1.0))
+
+        #expect(image.callCount == 1)
+        #expect(text.callCount == 2)
+    }
+
+    @Test("a frameless block verdict becomes lastVerdict")
+    func framelessVerdictRecorded() {
+        let capture = FakeScreenCapture(frame: .empty(captured: date(0)))
+        let block = ScanVerdict(action: .block, rawAction: .block, score: 0.9, source: .text)
+        let loop = ScanLoop(
+            capture: capture, imageScanner: SpyScanner(), textScanner: SpyScanner(responses: [block]))
+
+        loop.tick(now: date(0))
+
+        #expect(loop.lastVerdict?.action == .block)
     }
 
     @Test("resumes once eligibility is restored")

@@ -206,8 +206,14 @@ func runAgent() async throws {
         }
     }
 
+    // Capture is optional: the text path reads the AX tree and runs without it. Starting the stream
+    // without the grant would raise the Screen Recording prompt, so it is skipped unless held.
     let capture = SCShareableContentCapture()
-    try await capture.start()
+    if gate.lastSnapshot?.screenRecording == .granted {
+        try await capture.start()
+    } else {
+        print("screen recording not granted — running text-only, image path idle")
+    }
 
     try runRenderLoop(gate: gate, capture: capture)
 }
@@ -313,10 +319,9 @@ final class AgentRenderLoop {
     /// stages failed. This prints one line whenever the pipeline's state *changes*, which is
     /// quiet when nothing is happening and self-explanatory when something is.
     ///
-    /// Deliberately reports the frame's dimensions rather than a bare "have one": the
-    /// `!frame.isEmpty` gate in `ScanLoop.tick` is the known coupling this pass is most likely to
-    /// trip on, and "empty" is the difference between a starved `SCStream` and a scanner that ran
-    /// and allowed. Text is reported as a **character count only** — never its content, which is
+    /// Deliberately reports the frame's dimensions rather than a bare "have one": "empty" is the
+    /// difference between a starved or never-started `SCStream` and a scanner that ran and
+    /// allowed. Text is reported as a **character count only** — never its content, which is
     /// the screen of the person being protected, not debugging material.
     private func reportStateIfChanged(intent: OverlayIntent) {
         let frame = capture.currentFrame()
