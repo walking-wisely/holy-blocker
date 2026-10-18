@@ -136,6 +136,17 @@ struct LeafFingerprintTests {
                 listing: listing))
     }
 
+    @Test("a leaf equal to any of several trusted certificates under the name matches")
+    func duplicateNames() {
+        let twice = """
+              1) AAAA1111AAAA1111AAAA1111AAAA1111AAAA1111 "Holy Blocker Release"
+              2) BBBB2222BBBB2222BBBB2222BBBB2222BBBB2222 "Holy Blocker Release"
+            """
+        for fingerprint in ["AAAA1111AAAA1111AAAA1111AAAA1111AAAA1111", "BBBB2222BBBB2222BBBB2222BBBB2222BBBB2222"] {
+            #expect(SigningIdentities.leafMatches(.holyBlocker, fingerprint: fingerprint, listing: twice))
+        }
+    }
+
     @Test("a flavor whose certificate is absent from the keychain never matches")
     func absent() {
         let devOnly = "  1) 072F00A821D686310784A8790781567CE04ACEBF \"Holy Blocker Dev\""

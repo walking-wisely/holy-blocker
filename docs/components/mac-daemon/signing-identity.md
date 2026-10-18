@@ -108,7 +108,7 @@ create path (first run, `--release`, `--rotate`) then asks for the login keychai
 it has a terminal, to let `codesign` use the key without a prompt; without a terminal it prints the
 `security set-key-partition-list` command to run instead, and signing fails with
 `errSecInternalComponent` until it has been. That command applies to every signing key in the login
-keychain, not only the new one, and the password is visible in the process list while it runs. As
+keychain, not only the new one. As
 with recreation-after-loss, every existing grant is invalidated — re-grant Screen
 Recording / Accessibility after the next `scripts/bundle.sh` + agent bootstrap.
 

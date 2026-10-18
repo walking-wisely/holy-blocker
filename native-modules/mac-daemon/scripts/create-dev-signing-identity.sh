@@ -85,16 +85,13 @@ security import "$workdir/dev.p12" -k "$KEYCHAIN" -P "$p12_pass" -T /usr/bin/cod
 security add-trusted-cert -p codeSign -k "$KEYCHAIN" "$workdir/dev.crt"
 
 # -T alone leaves codesign failing with errSecInternalComponent when no prompt can be shown.
+# No -l filter: the private key's label is a hash, not the certificate name, so the list
+# applies to every signing key in the keychain. No -k: security prompts for the password itself.
 if [[ -t 0 ]]; then
-  read -rsp "login keychain password (to let codesign use the key without a prompt): " keychain_password
-  echo
-  # No -l filter: the private key's label is a hash, not the certificate name, so the list
-  # applies to every signing key in the keychain.
-  security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$KEYCHAIN" >/dev/null \
-    || echo "set-key-partition-list failed (wrong password?); run it again by hand before signing" >&2
-  unset keychain_password
+  security set-key-partition-list -S apple-tool:,apple:,codesign: -s "$KEYCHAIN" >/dev/null \
+    || echo "set-key-partition-list failed; run it again by hand before signing" >&2
 else
-  echo "no terminal: run 'security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k <password> $KEYCHAIN' before signing" >&2
+  echo "no terminal: run 'security set-key-partition-list -S apple-tool:,apple:,codesign: -s $KEYCHAIN' before signing" >&2
 fi
 
 echo

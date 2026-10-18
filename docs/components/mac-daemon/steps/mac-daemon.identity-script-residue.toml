@@ -1,5 +1,5 @@
 id = "mac-daemon.identity-script-residue"
-title = "Identity script residue: the extraction test does not cover the cert-file read, the partition list applies to every signing key, the keychain password shows in ps, and a duplicate trusted name reports a misleading mismatch"
+title = "Identity script residue: the extraction test does not cover the cert-file read, and the partition list applies to every signing key in the login keychain"
 status = "pending"
 evidence = ""
 kind = "bug"

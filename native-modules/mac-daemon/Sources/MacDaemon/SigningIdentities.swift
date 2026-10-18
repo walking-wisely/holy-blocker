@@ -12,14 +12,18 @@ public enum SigningIdentities {
 
     /// `security find-identity -v -p codesigning` prints `  N) <SHA-1> "<name>"` per identity.
     public static func parse(_ output: String) -> [String: String] {
-        var found: [String: String] = [:]
+        parseAll(output).compactMapValues(\.last)
+    }
+
+    static func parseAll(_ output: String) -> [String: [String]] {
+        var found: [String: [String]] = [:]
         for line in output.split(separator: "\n") {
             let parts = line.split(separator: " ", maxSplits: 2, omittingEmptySubsequences: true)
             guard parts.count == 3, parts[0].hasSuffix(")"), parts[1].count == 40,
                 parts[1].allSatisfy(\.isHexDigit),
                 parts[2].hasPrefix("\""), parts[2].hasSuffix("\""), parts[2].count >= 2
             else { continue }
-            found[String(parts[2].dropFirst().dropLast())] = String(parts[1])
+            found[String(parts[2].dropFirst().dropLast()), default: []].append(String(parts[1]))
         }
         return found
     }
@@ -42,7 +46,7 @@ public enum SigningIdentities {
     ) -> Bool {
         let name = flavor == .development
             ? BundleIdentity.developmentSigningIdentity : BundleIdentity.releaseSigningIdentity
-        return parse(listing)[name]?.uppercased() == fingerprint.uppercased()
+        return parseAll(listing)[name]?.contains { $0.uppercased() == fingerprint.uppercased() } ?? false
     }
 
     public static func inspect(runner: CommandRunner) throws -> Distinction {
