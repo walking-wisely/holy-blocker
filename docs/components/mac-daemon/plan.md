@@ -564,7 +564,9 @@ merged; 6 is human-only, no code):
    `ScanLoop.tick` (`ScanLoop.swift:179`) gates on `!frame.isEmpty`, so without a Screen Recording
    grant the AX-text scanner never runs at all even though it doesn't touch frame pixels — since
    Screen Recording is being granted anyway for session 6, `ScanLoop` is left untouched rather than
-   special-cased for a frame-less scanner; revisit once a real image scanner exists.~~ **Done**,
+   special-cased for a frame-less scanner; revisit once a real image scanner exists.~~ **Done**
+   (the coupling itself closed by step `mac-daemon.scan-loop-frameless`: an empty frame now skips only
+   the image scanner, and the agent starts no capture stream without the grant),
    with the three timers built as specified and one addition the bullet didn't anticipate. The
    mapping from `ScanVerdict.action` to `OverlayIntent` — the exact seam
    `OverlayIntent.OverlayVerdictAction`'s doc comment named this session as the place to resolve —

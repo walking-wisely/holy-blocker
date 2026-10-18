@@ -206,8 +206,14 @@ func runAgent() async throws {
         }
     }
 
+    // Capture is optional: the text path reads the AX tree and runs without it. Starting the stream
+    // without the grant would raise the Screen Recording prompt, so it is skipped unless held.
     let capture = SCShareableContentCapture()
-    try await capture.start()
+    if gate.lastSnapshot?.screenRecording == .granted {
+        try await capture.start()
+    } else {
+        print("screen recording not granted — running text-only, image path idle")
+    }
 
     try runRenderLoop(gate: gate, capture: capture)
 }
