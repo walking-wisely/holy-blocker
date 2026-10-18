@@ -53,12 +53,16 @@ if [[ -n "$existing" && "$ROTATE" -eq 0 ]]; then
   exit 0
 fi
 
-if [[ -n "$existing" && "$ROTATE" -eq 1 ]]; then
-  echo "rotating: removing existing \"$IDENTITY_NAME\" from $KEYCHAIN"
-  echo "this invalidates every TCC grant made to the old certificate."
-  while IFS= read -r sha1; do
-    security delete-identity -Z "$sha1" "$KEYCHAIN"
-  done < <(echo "$existing" | sed -n 's/^ *[0-9]*) \([0-9A-F]*\).*/\1/p')
+if [[ "$ROTATE" -eq 1 ]]; then
+  # Without -v, find-identity also lists identities whose certificate is untrusted.
+  every="$(security find-identity -p codesigning "$KEYCHAIN" 2>/dev/null | grep -F "\"$IDENTITY_NAME\"" || true)"
+  if [[ -n "$every" ]]; then
+    echo "rotating: removing existing \"$IDENTITY_NAME\" from $KEYCHAIN"
+    echo "this invalidates every TCC grant made to the old certificate."
+    while IFS= read -r sha1; do
+      security delete-identity -Z "$sha1" "$KEYCHAIN"
+    done < <(echo "$every" | sed -n 's/^ *[0-9]*) \([0-9A-F]*\).*/\1/p')
+  fi
 fi
 
 workdir="$(mktemp -d)"
@@ -79,6 +83,16 @@ p12_pass="$("$OPENSSL" rand -base64 24)"
 
 security import "$workdir/dev.p12" -k "$KEYCHAIN" -P "$p12_pass" -T /usr/bin/codesign
 security add-trusted-cert -p codeSign -k "$KEYCHAIN" "$workdir/dev.crt"
+
+# -T alone leaves codesign failing with errSecInternalComponent when no prompt can be shown.
+# No -l filter: the private key's label is a hash, not the certificate name, so the list
+# applies to every signing key in the keychain. No -k: security prompts for the password itself.
+if [[ -t 0 ]]; then
+  security set-key-partition-list -S apple-tool:,apple:,codesign: -s "$KEYCHAIN" >/dev/null \
+    || echo "set-key-partition-list failed; run it again by hand before signing" >&2
+else
+  echo "no terminal: run 'security set-key-partition-list -S apple-tool:,apple:,codesign: -s $KEYCHAIN' before signing" >&2
+fi
 
 echo
 security find-identity -v -p codesigning "$KEYCHAIN" | grep -F "\"$IDENTITY_NAME\""
