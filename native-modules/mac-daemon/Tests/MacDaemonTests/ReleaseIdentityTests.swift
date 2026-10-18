@@ -67,3 +67,29 @@ struct ReleaseSigningTests {
         #expect(BundleIdentity.releaseSigningIdentity != BundleIdentity.developmentSigningIdentity)
     }
 }
+
+@Suite("BundleIdentity signing check")
+struct BundleSigningCheckTests {
+    @Test("a bundle signed with its own flavor's certificate matches")
+    func matches() {
+        #expect(
+            BundleIdentity.holyBlocker.signingCheck(of: .signed(authority: "Holy Blocker Release"))
+                == .matches)
+        #expect(
+            BundleIdentity.development.signingCheck(of: .signed(authority: "Holy Blocker Dev"))
+                == .matches)
+    }
+
+    @Test("a release bundle carrying the development leaf is foreign")
+    func foreign() {
+        #expect(
+            BundleIdentity.holyBlocker.signingCheck(of: .signed(authority: "Holy Blocker Dev"))
+                == .foreign("Holy Blocker Dev"))
+    }
+
+    @Test("ad-hoc and unsigned are reported as such")
+    func unstable() {
+        #expect(BundleIdentity.holyBlocker.signingCheck(of: .adhoc) == .adhoc)
+        #expect(BundleIdentity.holyBlocker.signingCheck(of: .unsigned) == .unsigned)
+    }
+}
