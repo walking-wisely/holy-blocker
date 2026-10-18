@@ -88,7 +88,10 @@ security add-trusted-cert -p codeSign -k "$KEYCHAIN" "$workdir/dev.crt"
 if [[ -t 0 ]]; then
   read -rsp "login keychain password (to let codesign use the key without a prompt): " keychain_password
   echo
-  security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$KEYCHAIN" >/dev/null
+  # No -l filter: the private key's label is a hash, not the certificate name, so the list
+  # applies to every signing key in the keychain.
+  security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$KEYCHAIN" >/dev/null \
+    || echo "set-key-partition-list failed (wrong password?); run it again by hand before signing" >&2
   unset keychain_password
 else
   echo "no terminal: run 'security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k <password> $KEYCHAIN' before signing" >&2
