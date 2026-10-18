@@ -319,10 +319,9 @@ final class AgentRenderLoop {
     /// stages failed. This prints one line whenever the pipeline's state *changes*, which is
     /// quiet when nothing is happening and self-explanatory when something is.
     ///
-    /// Deliberately reports the frame's dimensions rather than a bare "have one": the
-    /// `!frame.isEmpty` gate in `ScanLoop.tick` is the known coupling this pass is most likely to
-    /// trip on, and "empty" is the difference between a starved `SCStream` and a scanner that ran
-    /// and allowed. Text is reported as a **character count only** — never its content, which is
+    /// Deliberately reports the frame's dimensions rather than a bare "have one": "empty" is the
+    /// difference between a starved or never-started `SCStream` and a scanner that ran and
+    /// allowed. Text is reported as a **character count only** — never its content, which is
     /// the screen of the person being protected, not debugging material.
     private func reportStateIfChanged(intent: OverlayIntent) {
         let frame = capture.currentFrame()

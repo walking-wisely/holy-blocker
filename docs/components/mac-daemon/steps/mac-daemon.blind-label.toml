@@ -1,0 +1,8 @@
+id = "mac-daemon.blind-label"
+title = "PermissionGate.assess reports blind without Screen Recording although the text path still blocks, so the log and tamper events overstate the loss"
+status = "pending"
+evidence = ""
+kind = "bug"
+regressed_step = "mac-daemon.scan-loop-frameless"
+acceptance = "code"
+verify = "./scripts/test.sh from native-modules/mac-daemon"

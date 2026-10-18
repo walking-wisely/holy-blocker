@@ -196,8 +196,8 @@ public final class ScanLoop {
         guard mode != .off else { return [] }
         guard eligibility.isEligible else { return [] }
 
-        // An empty frame means no capture (no Screen Recording grant, or a stream that has not
-        // delivered yet). The image scanner needs pixels and is skipped; the text scanner reads the
+        // An empty frame means no capture (no Screen Recording grant at launch, or a stream that has
+        // not delivered yet). A grant revoked mid-run keeps returning the last frame instead. The image scanner needs pixels and is skipped; the text scanner reads the
         // AX tree, not the frame, and keeps running.
         let frame = capture.currentFrame()
 

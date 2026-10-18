@@ -284,6 +284,21 @@ struct ScanLoopEligibilityTests {
         #expect(text.callCount == 2)
     }
 
+    @Test("the first real frame after frameless ticks runs both scanners")
+    func firstFrameAfterFrameless() {
+        let capture = FakeScreenCapture(frame: .empty(captured: date(0)))
+        let image = SpyScanner()
+        let text = SpyScanner()
+        let loop = ScanLoop(capture: capture, imageScanner: image, textScanner: text)
+
+        loop.tick(now: date(0))
+        capture.set(makeFrame(byte: 7))
+        loop.tick(now: date(1.0))
+
+        #expect(image.callCount == 1)
+        #expect(text.callCount == 2)
+    }
+
     @Test("a frameless block verdict becomes lastVerdict")
     func framelessVerdictRecorded() {
         let capture = FakeScreenCapture(frame: .empty(captured: date(0)))
