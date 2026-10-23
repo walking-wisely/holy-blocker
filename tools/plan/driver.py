@@ -5,6 +5,7 @@ Usage:
                                     [--budget USD] [--total-budget USD] [--timeout SECONDS] [--model M]
                                     [--permission-mode MODE]
     python -m tools.plan.driver status
+    python -m tools.plan.driver tail [SESSION]
     python -m tools.plan.driver release STEP
 
 Runs append to HOME/driver/runs.jsonl. The driver itself calls no model; tokens are spent
@@ -39,6 +40,7 @@ FAILED = ("failed", "timeout", "unreported", "violation")
 MAX_ATTEMPTS = 2
 OUT_RETENTION_DAYS = 30
 HEARTBEAT_S = 30
+POLL_S = 5
 PERMISSION_MODES = ("auto", "acceptEdits", "dontAsk")
 PR_URL = re.compile(r"https://github\.com/[\w.-]+/[\w.-]+/pull/\d+")
 PR_STATES = {"MERGED": "merged", "OPEN": "pr-open"}
@@ -169,7 +171,7 @@ def build_command(prompt: str, session_id: str, options: Options) -> list[str]:
 
 
 def run_process(
-    command: list[str], cwd: Path, timeout: int, on_tick=None, interval: float = HEARTBEAT_S
+    command: list[str], cwd: Path, timeout: int, on_tick=None, interval: float = POLL_S
 ) -> Completed | TimedOut:
     child = subprocess.Popen(
         command, cwd=cwd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
@@ -188,6 +190,77 @@ def run_process(
                 return TimedOut(stdout or "", stderr or "")
             if on_tick:
                 on_tick(time.monotonic() - started)
+
+
+class Narrator:
+    """Prints a running session's new tool calls and failures as its transcript grows."""
+
+    def __init__(self, session_id: str, announce=print):
+        self.session_id = session_id
+        self.announce = announce
+        self.offset = 0
+        self.labels: dict[str, str] = {}
+        self.last_printed = 0.0
+
+    def _new_entries(self) -> list[dict]:
+        path = context.session_transcript(self.session_id, context.PROJECTS)
+        if path is None:
+            return []
+        with path.open("rb") as handle:
+            handle.seek(self.offset)
+            chunk = handle.read()
+        complete = chunk[: chunk.rfind(b"\n") + 1]
+        self.offset += len(complete)
+        entries = []
+        for line in complete.decode("utf-8", errors="replace").splitlines():
+            try:
+                entries.append(json.loads(line))
+            except ValueError:
+                continue
+        return entries
+
+    def _lines(self, entry: dict) -> list[str]:
+        content = entry.get("message", {}).get("content")
+        out = []
+        for block in content if isinstance(content, list) else []:
+            if not isinstance(block, dict):
+                continue
+            if entry.get("type") == "assistant" and block.get("type") == "tool_use":
+                label = sessionlog.describe_tool(block)
+                self.labels[block.get("id")] = label
+                out.append(label)
+            elif block.get("type") == "tool_result" and block.get("is_error"):
+                out.append(f"! {self.labels.get(block.get('tool_use_id'), 'tool')} failed")
+        return out
+
+    def tick(self, elapsed: float) -> None:
+        printed = False
+        for entry in self._new_entries():
+            for text in self._lines(entry):
+                self.announce(f"  {sessionlog.fmt_duration(elapsed)} {text}", flush=True)
+                printed = True
+        if printed:
+            self.last_printed = elapsed
+        elif elapsed - self.last_printed >= HEARTBEAT_S:
+            self.announce(progress_line(self.session_id, elapsed), flush=True)
+            self.last_printed = elapsed
+
+
+def finish_line(session_id: str) -> str:
+    transcript = context.session_transcript(session_id, context.PROJECTS)
+    if transcript is None:
+        return ""
+    row = sessionlog.summarize(transcript)
+    slowest = sorted(row["tool_seconds"].items(), key=lambda item: item[1], reverse=True)[:2]
+    parts = [
+        f"{sum(row['tool_counts'].values())} tool calls",
+        f"{row['subagents']} subagents",
+        f"{sum(row['tool_errors'].values())} tool errors",
+        f"{row['permission_blocks']} permission blocks",
+        "slowest " + ", ".join(f"{n} {sessionlog.fmt_duration(v)}" for n, v in slowest)
+        if slowest else "",
+    ]
+    return "  " + ", ".join(part for part in parts if part)
 
 
 def progress_line(session_id: str, elapsed: float) -> str:
@@ -233,7 +306,7 @@ def execute(
     out_dir: Path = OUT_DIR,
     pr_state=github_pr_state,
     announce=print,
-    progress=progress_line,
+    narrate=Narrator,
 ) -> dict:
     session_id = str(uuid.uuid4())
     prompt = build_prompt(candidate.step, candidate.package)
@@ -244,7 +317,7 @@ def execute(
     announce(f"  session {session_id}", flush=True)
     result = process(
         build_command(prompt, session_id, options), Path(root), options.timeout,
-        lambda elapsed: announce(progress(session_id, elapsed), flush=True),
+        narrate(session_id, announce).tick,
     )
     record["ended"] = _now()
     returncode = None if isinstance(result, TimedOut) else result.returncode
@@ -372,6 +445,9 @@ def run_loop(
         append_record(runs, record)
         records.append(record)
         print(f"  {record['outcome']} {record.get('detail', '')}".rstrip(), flush=True)
+        summary = finish_line(record.get("session_id", ""))
+        if summary:
+            print(summary, flush=True)
         spent += record.get("cost_usd") or 0
         streak = streak + 1 if record["outcome"] in FAILED else 0
         if streak >= options.max_failures:
@@ -427,6 +503,27 @@ def status(records: list[dict], alive=pid_alive) -> str:
     return "\n".join(lines) + "\n"
 
 
+def tail_session(session_id: str | None, sleep=time.sleep) -> int:
+    if not session_id:
+        rows = sessionlog.refresh(
+            context.PROJECTS, context.project_slug(sessionlog.main_checkout()), sessionlog.INDEX
+        )
+        drivers = [r for r in rows if r["kind"] == "driver"]
+        if not drivers:
+            print("no driver session to follow; pass a session id", file=sys.stderr)
+            return 1
+        session_id = drivers[-1]["session_id"]
+    narrator = Narrator(session_id)
+    started = time.monotonic()
+    print(f"following {session_id} (Ctrl-C to stop)", flush=True)
+    try:
+        while True:
+            narrator.tick(time.monotonic() - started)
+            sleep(POLL_S)
+    except KeyboardInterrupt:
+        return 0
+
+
 def _positive(text: str) -> float:
     value = float(text)
     if not math.isfinite(value) or value <= 0:
@@ -450,6 +547,8 @@ def main(argv: list[str] | None = None) -> int:
         "--permission-mode", choices=PERMISSION_MODES, default=defaults.permission_mode
     )
     sub.add_parser("status")
+    tail = sub.add_parser("tail")
+    tail.add_argument("session_id", nargs="?")
     release = sub.add_parser("release")
     release.add_argument("step")
     args = parser.parse_args(argv)
@@ -457,6 +556,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "status":
         print(status(read_records(RUNS)))
         return 0
+    if args.command == "tail":
+        return tail_session(args.session_id)
     if args.command == "release":
         append_record(RUNS, {"event": "release", "step": args.step, "at": _now()})
         print(f"released {args.step}")
