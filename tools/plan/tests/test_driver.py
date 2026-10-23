@@ -1,3 +1,4 @@
+import io
 import json
 import os
 import stat
@@ -340,6 +341,14 @@ class ProcessSafetyTest(unittest.TestCase):
         result = driver.run_process(["sleep", "2"], Path.cwd(), 30, on_tick=broken, interval=0.5)
         self.assertIsInstance(result, driver.Completed)
 
+    def test_a_permanently_failing_hook_is_reported_once(self):
+        def broken(elapsed):
+            raise RuntimeError("boom")
+        captured = io.StringIO()
+        with driver.contextlib.redirect_stderr(captured):
+            driver.run_process(["sleep", "2"], Path.cwd(), 30, on_tick=broken, interval=0.3)
+        self.assertEqual(captured.getvalue().count("progress unavailable"), 1)
+
     def test_an_interrupt_kills_the_child_before_propagating(self):
         with tempfile.TemporaryDirectory() as tmp:
             pidfile = Path(tmp) / "pid"
@@ -456,6 +465,18 @@ class NarratorTest(unittest.TestCase):
         ]) + "\n")
         self.narrator.tick(5)
         self.assertEqual(self.lines, ["  5s Bash", "  5s Bash(ls)"])
+
+    def test_odd_shapes_never_stop_the_narrator(self):
+        odd = (None, 7, "s", [], ["x"], {}, [[]], True)
+        entries = []
+        for value in odd:
+            entries.append({"type": "assistant", "message": {"content": [{"type": "tool_use", "id": value, "name": value, "input": value}]}})
+            entries.append({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": value, "is_error": True}]}})
+            entries.append({"type": "assistant", "message": {"content": value}})
+        entries.append(json.loads(_tool_use_line("9", "Bash", command="ls")))
+        self.transcript.write_text("".join(json.dumps(e) + "\n" for e in entries))
+        self.narrator.tick(5)
+        self.assertIn("  5s Bash(ls)", self.lines)
 
     def test_a_replaced_shorter_transcript_is_read_from_the_start(self):
         self.write(_tool_use_line("1", "Bash", command="ls"))

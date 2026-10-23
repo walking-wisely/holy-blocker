@@ -42,6 +42,7 @@ MAX_ATTEMPTS = 2
 OUT_RETENTION_DAYS = 30
 HEARTBEAT_S = 30
 POLL_S = 5
+KILL_WAIT_S = 5
 PERMISSION_MODES = ("auto", "acceptEdits", "dontAsk")
 PR_URL = re.compile(r"https://github\.com/[\w.-]+/[\w.-]+/pull/\d+")
 SESSION_ID = re.compile(r"[\w-]{1,64}")
@@ -180,6 +181,7 @@ def run_process(
         stderr=subprocess.PIPE, text=True, start_new_session=True,
     )
     started = time.monotonic()
+    reported = False
     try:
         while True:
             remaining = timeout - (time.monotonic() - started)
@@ -195,11 +197,14 @@ def run_process(
                     try:
                         on_tick(time.monotonic() - started)
                     except Exception as err:
-                        print(f"  progress unavailable: {err!r}", file=sys.stderr)
+                        if not reported:
+                            print(f"  progress unavailable: {err!r}", file=sys.stderr)
+                            reported = True
     except BaseException:
         with contextlib.suppress(OSError):
             os.killpg(child.pid, signal.SIGKILL)
-        child.communicate()
+        with contextlib.suppress(Exception):
+            child.communicate(timeout=KILL_WAIT_S)
         raise
 
 
@@ -255,7 +260,11 @@ class Narrator:
     def tick(self, elapsed: float) -> None:
         printed = False
         for entry in self._new_entries():
-            for text in self._lines(entry):
+            try:
+                texts = self._lines(entry)
+            except (AttributeError, TypeError, ValueError, KeyError):
+                continue
+            for text in texts:
                 self.announce(f"  {sessionlog.fmt_duration(elapsed)} {text}", flush=True)
                 printed = True
         if printed:

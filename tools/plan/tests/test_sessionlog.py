@@ -223,6 +223,32 @@ class MalformedTranscriptTest(unittest.TestCase):
             self.assertEqual(sessionlog.last_activity(path)["tool_calls"], 1)
 
 
+ODD_VALUES = (None, 7, 1.5, "s", [], ["x"], {}, {"k": "v"}, [[]], True)
+
+
+class FuzzedTranscriptTest(unittest.TestCase):
+    def lines(self):
+        for value in ODD_VALUES:
+            yield {"type": "assistant", "timestamp": _ts(1), "message": value}
+            yield {"type": "assistant", "timestamp": _ts(2), "message": {"content": value, "usage": value, "model": value, "id": value}}
+            yield {"type": "assistant", "timestamp": _ts(3), "message": {"content": [{"type": "tool_use", "id": value, "name": value, "input": value}]}}
+            yield {"type": "assistant", "timestamp": _ts(4), "message": {"content": [{"type": "tool_use", "id": "i", "name": "Edit", "input": {"file_path": value}}]}}
+            yield {"type": "assistant", "timestamp": _ts(5), "message": {"usage": {"output_tokens": value, "input_tokens": value}}}
+            yield {"type": "user", "timestamp": _ts(6), "origin": value, "message": {"content": value}}
+            yield {"type": "user", "timestamp": _ts(7), "message": {"content": [{"type": "tool_result", "tool_use_id": value, "is_error": value, "content": value}]}}
+            yield {"type": value, "timestamp": value}
+            yield {"type": "cost-state", "totalCostUSD": value}
+
+    def test_no_shape_can_break_a_summary_or_the_activity_view(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "fuzz.jsonl"
+            path.write_text("\n".join(json.dumps(e) for e in self.lines()) + "\n")
+            summary = sessionlog.summarize(path)
+            activity = sessionlog.last_activity(path)
+        self.assertEqual(summary["session_id"], "fuzz")
+        self.assertIn("tool_calls", activity)
+
+
 class DescribeToolTest(unittest.TestCase):
     def test_labels_carry_only_plain_identifiers_or_file_names(self):
         def block(name, **args):

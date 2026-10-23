@@ -131,77 +131,79 @@ def summarize(path: Path) -> dict:
     permission_blocks = 0
 
     for entry in _entries(path):
-        kind = entry.get("type")
-        stamp = _time(entry.get("timestamp"))
-        if kind == "cost-state":
-            cost = entry.get("totalCostUSD", cost)
-        for key, field in (("entrypoint", "entrypoint"), ("branch", "gitBranch")):
-            if key not in meta and entry.get(field):
-                meta[key] = entry[field]
-        if stamp is None:
-            continue
-        first = min(first, stamp) if first else stamp
-        last = max(last, stamp) if last else stamp
-
-        human = False
-        resumed_tool = False
-        if kind == "user":
-            content = entry.get("message", {}).get("content")
-            if _is_prompt(entry) and entry.get("origin", {}).get("kind") == "human":
-                if human_prompts and last_seen:
-                    gap = (stamp - last_seen).total_seconds()
-                    wait += gap
-                    longest_wait = max(longest_wait, gap)
-                human_prompts += 1
-                human = True
-            for block in content if isinstance(content, list) else []:
-                if not isinstance(block, dict) or block.get("type") != "tool_result":
-                    continue
-                resumed_tool = True
-                name, started = pending.pop(block.get("tool_use_id"), ("", None))
-                if name and started:
-                    tool_seconds[name] += (stamp - started).total_seconds()
-                if block.get("is_error"):
-                    tool_errors[name or OTHER] += 1
-                    text = _flatten(block.get("content")).lower()
-                    if any(marker in text for marker in DENIAL_MARKERS):
-                        permission_blocks += 1
-        elif kind == "assistant":
-            message = entry.get("message", {})
-            usage = message.get("usage") or {}
-            if message.get("model") == context.SYNTHETIC_MODEL:
+        try:
+            kind = entry.get("type")
+            stamp = _time(entry.get("timestamp"))
+            if kind == "cost-state":
+                cost = entry.get("totalCostUSD", cost)
+            for key, field in (("entrypoint", "entrypoint"), ("branch", "gitBranch")):
+                if key not in meta and entry.get(field):
+                    meta[key] = entry[field]
+            if stamp is None:
                 continue
-            message_id = message.get("id") or f"line-{len(seen_messages)}"
-            if message_id not in seen_messages:
-                seen_messages.add(message_id)
-                models[safe_name(message.get("model", "").replace(".", "-"))] += 1
-            message_tokens[message_id] = max(
-                message_tokens.get(message_id, 0), usage.get("output_tokens") or 0
-            )
-            if not entry.get("isSidechain"):
-                peak_context = max(
-                    peak_context, sum(usage.get(key) or 0 for key in context.USAGE_KEYS)
-                )
-            for block in message.get("content") or []:
-                if not isinstance(block, dict) or block.get("type") != "tool_use":
-                    continue
-                name, args = safe_name(block.get("name")), block.get("input") or {}
-                tool_counts[name] += 1
-                pending[block.get("id")] = (name, stamp)
-                if name == "Agent":
-                    subagents += 1
-                elif name == "Skill":
-                    skills[safe_name(args.get("skill"))] += 1
-                elif name == "Bash" and str(args.get("command", "")).split():
-                    bash_heads[safe_name(str(args["command"]).split()[0])] += 1
-                elif name in EDIT_TOOLS and args.get("file_path"):
-                    edited.add(args["file_path"])
-        if last_seen and not human:
-            gap = (stamp - last_seen).total_seconds()
-            if gap <= IDLE_S or resumed_tool:
-                active += gap
-        last_seen = stamp
+            first = min(first, stamp) if first else stamp
+            last = max(last, stamp) if last else stamp
 
+            human = False
+            resumed_tool = False
+            if kind == "user":
+                content = entry.get("message", {}).get("content")
+                if _is_prompt(entry) and entry.get("origin", {}).get("kind") == "human":
+                    if human_prompts and last_seen:
+                        gap = (stamp - last_seen).total_seconds()
+                        wait += gap
+                        longest_wait = max(longest_wait, gap)
+                    human_prompts += 1
+                    human = True
+                for block in content if isinstance(content, list) else []:
+                    if not isinstance(block, dict) or block.get("type") != "tool_result":
+                        continue
+                    resumed_tool = True
+                    name, started = pending.pop(block.get("tool_use_id"), ("", None))
+                    if name and started:
+                        tool_seconds[name] += (stamp - started).total_seconds()
+                    if block.get("is_error"):
+                        tool_errors[name or OTHER] += 1
+                        text = _flatten(block.get("content")).lower()
+                        if any(marker in text for marker in DENIAL_MARKERS):
+                            permission_blocks += 1
+            elif kind == "assistant":
+                message = entry.get("message", {})
+                usage = message.get("usage") or {}
+                if message.get("model") == context.SYNTHETIC_MODEL:
+                    continue
+                message_id = message.get("id") or f"line-{len(seen_messages)}"
+                if message_id not in seen_messages:
+                    seen_messages.add(message_id)
+                    models[safe_name(message.get("model", "").replace(".", "-"))] += 1
+                message_tokens[message_id] = max(
+                    message_tokens.get(message_id, 0), usage.get("output_tokens") or 0
+                )
+                if not entry.get("isSidechain"):
+                    peak_context = max(
+                        peak_context, sum(usage.get(key) or 0 for key in context.USAGE_KEYS)
+                    )
+                for block in message.get("content") or []:
+                    if not isinstance(block, dict) or block.get("type") != "tool_use":
+                        continue
+                    name, args = safe_name(block.get("name")), block.get("input") or {}
+                    tool_counts[name] += 1
+                    pending[block.get("id")] = (name, stamp)
+                    if name == "Agent":
+                        subagents += 1
+                    elif name == "Skill":
+                        skills[safe_name(args.get("skill"))] += 1
+                    elif name == "Bash" and str(args.get("command", "")).split():
+                        bash_heads[safe_name(str(args["command"]).split()[0])] += 1
+                    elif name in EDIT_TOOLS and args.get("file_path"):
+                        edited.add(args["file_path"])
+            if last_seen and not human:
+                gap = (stamp - last_seen).total_seconds()
+                if gap <= IDLE_S or resumed_tool:
+                    active += gap
+            last_seen = stamp
+        except (AttributeError, TypeError, ValueError, KeyError):
+            continue
     output_tokens = sum(message_tokens.values())
     duration = (last - first).total_seconds() if first and last else 0.0
     return {
@@ -251,15 +253,18 @@ def last_activity(path: Path) -> dict:
     """Tool-call count, the latest tool, and seconds since the last event, for a running session."""
     calls, last_tool, last_stamp = 0, "", None
     for entry in _entries(path):
-        stamp = _time(entry.get("timestamp"))
-        if stamp:
-            last_stamp = stamp
-        if entry.get("type") != "assistant":
+        try:
+            stamp = _time(entry.get("timestamp"))
+            if stamp:
+                last_stamp = stamp
+            if entry.get("type") != "assistant":
+                continue
+            for block in entry.get("message", {}).get("content") or []:
+                if isinstance(block, dict) and block.get("type") == "tool_use":
+                    calls += 1
+                    last_tool = describe_tool(block)
+        except (AttributeError, TypeError, ValueError, KeyError):
             continue
-        for block in entry.get("message", {}).get("content") or []:
-            if isinstance(block, dict) and block.get("type") == "tool_use":
-                calls += 1
-                last_tool = describe_tool(block)
     idle = (datetime.now(timezone.utc) - last_stamp).total_seconds() if last_stamp else None
     return {"tool_calls": calls, "last_tool": last_tool, "idle_s": None if idle is None else round(idle)}
 
