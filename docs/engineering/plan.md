@@ -804,6 +804,19 @@ Reference documents: `claude --help` (`--print`, `--output-format json`, `--sess
 
 Acceptance: `code`. Verify: `python3 -m unittest discover -s tools/plan/tests -t .`.
 
+### Driver visibility **Done.**
+
+<!-- step: engineering.driver-visibility -->
+
+The first unattended run printed nothing between its start and its end, so a healthy session and a
+hung one looked the same. The driver now narrates the session's own transcript while it runs: each
+tool call, each failure and a quiet-period heartbeat with seconds idle, then a one-line digest per
+step, and `driver tail [SESSION]` follows a session from another terminal. `driver status` also
+lists runs in progress or interrupted. Labels carry only a tool name plus a plain identifier or file
+name, never arguments or output.
+
+Acceptance: `code`. Verify: `python3 -m unittest discover -s tools/plan/tests -t .`.
+
 ## Step 17 — CI wait policy
 
 ### Wait for the gate, not for everything

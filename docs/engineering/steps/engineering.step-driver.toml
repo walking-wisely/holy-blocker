@@ -1,6 +1,6 @@
 id = "engineering.step-driver"
 title = "unattended step driver: one headless session per ready step, with a run record and digest"
-status = "at-pr"
+status = "done"
 evidence = "PR #152"
 acceptance = "code"
 depends_on = ["engineering.session-log-index"]
