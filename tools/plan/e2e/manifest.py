@@ -3,7 +3,8 @@
 An under-declared `covers` makes a scenario's pass look current for code it never ran
 against, which is a false `Covered`. The closure is computed from the Cargo path
 dependencies of every crate the manifest names, plus the scenario's own directory and
-the files its commands invoke. See docs/decisions/e2e-scenario-contract.md §1.
+the files its commands invoke. The command scan is best-effort: it sees whole
+shell tokens that are existing files, not paths inside `sh -c` strings or globs. See docs/decisions/e2e-scenario-contract.md §1.
 """
 
 import shlex
@@ -107,37 +108,71 @@ def _crate_dirs(root: Path, covered: str) -> list[Path]:
     if not target.exists():
         return []
     start = target if target.is_dir() else target.parent
+    found: list[Path] = []
     for candidate in (start, *start.parents):
         if (candidate / "Cargo.toml").is_file():
-            return [candidate]
+            found.append(candidate)
+            break
         if candidate.resolve() == root.resolve():
             break
-    if not target.is_dir():
-        return []
-    return [
-        manifest.parent
-        for manifest in sorted(target.rglob("Cargo.toml"))
-        if not _SKIPPED_DIRS & set(manifest.relative_to(target).parts)
-    ]
+    if target.is_dir():
+        found += [
+            manifest.parent
+            for manifest in sorted(target.rglob("Cargo.toml"))
+            if not _SKIPPED_DIRS & set(manifest.relative_to(target).parts)
+        ]
+    return found
 
 
-def _path_dependencies(crate_dir: Path) -> list[Path]:
-    try:
-        data = tomllib.loads((crate_dir / "Cargo.toml").read_text(encoding="utf-8"))
-    except (tomllib.TOMLDecodeError, OSError, UnicodeDecodeError):
-        return []
-    tables = [data.get(name, {}) for name in _DEPENDENCY_TABLES]
-    tables += [
-        target.get(name, {})
-        for target in data.get("target", {}).values()
-        for name in _DEPENDENCY_TABLES
-    ]
+def _tables(*candidates: object) -> list[dict]:
+    return [c for c in candidates if isinstance(c, dict)]
+
+
+def _paths(base: Path, tables: list[dict]) -> list[Path]:
     return [
-        crate_dir / spec["path"]
+        base / spec["path"]
         for table in tables
         for spec in table.values()
         if isinstance(spec, dict) and isinstance(spec.get("path"), str)
     ]
+
+
+def _read_cargo(crate_dir: Path) -> dict | None:
+    try:
+        return tomllib.loads((crate_dir / "Cargo.toml").read_text(encoding="utf-8"))
+    except (tomllib.TOMLDecodeError, OSError, UnicodeDecodeError):
+        return None
+
+
+def _manifest_tables(data: dict) -> list[dict]:
+    targets = data.get("target")
+    sections = [data, *_tables(*targets.values())] if isinstance(targets, dict) else [data]
+    tables = [section.get(name) for section in sections for name in _DEPENDENCY_TABLES]
+    patches = [data.get("patch"), data.get("replace")]
+    tables += [t for p in patches if isinstance(p, dict) for t in ([p] + list(p.values()))]
+    return _tables(*tables)
+
+
+def _workspace_tables(root: Path, crate_dir: Path) -> list[tuple[Path, list[dict]]]:
+    out: list[tuple[Path, list[dict]]] = []
+    for ancestor in crate_dir.parents:
+        data = _read_cargo(ancestor) if (ancestor / "Cargo.toml").is_file() else None
+        workspace = data.get("workspace") if data else None
+        if isinstance(workspace, dict):
+            out.append((ancestor, _tables(workspace.get("dependencies")) + _manifest_tables(data)))
+        if ancestor.resolve() == root.resolve():
+            break
+    return out
+
+
+def _path_dependencies(root: Path, crate_dir: Path) -> tuple[list[Path], bool]:
+    data = _read_cargo(crate_dir)
+    if data is None:
+        return [], False
+    paths = _paths(crate_dir, _manifest_tables(data))
+    for ancestor, tables in _workspace_tables(root, crate_dir):
+        paths += _paths(ancestor, tables)
+    return paths, True
 
 
 def closure_problems(scenario: Scenario, root: Path) -> list[str]:
@@ -177,7 +212,10 @@ def closure_problems(scenario: Scenario, root: Path) -> list[str]:
         if crate in seen:
             continue
         seen.add(crate)
-        for dependency in _path_dependencies(crate):
+        dependencies, parsed = _path_dependencies(root, crate)
+        if not parsed:
+            problems.append(f"{label}: {_rel(root, crate)}/Cargo.toml is unreadable, so its path dependencies are unknown")
+        for dependency in dependencies:
             rel = _rel(root, dependency)
             if rel is None:
                 problems.append(f"{label}: {_rel(root, crate)} depends on {dependency} outside the repository")

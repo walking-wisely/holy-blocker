@@ -205,5 +205,55 @@ class ClosureTest(unittest.TestCase):
         self.assertTrue(any("outside" in p for p in found), found)
 
 
+class WorkspaceClosureTest(unittest.TestCase):
+    setUp = ClosureTest.setUp
+    scenario = ClosureTest.scenario
+
+    def test_patch_path_override_counts(self):
+        write(
+            self.root,
+            "packages/a/Cargo.toml",
+            '[package]\nname = "a"\nversion = "0.1.0"\n[patch.crates-io]\nb = { path = "../b" }\n',
+        )
+        crate(self.root, "b")
+        found = self.scenario(["demos/android", "packages/a"])
+        self.assertTrue(any("packages/b" in p for p in found), found)
+
+    def test_workspace_inherited_dependency_counts_when_only_the_member_is_covered(self):
+        write(
+            self.root,
+            "packages/Cargo.toml",
+            '[workspace]\nmembers = ["a"]\n[workspace.dependencies]\nb = { path = "b" }\n',
+        )
+        write(
+            self.root,
+            "packages/a/Cargo.toml",
+            '[package]\nname = "a"\nversion = "0.1.0"\n[dependencies]\nb.workspace = true\n',
+        )
+        crate(self.root, "b")
+        found = self.scenario(["demos/android", "packages/a"])
+        self.assertTrue(any("packages/b" in p for p in found), found)
+
+    def test_covered_workspace_root_checks_its_members(self):
+        write(self.root, "ws/Cargo.toml", '[workspace]\nmembers = ["m"]\n')
+        write(
+            self.root,
+            "ws/m/Cargo.toml",
+            '[package]\nname = "m"\nversion = "0.1.0"\n[dependencies]\nb = { path = "../../packages/b" }\n',
+        )
+        crate(self.root, "b")
+        found = self.scenario(["demos/android", "ws"])
+        self.assertTrue(any("packages/b" in p for p in found), found)
+
+    def test_malformed_dependency_tables_are_reported_not_raised(self):
+        write(self.root, "packages/a/Cargo.toml", '[package]\nname = "a"\ndependencies = 5\n')
+        self.assertEqual(self.scenario(["demos/android", "packages/a"]), [])
+
+    def test_unparsable_cargo_toml_is_reported(self):
+        write(self.root, "packages/a/Cargo.toml", "[package\n")
+        found = self.scenario(["demos/android", "packages/a"])
+        self.assertTrue(any("packages/a" in p and "Cargo.toml" in p for p in found), found)
+
+
 if __name__ == "__main__":
     unittest.main()
