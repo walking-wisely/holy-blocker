@@ -85,9 +85,14 @@ class DecideTest(unittest.TestCase):
         self.assertEqual(verdict.host_class, "android-36 arm64 AVD")
 
     def test_final_line_only(self):
-        self.assertEqual(runner.final_line("a\nb\n\n"), "b")
+        self.assertEqual(runner.final_line("a\nB\n\n"), "B")
         self.assertEqual(runner.final_line(""), "")
-        self.assertEqual(len(runner.final_line("x" * 500)), runner.MAX_LINE)
+        self.assertEqual(runner.final_line("x" * 500), runner.WITHHELD)
+
+    def test_free_text_and_escapes_are_withheld(self):
+        for line in ("token sk-SECRET", "PASS \x1b[2J", "FAIL: /Users/me/x", "FAIL: Token=abc"):
+            self.assertEqual(runner.final_line(line), runner.WITHHELD, line)
+        self.assertEqual(runner.final_line("SMOKE FAIL: no grant"), "SMOKE FAIL: no grant")
 
 
 class DigestTest(RepoCase):
@@ -156,7 +161,7 @@ class RecordTest(RepoCase):
         self.assertIsNone(runner.read_note(self.root, "x-smoke", "0" * 40))
 
     def test_hostile_host_class_is_dropped(self):
-        out = DecideTest.OK.replace("android-36 arm64 AVD", "/Users/me/secret token=abc")
+        out = DecideTest.OK.replace("android-36 arm64 AVD", "MacBook-Pro")
         self.assertIsNone(runner.decide(0, out).host_class)
 
 
@@ -189,9 +194,46 @@ class RunScenarioTest(RepoCase):
         self.assertEqual(outcome.final_line, "DONE")
 
     def test_only_final_line_is_exposed(self):
-        outcome = runner.run_scenario(self.root, self.make("true", "sh -c \"printf 'secret\\\\nlast\\\\n'; exit 1\""))
-        self.assertEqual(outcome.final_line, "last")
+        outcome = runner.run_scenario(self.root, self.make("true", "sh -c \"printf 'secret\\\\nLAST\\\\n'; exit 1\""))
+        self.assertEqual(outcome.final_line, "LAST")
         self.assertNotIn("secret", repr(outcome))
+
+
+class HardeningTest(RepoCase):
+    def test_assume_unchanged_edit_is_dirty(self):
+        git(self.root, "update-index", "--assume-unchanged", "packages/a/lib.rs")
+        self.write("packages/a/lib.rs", "edit")
+        self.assertTrue(runner.dirty(self.root, scenario().covers))
+
+    def test_skip_worktree_is_dirty(self):
+        git(self.root, "update-index", "--skip-worktree", "packages/a/lib.rs")
+        self.assertTrue(runner.dirty(self.root, scenario().covers))
+
+    def test_digest_moved_during_run_is_refused(self):
+        with self.assertRaises(runner.RecordRefused):
+            runner.record(self.root, scenario(), RecordTest.verdict(self), "2026-10-24", expected="0" * 40)
+
+    def test_invalid_ref_id_is_refused(self):
+        for bad in ("a..b", "x.lock", "a.", "a b"):
+            with self.assertRaises(runner.RecordRefused, msg=bad):
+                runner.record(self.root, scenario(id=bad), RecordTest.verdict(self), "2026-10-24")
+
+    def test_missing_cover_is_refused_not_crashed(self):
+        with self.assertRaises(runner.RecordRefused):
+            runner.record(self.root, scenario(covers=("gone",)), RecordTest.verdict(self), "2026-10-24")
+
+    def test_rename_out_of_covers_selects_scenario(self):
+        git(self.root, "checkout", "-q", "-b", "feat")
+        git(self.root, "mv", "packages/a/lib.rs", "other/moved.rs")
+        self.commit("move")
+        self.assertIn("packages/a/lib.rs", runner._changed(self.root, "master", "HEAD"))
+
+    def test_broken_manifest_fails_the_run(self):
+        self.write("demos/y/scenario.toml", "not = [valid")
+        self.commit("broken")
+        lines = []
+        code = runner.main(["select", "--base", "HEAD", "--head", "HEAD"], root=self.root, out=lines.append)
+        self.assertEqual(code, runner.EXIT_FAIL)
 
 
 class MainTest(RepoCase):
@@ -202,7 +244,7 @@ class MainTest(RepoCase):
         lines = []
         code = runner.main(["select", "--base", "master", "--head", "HEAD"], root=self.root, out=lines.append)
         text = "\n".join(lines)
-        self.assertEqual(code, 0)
+        self.assertEqual(code, runner.EXIT_UNVERIFIED)
         self.assertIn("unverified", text.lower())
         self.assertIn("1 changed paths covered by no scenario", text)
 
