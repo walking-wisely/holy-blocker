@@ -349,10 +349,96 @@ class HeartbeatTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             record = driver.execute(
                 candidate, driver.Options(), Path(tmp), process=process, out_dir=Path(tmp) / "o",
-                announce=lambda text, **k: lines.append(text), progress=lambda sid, e: f"tick {e}",
+                announce=lambda text, **k: lines.append(text),
+                narrate=lambda sid, announce: driver.argparse.Namespace(
+                    tick=lambda e: announce(f"tick {e}")),
             )
         self.assertIn(f"session {record['session_id']}", lines[0])
         self.assertEqual(lines[1], "tick 31")
+
+
+def _tool_use_line(tool_id, name, **tool_input):
+    return json.dumps({"type": "assistant", "timestamp": "2026-10-01T10:00:00.000Z", "message": {
+        "content": [{"type": "tool_use", "id": tool_id, "name": name, "input": tool_input}]}})
+
+
+def _tool_error_line(tool_id):
+    return json.dumps({"type": "user", "timestamp": "2026-10-01T10:00:01.000Z", "message": {
+        "content": [{"type": "tool_result", "tool_use_id": tool_id, "is_error": True,
+                     "content": "SECRET failure text"}]}})
+
+
+class NarratorTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        (Path(self.tmp.name) / "proj").mkdir()
+        self.transcript = Path(self.tmp.name) / "proj" / "sid.jsonl"
+        original = driver.context.PROJECTS
+        driver.context.PROJECTS = Path(self.tmp.name)
+        self.addCleanup(setattr, driver.context, "PROJECTS", original)
+        self.lines = []
+        self.narrator = driver.Narrator("sid", lambda text, **k: self.lines.append(text))
+
+    def write(self, *entries, mode="a"):
+        with self.transcript.open(mode) as out:
+            out.write("".join(e + "\n" for e in entries))
+
+    def test_new_tool_calls_are_printed_once_in_order(self):
+        self.write(_tool_use_line("1", "Bash", command="git status"), _tool_use_line("2", "Skill", skill="step-loop"))
+        self.narrator.tick(5)
+        self.narrator.tick(10)
+        self.write(_tool_use_line("3", "Edit", file_path="/r/tools/plan/loop.py"))
+        self.narrator.tick(15)
+        self.assertEqual(self.lines, [
+            "  5s Bash(git)", "  5s Skill(step-loop)", "  15s Edit(loop.py)",
+        ])
+
+    def test_a_failed_tool_is_named_without_its_output(self):
+        self.write(_tool_use_line("1", "Bash", command="cargo test"), _tool_error_line("1"))
+        self.narrator.tick(5)
+        self.assertEqual(self.lines[-1], "  5s ! Bash(cargo) failed")
+        self.assertNotIn("SECRET", " ".join(self.lines))
+
+    def test_a_half_written_line_waits_for_its_newline(self):
+        line = _tool_use_line("1", "Bash", command="ls")
+        self.transcript.write_text(line[:20])
+        self.narrator.tick(5)
+        self.assertEqual(self.lines, [])
+        self.transcript.write_text(line + "\n")
+        self.narrator.tick(10)
+        self.assertEqual(self.lines, ["  10s Bash(ls)"])
+
+    def test_a_quiet_session_gets_a_heartbeat_not_silence(self):
+        self.write(_tool_use_line("1", "Bash", command="ls"))
+        self.narrator.tick(5)
+        self.narrator.tick(20)
+        self.assertEqual(len(self.lines), 1)
+        self.narrator.tick(40)
+        self.assertIn("idle", self.lines[-1])
+
+    def test_nothing_is_printed_before_the_transcript_exists(self):
+        self.narrator.tick(5)
+        self.assertEqual(self.lines, [])
+
+
+class FinishLineTest(unittest.TestCase):
+    def test_summarizes_a_finished_session(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "proj").mkdir()
+            (Path(tmp) / "proj" / "sid.jsonl").write_text(
+                _tool_use_line("1", "Agent", subagent_type="x") + "\n" + _tool_error_line("1") + "\n"
+            )
+            original = driver.context.PROJECTS
+            driver.context.PROJECTS = Path(tmp)
+            self.addCleanup(setattr, driver.context, "PROJECTS", original)
+            line = driver.finish_line("sid")
+        self.assertIn("1 tool calls", line)
+        self.assertIn("1 subagents", line)
+        self.assertIn("1 tool errors", line)
+
+    def test_unknown_session_gives_no_line(self):
+        self.assertEqual(driver.finish_line("no-such-session"), "")
 
 
 class ProgressLineTest(unittest.TestCase):

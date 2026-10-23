@@ -209,6 +209,18 @@ class SummarizeTest(unittest.TestCase):
         self.assertEqual(self.summarize([_prompt(0)], name="sid-1")["session_id"], "sid-1")
 
 
+class DescribeToolTest(unittest.TestCase):
+    def test_labels_carry_only_plain_identifiers_or_file_names(self):
+        def block(name, **args):
+            return {"type": "tool_use", "name": name, "input": args}
+        self.assertEqual(sessionlog.describe_tool(block("Bash", command="API_KEY=abc curl x")), "Bash(other)")
+        self.assertEqual(sessionlog.describe_tool(block("Bash", command="cargo test")), "Bash(cargo)")
+        self.assertEqual(sessionlog.describe_tool(block("Edit", file_path="/a/b/loop.py")), "Edit(loop.py)")
+        self.assertEqual(sessionlog.describe_tool(block("Agent", subagent_type="Explore")), "Agent(Explore)")
+        self.assertEqual(sessionlog.describe_tool(block("Grep", pattern="secret")), "Grep")
+        self.assertEqual(sessionlog.describe_tool(block("Agent", description="x")), "Agent")
+
+
 class IndexTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

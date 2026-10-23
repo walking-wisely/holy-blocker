@@ -786,9 +786,12 @@ main checkout, and records the outcome.
 - Each step has a wall-clock timeout (the whole process group is killed), a per-step dollar cap and
   a total cap for the run. Runs append to
   `~/.holy-blocker/driver/runs.jsonl` with the session id, so `sessionlog report` can join them.
-- While a session runs, the driver prints its session id and a heartbeat every 30 seconds
-  (elapsed time, tool-call count, the latest tool name, seconds idle), read from the session's
-  own transcript. A growing idle time is the signal for a hung session; the timeout is the stop.
+- While a session runs, the driver prints its session id and narrates the session's own
+  transcript: each tool call as it happens (tool plus a plain identifier or file name, never
+  arguments or output), each failed call, and a heartbeat with seconds idle after 30 quiet
+  seconds. A growing idle time is the signal for a hung session; the timeout is the stop. A
+  one-line digest (tool calls, subagents, errors, permission blocks, slowest tools) follows each
+  step, and `driver tail [SESSION]` follows a session from another terminal.
 - `driver status` is the digest: runs in progress or interrupted, recent runs, what is parked and
   why, what failed twice, total cost.
 - The permission mode is a flag. Steps that need privilege park instead of asking, per

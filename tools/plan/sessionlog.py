@@ -223,6 +223,21 @@ def summarize(path: Path) -> dict:
     }
 
 
+def describe_tool(block: dict) -> str:
+    """A short label for a tool_use block: the tool, plus a plain identifier or file name."""
+    name, args = safe_name(block.get("name")), block.get("input") or {}
+    detail = ""
+    if name == "Bash" and str(args.get("command", "")).split():
+        detail = safe_name(str(args["command"]).split()[0])
+    elif name == "Skill":
+        detail = safe_name(args.get("skill"))
+    elif name == "Agent":
+        detail = safe_name(args["subagent_type"]) if args.get("subagent_type") else ""
+    elif name in (*EDIT_TOOLS, "Read") and args.get("file_path"):
+        detail = Path(str(args["file_path"])).name
+    return f"{name}({detail})" if detail else name
+
+
 def last_activity(path: Path) -> dict:
     """Tool-call count, the latest tool, and seconds since the last event, for a running session."""
     calls, last_tool, last_stamp = 0, "", None
@@ -235,13 +250,7 @@ def last_activity(path: Path) -> dict:
         for block in entry.get("message", {}).get("content") or []:
             if isinstance(block, dict) and block.get("type") == "tool_use":
                 calls += 1
-                args = block.get("input") or {}
-                detail = ""
-                if block.get("name") == "Bash" and str(args.get("command", "")).split():
-                    detail = safe_name(str(args["command"]).split()[0])
-                elif block.get("name") == "Skill":
-                    detail = safe_name(args.get("skill"))
-                last_tool = safe_name(block.get("name")) + (f"({detail})" if detail else "")
+                last_tool = describe_tool(block)
     idle = (datetime.now(timezone.utc) - last_stamp).total_seconds() if last_stamp else None
     return {"tool_calls": calls, "last_tool": last_tool, "idle_s": None if idle is None else round(idle)}
 
