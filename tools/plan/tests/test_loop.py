@@ -101,13 +101,13 @@ class CheckTest(unittest.TestCase):
         self.assertIn("empty", problems[0])
 
     def test_heading_followed_only_by_the_next_heading_is_empty(self):
-        body = "`desktop.ipc`\n## Assumption audit\n## Adversarial review\nN/A — x.\n"
+        body = "`desktop.ipc`\n## Assumption audit\n## Adversarial review\nN/A — not needed.\n"
         self.assertTrue(any("empty" in p for p in check(body, ["apps/desktop/a.ts"])))
 
     def test_commented_out_heading_does_not_count(self):
         body = (
             "`desktop.ipc`\n<!-- ## Assumption audit\nstuff -->\n"
-            "## Adversarial review\nN/A — x.\n"
+            "## Adversarial review\nN/A — not needed.\n"
         )
         problems = check(body, ["apps/desktop/a.ts"])
         self.assertTrue(any("Assumption audit" in p for p in problems))
@@ -115,12 +115,43 @@ class CheckTest(unittest.TestCase):
     def test_heading_inside_code_fence_does_not_count(self):
         body = (
             "`desktop.ipc`\n```\n## Assumption audit\nx\n```\n"
-            "## Adversarial review\nN/A — x.\n"
+            "## Adversarial review\nN/A — not needed.\n"
         )
         self.assertTrue(any("Assumption audit" in p for p in check(body, ["apps/desktop/a.ts"])))
 
+    def _placeholder_problems(self, content):
+        body = f"`desktop.ipc`\n## Assumption audit\n{content}\n## Adversarial review\nN/A — not needed.\n"
+        return check(body, ["apps/desktop/a.ts"])
+
+    def test_placeholder_only_sections_fail(self):
+        for content in ("-", ".", "\u200b", "N/A", "n/a.", "- N/A", "\u200b-\u200b", "x"):
+            with self.subTest(content=content):
+                self.assertTrue(any("Assumption audit" in p for p in self._placeholder_problems(content)))
+
+    def test_reasoned_not_applicable_passes(self):
+        self.assertEqual(self._placeholder_problems("N/A — rename only."), [])
+
+    def test_unterminated_comment_hides_the_rest(self):
+        body = "`desktop.ipc`\n## Adversarial review\nN/A — not needed.\n<!-- ## Assumption audit\nreal text\n"
+        self.assertTrue(any("Assumption audit" in p for p in check(body, ["apps/desktop/a.ts"])))
+
+    def test_unterminated_comment_in_a_section_is_not_content(self):
+        body = "`desktop.ipc`\n## Assumption audit\n<!-- all fine\n## Adversarial review\nN/A — not needed.\n"
+        self.assertTrue(any("Assumption audit" in p for p in check(body, ["apps/desktop/a.ts"])))
+
+    def test_unterminated_fence_hides_the_rest(self):
+        body = "`desktop.ipc`\n## Adversarial review\nN/A — not needed.\n```\n## Assumption audit\nreal text\n"
+        self.assertTrue(any("Assumption audit" in p for p in check(body, ["apps/desktop/a.ts"])))
+
+    def test_longer_fence_holding_a_shorter_one_is_stripped_as_a_unit(self):
+        body = (
+            "`desktop.ipc`\n## Assumption audit\nreal stuff\n````\ncode\n```\nmore\n````\n"
+            "## Adversarial review\nN/A — not needed.\n"
+        )
+        self.assertEqual(check(body, ["apps/desktop/a.ts"]), [])
+
     def test_nested_heading_level_does_not_count(self):
-        body = "`desktop.ipc`\n### Assumption audit\nx\n## Adversarial review\nN/A — x.\n"
+        body = "`desktop.ipc`\n### Assumption audit\nx\n## Adversarial review\nN/A — not needed.\n"
         self.assertTrue(any("Assumption audit" in p for p in check(body, ["apps/desktop/a.ts"])))
 
     def test_crlf_body_is_accepted(self):
@@ -446,8 +477,8 @@ class OpenTest(unittest.TestCase):
 
     def test_filled_template_passes_the_check(self):
         body = loop.render_body(self.STEP)
-        body = body.replace("## Assumption audit\n", "## Assumption audit\nN/A — x.\n")
-        body = body.replace("## Adversarial review\n", "## Adversarial review\nN/A — x.\n")
+        body = body.replace("## Assumption audit\n", "## Assumption audit\nN/A — not needed.\n")
+        body = body.replace("## Adversarial review\n", "## Adversarial review\nN/A — not needed.\n")
         self.assertEqual(check(body, ["packages/net-shield/src/lib.rs"]), [])
 
 

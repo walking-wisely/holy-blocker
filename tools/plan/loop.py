@@ -17,6 +17,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -24,8 +25,10 @@ from tools.plan import ledger
 
 REQUIRED_SECTIONS = ("Assumption audit", "Adversarial review")
 CODE_ROOTS = ("packages", "apps", "native-modules", "machine-learning")
-_FENCE_RE = re.compile(r"^(```|~~~).*?^\1[^\n]*$", re.S | re.M)
-_COMMENT_RE = re.compile(r"<!--.*?-->", re.S)
+_FENCE_RE = re.compile(r"^(`{3,}|~{3,}).*?(?:^\1[^\n]*$|\Z)", re.S | re.M)
+_COMMENT_RE = re.compile(r"<!--.*?(?:-->|\Z)", re.S)
+_NOT_APPLICABLE_RE = re.compile(r"\bN/A\b", re.I)
+MIN_CONTENT_CHARS = 3
 _HEADING_RE = re.compile(r"^(#{1,6})[ \t]+(.*?)[ \t]*#*[ \t]*$")
 
 
@@ -141,6 +144,12 @@ def _sanitize(body: str) -> str:
     return _COMMENT_RE.sub("", _FENCE_RE.sub("", body))
 
 
+def _has_real_content(content: str) -> bool:
+    text = "".join(c for c in content if unicodedata.category(c) != "Cf")
+    text = _NOT_APPLICABLE_RE.sub("", text)
+    return sum(c.isalnum() for c in text) >= MIN_CONTENT_CHARS
+
+
 def _sections(body: str) -> dict[str, str]:
     sections: dict[str, list[str]] = {}
     current: list[str] | None = None
@@ -192,7 +201,7 @@ def check(body: str, changed_files: list[str], manifests: list[Governed]) -> lis
         content = sections.get(title.lower())
         if content is None:
             problems.append(f"PR body has no top-level '## {title}' section")
-        elif not content:
+        elif not _has_real_content(content):
             problems.append(f"'## {title}' section is empty; write 'N/A — <reason>' if it does not apply")
     return problems
 

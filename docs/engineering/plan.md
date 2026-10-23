@@ -518,11 +518,13 @@ Open items from the dispatcher review that do not block installing it: `ca-remov
 
 Acceptance: `code`. Verify: `tools/dev-dispatch/test.sh`.
 
-### Bug — placeholder section content
+### Bug — placeholder section content **Done.**
 
 <!-- step: engineering.loop-check-placeholder-content -->
 
 `loop check` passes a body whose sections hold only `-`, `.`, a zero-width space or a bare `N/A`, and an unterminated `<!--` or code fence is not stripped. Reproduce with `check()` on a synthetic body; the fix defines a minimum for real content and closes the unterminated cases.
+
+Resolution: a section needs at least three letters or digits once zero-width and other format characters and every `N/A` token are removed, so `-`, `.`, a zero-width space and a bare `N/A` fail while `N/A — <reason>` passes. An unterminated `<!--` or code fence now runs to the end of the body and is stripped, as GitHub renders it.
 
 Acceptance: `code`. Verify: `python -m unittest discover -s tools/plan/tests -t .`.
 
