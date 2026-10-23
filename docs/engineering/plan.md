@@ -796,3 +796,35 @@ Reference documents: `claude --help` (`--print`, `--output-format json`, `--sess
 `--permission-mode`, `--max-budget-usd`).
 
 Acceptance: `code`. Verify: `python3 -m unittest discover -s tools/plan/tests -t .`.
+
+## Step 17 — CI wait policy
+
+### Wait for the gate, not for everything
+
+<!-- step: engineering.ci-wait-policy -->
+
+The first unattended step spent most of its ten minutes waiting on CI: two refused `sleep` calls,
+then `Monitor` and sleep loops, and each wait covered every check on the PR, including CodeQL,
+which runs for about six minutes while `CI gate` takes under a minute. CodeQL is not part of `CI
+gate`, `master` has no branch protection, and `test_manifests.py` pins CodeQL's pull-request paths on
+purpose, so the trigger stays and the wait changes instead.
+
+- `python -m tools.plan.ci_wait <pr>` polls `gh pr checks` until every check of the workflow that
+  owns `CI gate` has finished, and prints the checks of other workflows that are pending or failing
+  as advisory. The gate is the whole workflow because editing a PR body starts a second CI run in
+  which the heavy jobs are skipped; its `CI gate` can pass while the original run's `rust` job
+  failed, and `gh pr checks` shows only the newer gate. The `workflow` field of each check keeps the
+  original run's jobs in the verdict. Exit 0 passed, 1 failed, 2 timed out, 3 the gate never
+  appeared, the PR head is not the pushed commit (a stale pass from an older head is ignored), or
+  `gh` failed with its message, 4 cancelled. A rerun that has not started counts as newer than any
+  finished result.
+- The step-loop gate 6 and the driver's prompt name this tool, say that foreground `sleep` is
+  refused in unattended sessions, and say that only `CI gate` gates a merge. A later advisory failure
+  becomes a `kind = "bug"` step.
+
+Not covered: a CodeQL finding that arrives after the merge is not blocked, only reported.
+
+Reference documents: `gh pr checks --help` (`--json name,bucket,startedAt`; bucket is one of
+`pass`, `fail`, `pending`, `skipping`, `cancel`).
+
+Acceptance: `code`. Verify: `python3 -m unittest discover -s tools/plan/tests -t .`.

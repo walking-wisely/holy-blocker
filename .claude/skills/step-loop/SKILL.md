@@ -140,10 +140,29 @@ ready**, never as a regression, and the step is treated as unverifiable on this 
 CI does not imply the e2e layer passed; the PR record is the evidence. If `tools/plan/e2e`
 does not exist yet, say so in the PR body.
 
-Commit, push, and open the PR in one pass, then merge by acceptance kind:
+Commit, push, and open the PR in one pass. Then wait for CI with the tool, not a sleep loop:
+
+```
+python -m tools.plan.ci_wait <pr-number>     # Bash timeout 600000
+```
+
+Run it from the checkout you pushed from, which is the step's worktree: it ignores any check that
+does not belong to your pushed commit. From another checkout, pass `--sha <pushed commit>`.
+
+It returns when every check of the workflow that owns `CI gate` has finished, and prints the
+checks of other workflows (CodeQL) that are pending or failing as **advisory**. Foreground `sleep`
+is refused in unattended sessions, and CodeQL runs for minutes after the gate has passed, so never
+wait for it. Exit codes: 0 passed; 1 failed, which is a failed step, not something to retry by
+pushing again without a cause; 2 timed out, so look at the run before deciding; 3 the gate never
+appeared, the PR head is not the commit you pushed, or `gh` failed, so confirm the push and `gh
+auth status` and try once more; 4 cancelled, so re-run the workflow once with `gh run rerun`.
+Describe the advisory checks in the PR body only after the gate has passed, since a body edit starts
+another CI run. If an advisory check later fails, file a `kind = "bug"` step for it.
+
+Then merge by acceptance kind:
 
 - **`acceptance = "code"`** — done-ness is a claim about the diff. On a clean
-  fresh-context review, green CI and a passing e2e gate, squash-merge.
+  fresh-context review, a green `CI gate` and a passing e2e gate, squash-merge.
 - **`acceptance = "observation"`** — done-ness is a claim about the world. If a scenario
   can observe that truth, run it, record it, and merge on a pass. If no scenario can, or the
   host cannot run it, stop at the PR for a human to confirm against `coverage.md` and
