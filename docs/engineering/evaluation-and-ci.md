@@ -121,7 +121,7 @@ ci-platforms.yml, ci-advisories.yml, codeql.yml
   ci-plan and ci-platforms as reusable workflows and ends in a single `CI gate` job that fails if any of
   them failed or was cancelled and accepts skipped. Require `CI gate` in branch
   protection; the individual jobs are path-filtered and may legitimately not run.
-  The step loop waits for `CI gate` only (`python -m tools.plan.ci_wait <pr>`). CodeQL stays on
+  The step loop waits for the `CI` workflow only (`python -m tools.plan.ci_wait <pr>`). CodeQL stays on
   pull requests as an advisory check that is reported, never waited on, because it runs for
   minutes after the gate has passed and is not part of the gate.
 

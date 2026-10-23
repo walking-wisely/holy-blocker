@@ -1,25 +1,43 @@
-"""Wait for a pull request's gate check without sleeping in the caller.
+"""Wait for a pull request's gate workflow without sleeping in the caller.
 
 Usage:
-    python -m tools.plan.ci_wait PR [--gate "CI gate"] [--timeout 600] [--interval 10] [--grace 120]
+    python -m tools.plan.ci_wait PR [--gate "CI gate"] [--sha SHA] [--timeout 600]
+                                    [--interval 10] [--grace 120]
 
-Exit code 0 is a passed gate, 1 a failed one, 2 a timeout or a gate that never appeared. Every
-other check is advisory: its unfinished or failing state is printed with the result and never
-waited on.
+The gate is every check in the workflow that owns the `CI gate` check, so a re-run triggered by a
+PR body edit, which skips the heavy jobs, cannot hide a failure in the original run. Checks from
+other workflows, such as CodeQL, are advisory: printed with the result, never waited on.
+
+Exit code 0 passed, 1 failed, 2 timed out, 3 the gate never appeared, the PR head is not the
+expected commit, or gh failed, 4 cancelled.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 import time
+from dataclasses import dataclass
 
 GATE = "CI gate"
-FAILED_BUCKETS = ("fail", "cancel", "skipping")
-ADVISORY_BUCKETS = ("pending", "fail", "cancel")
-NOT_STARTED = ""
+PASS, FAIL, PENDING, CANCELLED = "pass", "fail", "pending", "cancelled"
+EXIT = {PASS: 0, FAIL: 1, CANCELLED: 4}
+TIMEOUT_EXIT, MISSING_EXIT = 2, 3
+SEVERITY = {"pass": 0, "skipping": 0, "pending": 1, "cancel": 2, "fail": 3}
+NOT_STARTED_YEAR = "0001"
+NEWEST = "9999"
+PR_ARGUMENT = re.compile(r"\d+|https://github\.com/[\w.-]+/[\w.-]+/pull/\d+")
+NO_CHECKS = "no checks reported"
+
+
+@dataclass(frozen=True)
+class Snapshot:
+    checks: list
+    head: str = ""
+    error: str = ""
 
 
 def parse_checks(text: str) -> list[dict]:
@@ -30,29 +48,43 @@ def parse_checks(text: str) -> list[dict]:
     return [c for c in checks if isinstance(c, dict)] if isinstance(checks, list) else []
 
 
+def _order(check: dict) -> tuple[str, int]:
+    """A rerun that has not started yet is newer than every finished run."""
+    started = check.get("startedAt") or ""
+    if not started or started.startswith(NOT_STARTED_YEAR):
+        started = NEWEST
+    return started, SEVERITY.get(check.get("bucket"), 1)
+
+
 def _latest(checks: list[dict]) -> dict[str, dict]:
     latest: dict[str, dict] = {}
     for check in checks:
         name = check.get("name")
-        started = check.get("startedAt") or NOT_STARTED
-        if name not in latest or started > (latest[name].get("startedAt") or NOT_STARTED):
+        if name not in latest or _order(check) > _order(latest[name]):
             latest[name] = check
     return latest
 
 
 def evaluate(checks: list[dict], gate: str) -> tuple[str, dict[str, str]]:
     latest = _latest(checks)
-    found = latest.pop(gate, None)
-    bucket = found.get("bucket") if found else None
-    state = "pending"
-    if bucket == "pass":
-        state = "pass"
-    elif bucket in FAILED_BUCKETS:
-        state = "fail"
+    found = latest.get(gate)
+    if found is None:
+        return PENDING, {}
+    workflow = found.get("workflow")
+    blocking = {n: c for n, c in latest.items() if c.get("workflow") == workflow}
     advisory = {
-        name: check["bucket"] for name, check in latest.items() if check.get("bucket") in ADVISORY_BUCKETS
+        n: c["bucket"]
+        for n, c in latest.items()
+        if n not in blocking and c.get("bucket") in ("pending", "fail", "cancel")
     }
-    return state, advisory
+    buckets = {c.get("bucket") for c in blocking.values()}
+    if "fail" in buckets or found.get("bucket") == "skipping":
+        return FAIL, advisory
+    if "cancel" in buckets:
+        return CANCELLED, advisory
+    if "pending" in buckets or buckets - {"pass", "skipping"} or found.get("bucket") != "pass":
+        return PENDING, advisory
+    return PASS, advisory
 
 
 def _result(gate: str, state: str, advisory: dict[str, str]) -> str:
@@ -60,22 +92,33 @@ def _result(gate: str, state: str, advisory: dict[str, str]) -> str:
     return f"{gate}: {state}" + (f" (advisory: {extra})" if extra else "")
 
 
-def wait(fetch, gate: str, timeout: float, interval: float, grace: float, sleep, clock, out) -> int:
+def wait(
+    fetch, gate: str, timeout: float, interval: float, grace: float, sleep, clock, out,
+    expected_sha: str = "",
+) -> int:
     started = clock()
     previous = None
     while True:
-        checks = fetch()
-        state, advisory = evaluate(checks, gate)
+        snapshot = fetch()
         elapsed = clock() - started
-        if state != "pending":
+        stale = bool(expected_sha and snapshot.head and snapshot.head != expected_sha)
+        checks = [] if stale else snapshot.checks
+        state, advisory = evaluate(checks, gate)
+        if state != PENDING:
             out(_result(gate, state, advisory))
-            return 0 if state == "pass" else 1
+            return EXIT[state]
         if not any(c.get("name") == gate for c in checks) and elapsed >= grace:
-            out(f"{gate} never appeared after {round(grace)}s")
-            return 2
+            if stale:
+                reason = f"the PR head is {snapshot.head[:10]}, not the pushed {expected_sha[:10]}"
+            elif snapshot.error:
+                reason = f"gh failed: {snapshot.error}"
+            else:
+                reason = f"{gate} never appeared"
+            out(f"{reason} after {round(grace)}s")
+            return MISSING_EXIT
         if elapsed >= timeout:
             out(f"timed out after {round(timeout)}s: {_result(gate, state, advisory)}")
-            return 2
+            return TIMEOUT_EXIT
         line = f"{gate}: pending"
         if line != previous:
             out(line)
@@ -83,25 +126,46 @@ def wait(fetch, gate: str, timeout: float, interval: float, grace: float, sleep,
         sleep(interval)
 
 
-def fetch_checks(pr: str) -> list[dict]:
-    done = subprocess.run(
-        ["gh", "pr", "checks", pr, "--json", "name,bucket,startedAt"],
-        capture_output=True, text=True,
-    )
-    return parse_checks(done.stdout)
+def _gh(*args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(["gh", *args], capture_output=True, text=True)
+
+
+def fetch_snapshot(pr: str) -> Snapshot:
+    checks = _gh("pr", "checks", pr, "--json", "name,bucket,startedAt,workflow")
+    head = _gh("pr", "view", pr, "--json", "headRefOid", "--jq", ".headRefOid")
+    parsed = parse_checks(checks.stdout)
+    problem = ""
+    if not parsed and NO_CHECKS not in checks.stderr and checks.returncode not in (0, 8):
+        problem = checks.stderr.strip()[:200]
+    if not head.stdout.strip() and not problem:
+        problem = head.stderr.strip()[:200]
+    return Snapshot(parsed, head.stdout.strip(), problem)
+
+
+def local_head() -> str:
+    done = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True)
+    return done.stdout.strip() if done.returncode == 0 else ""
+
+
+def pr_argument(text: str) -> str:
+    if not PR_ARGUMENT.fullmatch(text):
+        raise argparse.ArgumentTypeError(f"{text!r} is not a PR number or a pull request URL")
+    return text
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m tools.plan.ci_wait")
-    parser.add_argument("pr")
+    parser.add_argument("pr", type=pr_argument)
     parser.add_argument("--gate", default=GATE)
+    parser.add_argument("--sha", default=None)
     parser.add_argument("--timeout", type=float, default=600)
     parser.add_argument("--interval", type=float, default=10)
     parser.add_argument("--grace", type=float, default=120)
     args = parser.parse_args(argv)
+    expected = args.sha if args.sha is not None else local_head()
     return wait(
-        lambda: fetch_checks(args.pr), args.gate, args.timeout, args.interval, args.grace,
-        time.sleep, time.monotonic, lambda text: print(text, flush=True),
+        lambda: fetch_snapshot(args.pr), args.gate, args.timeout, args.interval, args.grace,
+        time.sleep, time.monotonic, lambda text: print(text, flush=True), expected,
     )
 
 

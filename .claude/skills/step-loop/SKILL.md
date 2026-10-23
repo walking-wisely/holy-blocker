@@ -146,12 +146,15 @@ Commit, push, and open the PR in one pass. Then wait for CI with the tool, not a
 python -m tools.plan.ci_wait <pr-number>     # Bash timeout 600000
 ```
 
-It returns when the `CI gate` check finishes (exit 0 passed, 1 failed, 2 timed out or never
-appeared) and prints every other check that is still pending or failing as **advisory**. Foreground
-`sleep` is refused in unattended sessions, and CodeQL runs for minutes after the gate has passed,
-so never wait for it. Record the advisory checks' state in the PR body. A failed gate is a failed
-step, not something to retry by pushing again without a cause. If an advisory check later fails,
-file a `kind = "bug"` step for it.
+It returns when every check of the workflow that owns `CI gate` has finished, and prints the
+checks of other workflows (CodeQL) that are pending or failing as **advisory**. Foreground `sleep`
+is refused in unattended sessions, and CodeQL runs for minutes after the gate has passed, so never
+wait for it. Exit codes: 0 passed; 1 failed, which is a failed step, not something to retry by
+pushing again without a cause; 2 timed out, so look at the run before deciding; 3 the gate never
+appeared, the PR head is not the commit you pushed, or `gh` failed, so confirm the push and `gh
+auth status` and try once more; 4 cancelled, so re-run the workflow once with `gh run rerun`.
+Describe the advisory checks in the PR body only after the gate has passed, since a body edit starts
+another CI run. If an advisory check later fails, file a `kind = "bug"` step for it.
 
 Then merge by acceptance kind:
 
