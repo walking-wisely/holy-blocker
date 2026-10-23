@@ -1,0 +1,8 @@
+id = "engineering.e2e-runner-hardening"
+title = "e2e runner: notes overwrite across hosts, --scenario reports zero uncovered, unbounded stdout, no shell in commands"
+status = "pending"
+evidence = ""
+acceptance = "code"
+verify = "python -m unittest discover -s tools/plan/tests -t ."
+kind = "bug"
+regressed_step = "engineering.e2e-runner"

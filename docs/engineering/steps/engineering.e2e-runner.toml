@@ -1,7 +1,7 @@
 id = "engineering.e2e-runner"
 title = "local e2e runner — selection, preflight, runner-decided pass, git-note record"
-status = "pending"
-evidence = ""
+status = "done"
+evidence = "tools/plan/e2e/runner.py; tools/plan/tests/test_e2e_runner.py; branch infra/e2e-runner"
 acceptance = "code"
 depends_on = ["engineering.e2e-contract"]
 verify = "python -m unittest discover -s tools/plan/tests -t ."

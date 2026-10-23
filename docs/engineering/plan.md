@@ -463,7 +463,7 @@ commands invoke. No runner yet.
 
 Acceptance: `code`. Verify: `python -m unittest discover -s tools/plan/tests -t .`.
 
-#### Step 10b — the runner
+#### Step 10b — the runner **Done.**
 
 <!-- step: engineering.e2e-runner -->
 
@@ -472,6 +472,8 @@ preflight (exit `2` only for a declared capability, after trying to fix it); run
 the pass from exit `0` plus the blocked and permitted assertion counts; refuse to record on a dirty
 covered tree; record the note on the covered-path tree hash with host class and artifact digest;
 capture stdout and emit only the final line (decisions 2–4 and 7).
+
+Scenarios report their evidence on stdout as `ASSERT blocked <n>`, `ASSERT permitted <n>`, `ARTIFACT sha256 <hex>` and `HOST <class>` lines; the runner records nothing without all four. The covered-path digest is a blob of sorted `path<TAB>tree-hash` lines, so scenarios with several `covers` entries share one note key. Run it as `python -m tools.plan.e2e select|run [--base B] [--head H] [--scenario ID]`. Exit `3` means no scenario covers the diff (unverified); an unreadable manifest exits `1`. The final line is printed only if it matches a fixed shape (`WORD WORD: lower-case reason`), and `HOST` must name `android-`, `macos-` or `windows-` plus a fixed vocabulary, so no hostname reaches a note.
 
 Acceptance: `code`. Verify: `python -m unittest discover -s tools/plan/tests -t .`.
 
