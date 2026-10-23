@@ -152,7 +152,9 @@ class LoopTest(unittest.TestCase):
     def test_runs_until_max_steps_and_records_each_run(self):
         fake, records = self.loop(["merged"] * 5, max_steps=3)
         self.assertEqual(len(fake.steps), 3)
-        self.assertEqual(len(driver.read_records(self.runs)), 3)
+        stored = driver.read_records(self.runs)
+        self.assertEqual([r["event"] for r in stored].count("run"), 3)
+        self.assertEqual([r["event"] for r in stored].count("start"), 3)
         self.assertEqual(len(records), 3)
 
     def test_two_consecutive_failures_stop_the_run(self):
@@ -255,8 +257,8 @@ class ExecuteTest(unittest.TestCase):
         )
         return driver.execute(
             candidate, driver.Options(**options), Path(self.tmp.name),
-            process=lambda command, cwd, timeout: result, out_dir=self.out,
-            pr_state=lambda url: state,
+            process=lambda command, cwd, timeout, on_tick=None: result, out_dir=self.out,
+            pr_state=lambda url: state, announce=lambda *a, **k: None,
         )
 
     def answer(self, text, **extra):
@@ -324,6 +326,60 @@ class ProcessTest(unittest.TestCase):
         self.assertEqual((result.returncode, result.stdout.strip()), (3, "hi"))
 
 
+class HeartbeatTest(unittest.TestCase):
+    def test_a_slow_process_reports_elapsed_time_while_it_runs(self):
+        ticks = []
+        driver.run_process(["sleep", "2"], Path.cwd(), 30, on_tick=ticks.append, interval=0.5)
+        self.assertGreaterEqual(len(ticks), 2)
+        self.assertTrue(all(b > a for a, b in zip(ticks, ticks[1:])))
+
+    def test_timeout_still_applies_between_heartbeats(self):
+        started = time.monotonic()
+        result = driver.run_process(["sleep", "30"], Path.cwd(), 1, on_tick=lambda e: None, interval=0.3)
+        self.assertIsInstance(result, driver.TimedOut)
+        self.assertLess(time.monotonic() - started, 5)
+
+    def test_execute_announces_the_session_id_and_ticks(self):
+        lines = []
+        candidate = driver.Candidate(driver.ledger.Step("p.s", "t", "pending", ""), "p")
+
+        def process(command, cwd, timeout, on_tick=None):
+            on_tick(31)
+            return driver.TimedOut()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            record = driver.execute(
+                candidate, driver.Options(), Path(tmp), process=process, out_dir=Path(tmp) / "o",
+                announce=lambda text, **k: lines.append(text), progress=lambda sid, e: f"tick {e}",
+            )
+        self.assertIn(f"session {record['session_id']}", lines[0])
+        self.assertEqual(lines[1], "tick 31")
+
+
+class ProgressLineTest(unittest.TestCase):
+    def test_line_shows_calls_last_tool_and_idle_time(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            projects = Path(tmp)
+            (projects / "proj").mkdir()
+            now = driver.datetime.now(driver.timezone.utc).isoformat()
+            entry = {"type": "assistant", "timestamp": now, "message": {
+                "content": [{"type": "tool_use", "id": "1", "name": "Bash",
+                             "input": {"command": "git push -u origin x"}}]}}
+            (projects / "proj" / "sid.jsonl").write_text(json.dumps(entry) + "\n")
+            original = driver.context.PROJECTS
+            driver.context.PROJECTS = projects
+            self.addCleanup(setattr, driver.context, "PROJECTS", original)
+            line = driver.progress_line("sid", 75)
+        self.assertIn("1m15s", line)
+        self.assertIn("1 tool calls", line)
+        self.assertIn("last Bash(git)", line)
+        self.assertIn("idle", line)
+        self.assertNotIn("origin", line)
+
+    def test_line_before_the_transcript_exists(self):
+        self.assertIn("starting", driver.progress_line("no-such-session", 5))
+
+
 class PruneTest(unittest.TestCase):
     def test_old_outputs_are_removed_and_new_ones_kept(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -367,6 +423,23 @@ class StatusTest(unittest.TestCase):
         text = driver.status(records)
         self.assertIn("Failed 2 times", text)
         self.assertIn("a (timeout): over 60s", text)
+
+    def test_status_shows_a_live_run_and_an_interrupted_one(self):
+        records = [
+            {"event": "start", "step": "a", "pid": 1, "started": "2026-10-01T00:00:00+00:00"},
+            {"event": "start", "step": "b", "pid": 2, "started": "2026-10-01T00:00:00+00:00"},
+            {**_run("c", "merged"), "started": "2026-10-01T00:00:00+00:00"},
+        ]
+        text = driver.status(records, alive=lambda pid: pid == 1)
+        self.assertIn("a: running since", text)
+        self.assertIn("b: interrupted", text)
+
+    def test_a_finished_run_clears_its_start(self):
+        records = [
+            {"event": "start", "step": "a", "pid": 1, "started": "2026-10-01T00:00:00+00:00"},
+            {**_run("a", "merged"), "started": "2026-10-01T00:00:00+00:00"},
+        ]
+        self.assertNotIn("running", driver.status(records, alive=lambda pid: True))
 
     def test_status_with_no_runs(self):
         self.assertIn("no runs", driver.status([]))

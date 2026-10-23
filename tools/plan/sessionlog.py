@@ -223,6 +223,29 @@ def summarize(path: Path) -> dict:
     }
 
 
+def last_activity(path: Path) -> dict:
+    """Tool-call count, the latest tool, and seconds since the last event, for a running session."""
+    calls, last_tool, last_stamp = 0, "", None
+    for entry in _entries(path):
+        stamp = _time(entry.get("timestamp"))
+        if stamp:
+            last_stamp = stamp
+        if entry.get("type") != "assistant":
+            continue
+        for block in entry.get("message", {}).get("content") or []:
+            if isinstance(block, dict) and block.get("type") == "tool_use":
+                calls += 1
+                args = block.get("input") or {}
+                detail = ""
+                if block.get("name") == "Bash" and str(args.get("command", "")).split():
+                    detail = safe_name(str(args["command"]).split()[0])
+                elif block.get("name") == "Skill":
+                    detail = safe_name(args.get("skill"))
+                last_tool = safe_name(block.get("name")) + (f"({detail})" if detail else "")
+    idle = (datetime.now(timezone.utc) - last_stamp).total_seconds() if last_stamp else None
+    return {"tool_calls": calls, "last_tool": last_tool, "idle_s": None if idle is None else round(idle)}
+
+
 def read_index(index: Path) -> list[dict]:
     try:
         lines = Path(index).read_text(encoding="utf-8").splitlines()

@@ -29,7 +29,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from tools.plan import ledger, sessionlog
+from tools.plan import context, ledger, sessionlog
 
 RUNS = sessionlog.RUNS
 OUT_DIR = sessionlog.HOME / "driver" / "out"
@@ -38,6 +38,7 @@ SETTLED = ("merged", "pr-open", "parked")
 FAILED = ("failed", "timeout", "unreported", "violation")
 MAX_ATTEMPTS = 2
 OUT_RETENTION_DAYS = 30
+HEARTBEAT_S = 30
 PERMISSION_MODES = ("auto", "acceptEdits", "dontAsk")
 PR_URL = re.compile(r"https://github\.com/[\w.-]+/[\w.-]+/pull/\d+")
 PR_STATES = {"MERGED": "merged", "OPEN": "pr-open"}
@@ -167,18 +168,37 @@ def build_command(prompt: str, session_id: str, options: Options) -> list[str]:
     return command
 
 
-def run_process(command: list[str], cwd: Path, timeout: int) -> Completed | TimedOut:
+def run_process(
+    command: list[str], cwd: Path, timeout: int, on_tick=None, interval: float = HEARTBEAT_S
+) -> Completed | TimedOut:
     child = subprocess.Popen(
         command, cwd=cwd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
         stderr=subprocess.PIPE, text=True, start_new_session=True,
     )
-    try:
-        stdout, stderr = child.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        os.killpg(child.pid, signal.SIGKILL)
-        stdout, stderr = child.communicate()
-        return TimedOut(stdout or "", stderr or "")
-    return Completed(child.returncode, stdout, stderr)
+    started = time.monotonic()
+    while True:
+        remaining = timeout - (time.monotonic() - started)
+        try:
+            stdout, stderr = child.communicate(timeout=max(0.0, min(interval, remaining)))
+            return Completed(child.returncode, stdout, stderr)
+        except subprocess.TimeoutExpired:
+            if time.monotonic() - started >= timeout:
+                os.killpg(child.pid, signal.SIGKILL)
+                stdout, stderr = child.communicate()
+                return TimedOut(stdout or "", stderr or "")
+            if on_tick:
+                on_tick(time.monotonic() - started)
+
+
+def progress_line(session_id: str, elapsed: float) -> str:
+    transcript = context.session_transcript(session_id, context.PROJECTS)
+    head = f"  {sessionlog.fmt_duration(elapsed)}"
+    if transcript is None:
+        return f"{head} · starting"
+    seen = sessionlog.last_activity(transcript)
+    idle = "" if seen["idle_s"] is None else f" · idle {sessionlog.fmt_duration(seen['idle_s'])}"
+    last = f" · last {seen['last_tool']}" if seen["last_tool"] else ""
+    return f"{head} · {seen['tool_calls']} tool calls{last}{idle}"
 
 
 def github_pr_state(url: str) -> str | None:
@@ -212,6 +232,8 @@ def execute(
     process=run_process,
     out_dir: Path = OUT_DIR,
     pr_state=github_pr_state,
+    announce=print,
+    progress=progress_line,
 ) -> dict:
     session_id = str(uuid.uuid4())
     prompt = build_prompt(candidate.step, candidate.package)
@@ -219,7 +241,11 @@ def execute(
         "event": "run", "step": candidate.step.id, "package": candidate.package,
         "session_id": session_id, "started": _now(),
     }
-    result = process(build_command(prompt, session_id, options), Path(root), options.timeout)
+    announce(f"  session {session_id}", flush=True)
+    result = process(
+        build_command(prompt, session_id, options), Path(root), options.timeout,
+        lambda elapsed: announce(progress(session_id, elapsed), flush=True),
+    )
     record["ended"] = _now()
     returncode = None if isinstance(result, TimedOut) else result.returncode
     sessionlog.write_private(
@@ -339,6 +365,9 @@ def run_loop(
             break
         candidate = ready[0]
         print(f"running {candidate.step.id} ...", flush=True)
+        append_record(runs, {
+            "event": "start", "step": candidate.step.id, "pid": os.getpid(), "started": _now(),
+        })
         record = run_step(candidate, options, root)
         append_record(runs, record)
         records.append(record)
@@ -354,21 +383,36 @@ def run_loop(
     return records
 
 
-def status(records: list[dict]) -> str:
+def pid_alive(pid) -> bool:
+    try:
+        os.kill(int(pid), 0)
+    except (OSError, TypeError, ValueError):
+        return False
+    return True
+
+
+def status(records: list[dict], alive=pid_alive) -> str:
     runs = [r for r in records if r.get("event") == "run"]
-    if not runs:
-        return "no runs\n"
     latest: dict[str, dict] = {}
+    started: dict[str, dict] = {}
     for record in records:
         if record.get("event") == "release":
             latest.pop(record["step"], None)
+        elif record.get("event") == "start":
+            started[record["step"]] = record
         elif record.get("event") == "run":
             latest[record["step"]] = record
+            started.pop(record["step"], None)
+    if not runs and not started:
+        return "no runs\n"
     skipped = skip_ids(records)
     parked = [r for r in latest.values() if r["outcome"] == "parked"]
     stuck = [r for r in latest.values() if r["outcome"] in FAILED and r["step"] in skipped]
     spend = sum(r.get("cost_usd") or 0 for r in runs)
     lines = [f"{len(runs)} runs, ${spend:.2f}", ""]
+    for r in started.values():
+        state = "running" if alive(r.get("pid")) else "interrupted, no result recorded"
+        lines += [f"{r['step']}: {state} since {r.get('started', '')[:19]}", ""]
     lines += ["| started | step | outcome | detail |", "|---|---|---|---|"]
     for r in sorted(runs, key=lambda r: r.get("started", ""), reverse=True)[:10]:
         lines.append(f"| {r.get('started', '')[:16]} | {r['step']} | {r['outcome']} | {r.get('detail', '')} |")
