@@ -38,6 +38,7 @@ IDLE_S = 600
 INDEX_RETENTION_DAYS = 180
 SAFE_NAME = re.compile(r"[A-Za-z][A-Za-z0-9_+-]*")
 OTHER = "other"
+SAFE_FILE = re.compile(r"[\w.+-]{1,80}")
 
 
 def safe_name(value) -> str:
@@ -99,8 +100,14 @@ def _entries(path: Path):
                 entry = json.loads(line)
             except ValueError:
                 continue
-            if isinstance(entry, dict):
-                yield entry
+            if not isinstance(entry, dict):
+                continue
+            message = entry.get("message")
+            if message is not None and not isinstance(message, dict):
+                entry["message"] = {}
+            elif isinstance(message, dict) and not isinstance(message.get("usage") or {}, dict):
+                message["usage"] = {}
+            yield entry
 
 
 def summarize(path: Path) -> dict:
@@ -225,7 +232,8 @@ def summarize(path: Path) -> dict:
 
 def describe_tool(block: dict) -> str:
     """A short label for a tool_use block: the tool, plus a plain identifier or file name."""
-    name, args = safe_name(block.get("name")), block.get("input") or {}
+    name = safe_name(block.get("name"))
+    args = block.get("input") if isinstance(block.get("input"), dict) else {}
     detail = ""
     if name == "Bash" and str(args.get("command", "")).split():
         detail = safe_name(str(args["command"]).split()[0])
@@ -234,7 +242,8 @@ def describe_tool(block: dict) -> str:
     elif name == "Agent":
         detail = safe_name(args["subagent_type"]) if args.get("subagent_type") else ""
     elif name in (*EDIT_TOOLS, "Read") and args.get("file_path"):
-        detail = Path(str(args["file_path"])).name
+        base = Path(str(args["file_path"])).name
+        detail = base if SAFE_FILE.fullmatch(base) else OTHER
     return f"{name}({detail})" if detail else name
 
 

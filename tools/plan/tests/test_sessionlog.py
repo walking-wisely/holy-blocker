@@ -209,6 +209,20 @@ class SummarizeTest(unittest.TestCase):
         self.assertEqual(self.summarize([_prompt(0)], name="sid-1")["session_id"], "sid-1")
 
 
+class MalformedTranscriptTest(unittest.TestCase):
+    def test_odd_shapes_do_not_break_summaries_or_activity(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "odd.jsonl"
+            path.write_text("\n".join([
+                "[1]", '"text"', '{"message": "hi", "type": "user"}',
+                '{"type": "assistant", "message": {"usage": "x", "content": "y"}}',
+                '{"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "Bash", "input": "x"}]}}',
+                json.dumps(_prompt(0)),
+            ]) + "\n")
+            self.assertEqual(sessionlog.summarize(path)["human_prompts"], 1)
+            self.assertEqual(sessionlog.last_activity(path)["tool_calls"], 1)
+
+
 class DescribeToolTest(unittest.TestCase):
     def test_labels_carry_only_plain_identifiers_or_file_names(self):
         def block(name, **args):
@@ -218,6 +232,10 @@ class DescribeToolTest(unittest.TestCase):
         self.assertEqual(sessionlog.describe_tool(block("Edit", file_path="/a/b/loop.py")), "Edit(loop.py)")
         self.assertEqual(sessionlog.describe_tool(block("Agent", subagent_type="Explore")), "Agent(Explore)")
         self.assertEqual(sessionlog.describe_tool(block("Grep", pattern="secret")), "Grep")
+        hostile = block("Read", file_path="/x/\x1b]0;pwned\x07\x1b[2Jevil.txt")
+        self.assertEqual(sessionlog.describe_tool(hostile), "Read(other)")
+        forged = block("Read", file_path="/x/a\nFAKE ! Bash failed\n")
+        self.assertNotIn("\n", sessionlog.describe_tool(forged))
         self.assertEqual(sessionlog.describe_tool(block("Agent", description="x")), "Agent")
 
 

@@ -326,6 +326,36 @@ class ProcessTest(unittest.TestCase):
         self.assertEqual((result.returncode, result.stdout.strip()), (3, "hi"))
 
 
+class ProcessSafetyTest(unittest.TestCase):
+    def alive(self, pid):
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            return False
+        return True
+
+    def test_a_failing_progress_hook_does_not_stop_the_run(self):
+        def broken(elapsed):
+            raise RuntimeError("boom")
+        result = driver.run_process(["sleep", "2"], Path.cwd(), 30, on_tick=broken, interval=0.5)
+        self.assertIsInstance(result, driver.Completed)
+
+    def test_an_interrupt_kills_the_child_before_propagating(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pidfile = Path(tmp) / "pid"
+
+            def interrupt(elapsed):
+                raise KeyboardInterrupt
+
+            with self.assertRaises(KeyboardInterrupt):
+                driver.run_process(
+                    ["sh", "-c", f"echo $$ > {pidfile}; sleep 30"], Path.cwd(), 30,
+                    on_tick=interrupt, interval=1,
+                )
+            time.sleep(0.2)
+            self.assertFalse(self.alive(int(pidfile.read_text())))
+
+
 class HeartbeatTest(unittest.TestCase):
     def test_a_slow_process_reports_elapsed_time_while_it_runs(self):
         ticks = []
@@ -418,9 +448,41 @@ class NarratorTest(unittest.TestCase):
         self.narrator.tick(40)
         self.assertIn("idle", self.lines[-1])
 
+    def test_malformed_lines_are_skipped_not_fatal(self):
+        self.transcript.write_text("\n".join([
+            "[1]", '{"message": "hi"}',
+            '{"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "9", "name": "Bash", "input": "x"}]}}',
+            _tool_use_line("1", "Bash", command="ls"),
+        ]) + "\n")
+        self.narrator.tick(5)
+        self.assertEqual(self.lines, ["  5s Bash", "  5s Bash(ls)"])
+
+    def test_a_replaced_shorter_transcript_is_read_from_the_start(self):
+        self.write(_tool_use_line("1", "Bash", command="ls"))
+        self.narrator.tick(5)
+        self.write(_tool_use_line("2", "Skill", skill="x"), mode="w")
+        self.narrator.tick(10)
+        self.assertEqual(self.lines[-1], "  10s Skill(x)")
+
     def test_nothing_is_printed_before_the_transcript_exists(self):
         self.narrator.tick(5)
         self.assertEqual(self.lines, [])
+
+
+class DigestFailureTest(unittest.TestCase):
+    def test_a_failing_digest_does_not_abort_the_loop(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "repo"
+            _write_package(root, "a", [_step("a.s0"), _step("a.s1")])
+            original = driver.finish_line
+            driver.finish_line = lambda sid: (_ for _ in ()).throw(ValueError("bad"))
+            self.addCleanup(setattr, driver, "finish_line", original)
+            fake = FakeRun(["merged", "merged"])
+            records = driver.run_loop(
+                root, driver.Options(max_steps=2), Path(tmp) / "runs.jsonl", run_step=fake,
+                prepare=lambda r: None, pr_state=lambda u: "OPEN", in_flight=lambda ids: set(),
+            )
+        self.assertEqual(len(records), 2)
 
 
 class FinishLineTest(unittest.TestCase):
@@ -464,6 +526,19 @@ class ProgressLineTest(unittest.TestCase):
 
     def test_line_before_the_transcript_exists(self):
         self.assertIn("starting", driver.progress_line("no-such-session", 5))
+
+
+class TailTest(unittest.TestCase):
+    def test_a_session_id_with_path_characters_is_refused(self):
+        for bad in ("../../out", "a/b", "x y", ""):
+            self.assertEqual(driver.tail_session(bad or "?/", sleep=lambda s: None), 1, bad)
+
+
+class PidTest(unittest.TestCase):
+    def test_reserved_and_malformed_pids_are_not_alive(self):
+        for pid in (0, 1, -5, "x", None):
+            self.assertFalse(driver.pid_alive(pid), pid)
+        self.assertTrue(driver.pid_alive(os.getpid()))
 
 
 class PruneTest(unittest.TestCase):
@@ -519,6 +594,14 @@ class StatusTest(unittest.TestCase):
         text = driver.status(records, alive=lambda pid: pid == 1)
         self.assertIn("a: running since", text)
         self.assertIn("b: interrupted", text)
+
+    def test_a_release_clears_an_interrupted_start(self):
+        records = [
+            {"event": "start", "step": "a", "pid": 2, "started": "2026-10-01T00:00:00+00:00"},
+            {"event": "release", "step": "a"},
+            {**_run("c", "merged"), "started": "2026-10-01T00:00:00+00:00"},
+        ]
+        self.assertNotIn("interrupted", driver.status(records, alive=lambda pid: False))
 
     def test_a_finished_run_clears_its_start(self):
         records = [

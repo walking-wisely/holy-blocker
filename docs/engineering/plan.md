@@ -789,8 +789,9 @@ main checkout, and records the outcome.
   a total cap for the run. Runs append to
   `~/.holy-blocker/driver/runs.jsonl` with the session id, so `sessionlog report` can join them.
 - While a session runs, the driver prints its session id and narrates the session's own
-  transcript: each tool call as it happens (tool plus a plain identifier or file name, never
-  arguments or output), each failed call, and a heartbeat with seconds idle after 30 quiet
+  transcript: each tool call as it happens (the tool, plus the first token of a Bash command, a skill
+  or agent name, or a file's base name, each only when it is a plain identifier, otherwise
+  `other`; never other arguments or any output), each failed call, and a heartbeat with seconds idle after 30 quiet
   seconds. A growing idle time is the signal for a hung session; the timeout is the stop. A
   one-line digest (tool calls, subagents, errors, permission blocks, slowest tools) follows each
   step, and `driver tail [SESSION]` follows a session from another terminal.
@@ -812,8 +813,9 @@ The first unattended run printed nothing between its start and its end, so a hea
 hung one looked the same. The driver now narrates the session's own transcript while it runs: each
 tool call, each failure and a quiet-period heartbeat with seconds idle, then a one-line digest per
 step, and `driver tail [SESSION]` follows a session from another terminal. `driver status` also
-lists runs in progress or interrupted. Labels carry only a tool name plus a plain identifier or file
-name, never arguments or output.
+lists runs in progress or interrupted. Labels are limited as above. A file's base name and a
+command's first token are printed to the owner's terminal, so a sensitive file name or a secret used
+as a command word would appear there; unattended output should not be piped to shared logs.
 
 Acceptance: `code`. Verify: `python3 -m unittest discover -s tools/plan/tests -t .`.
 

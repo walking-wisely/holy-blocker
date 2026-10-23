@@ -15,6 +15,7 @@ only inside the sessions it launches.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import functools
 import json
 import math
@@ -43,6 +44,7 @@ HEARTBEAT_S = 30
 POLL_S = 5
 PERMISSION_MODES = ("auto", "acceptEdits", "dontAsk")
 PR_URL = re.compile(r"https://github\.com/[\w.-]+/[\w.-]+/pull/\d+")
+SESSION_ID = re.compile(r"[\w-]{1,64}")
 PR_STATES = {"MERGED": "merged", "OPEN": "pr-open"}
 OUTCOME_LINE = re.compile(
     rf"^\s*{re.escape(OUTCOME_PREFIX)}\s*({'|'.join(SETTLED)})\b:?\s*(.*?)\s*$", re.MULTILINE
@@ -178,18 +180,27 @@ def run_process(
         stderr=subprocess.PIPE, text=True, start_new_session=True,
     )
     started = time.monotonic()
-    while True:
-        remaining = timeout - (time.monotonic() - started)
-        try:
-            stdout, stderr = child.communicate(timeout=max(0.0, min(interval, remaining)))
-            return Completed(child.returncode, stdout, stderr)
-        except subprocess.TimeoutExpired:
-            if time.monotonic() - started >= timeout:
-                os.killpg(child.pid, signal.SIGKILL)
-                stdout, stderr = child.communicate()
-                return TimedOut(stdout or "", stderr or "")
-            if on_tick:
-                on_tick(time.monotonic() - started)
+    try:
+        while True:
+            remaining = timeout - (time.monotonic() - started)
+            try:
+                stdout, stderr = child.communicate(timeout=max(0.0, min(interval, remaining)))
+                return Completed(child.returncode, stdout, stderr)
+            except subprocess.TimeoutExpired:
+                if time.monotonic() - started >= timeout:
+                    os.killpg(child.pid, signal.SIGKILL)
+                    stdout, stderr = child.communicate()
+                    return TimedOut(stdout or "", stderr or "")
+                if on_tick:
+                    try:
+                        on_tick(time.monotonic() - started)
+                    except Exception as err:
+                        print(f"  progress unavailable: {err!r}", file=sys.stderr)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.killpg(child.pid, signal.SIGKILL)
+        child.communicate()
+        raise
 
 
 class Narrator:
@@ -206,21 +217,29 @@ class Narrator:
         path = context.session_transcript(self.session_id, context.PROJECTS)
         if path is None:
             return []
-        with path.open("rb") as handle:
-            handle.seek(self.offset)
-            chunk = handle.read()
+        try:
+            with path.open("rb") as handle:
+                if path.stat().st_size < self.offset:
+                    self.offset = 0
+                handle.seek(self.offset)
+                chunk = handle.read()
+        except FileNotFoundError:
+            return []
         complete = chunk[: chunk.rfind(b"\n") + 1]
         self.offset += len(complete)
         entries = []
         for line in complete.decode("utf-8", errors="replace").splitlines():
             try:
-                entries.append(json.loads(line))
+                entry = json.loads(line)
             except ValueError:
                 continue
+            if isinstance(entry, dict):
+                entries.append(entry)
         return entries
 
     def _lines(self, entry: dict) -> list[str]:
-        content = entry.get("message", {}).get("content")
+        message = entry.get("message")
+        content = message.get("content") if isinstance(message, dict) else None
         out = []
         for block in content if isinstance(content, list) else []:
             if not isinstance(block, dict):
@@ -445,7 +464,10 @@ def run_loop(
         append_record(runs, record)
         records.append(record)
         print(f"  {record['outcome']} {record.get('detail', '')}".rstrip(), flush=True)
-        summary = finish_line(record.get("session_id", ""))
+        try:
+            summary = finish_line(record.get("session_id", ""))
+        except Exception as err:
+            summary = f"  digest unavailable: {err!r}"
         if summary:
             print(summary, flush=True)
         spent += record.get("cost_usd") or 0
@@ -461,7 +483,12 @@ def run_loop(
 
 def pid_alive(pid) -> bool:
     try:
-        os.kill(int(pid), 0)
+        number = int(pid)
+        if number <= 1:
+            return False
+        os.kill(number, 0)
+    except PermissionError:
+        return True
     except (OSError, TypeError, ValueError):
         return False
     return True
@@ -474,6 +501,7 @@ def status(records: list[dict], alive=pid_alive) -> str:
     for record in records:
         if record.get("event") == "release":
             latest.pop(record["step"], None)
+            started.pop(record["step"], None)
         elif record.get("event") == "start":
             started[record["step"]] = record
         elif record.get("event") == "run":
@@ -513,6 +541,9 @@ def tail_session(session_id: str | None, sleep=time.sleep) -> int:
             print("no driver session to follow; pass a session id", file=sys.stderr)
             return 1
         session_id = drivers[-1]["session_id"]
+    if not SESSION_ID.fullmatch(session_id):
+        print(f"not a session id: {session_id!r}", file=sys.stderr)
+        return 1
     narrator = Narrator(session_id)
     started = time.monotonic()
     print(f"following {session_id} (Ctrl-C to stop)", flush=True)
