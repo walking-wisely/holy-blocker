@@ -146,6 +146,9 @@ Commit, push, and open the PR in one pass. Then wait for CI with the tool, not a
 python -m tools.plan.ci_wait <pr-number>     # Bash timeout 600000
 ```
 
+Run it from the checkout you pushed from, which is the step's worktree: it ignores any check that
+does not belong to your pushed commit. From another checkout, pass `--sha <pushed commit>`.
+
 It returns when every check of the workflow that owns `CI gate` has finished, and prints the
 checks of other workflows (CodeQL) that are pending or failing as **advisory**. Foreground `sleep`
 is refused in unattended sessions, and CodeQL runs for minutes after the gate has passed, so never

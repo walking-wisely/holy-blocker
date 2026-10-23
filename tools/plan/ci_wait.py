@@ -71,7 +71,8 @@ def evaluate(checks: list[dict], gate: str) -> tuple[str, dict[str, str]]:
     if found is None:
         return PENDING, {}
     workflow = found.get("workflow")
-    blocking = {n: c for n, c in latest.items() if c.get("workflow") == workflow}
+    blocking = {n: c for n, c in latest.items() if workflow and c.get("workflow") == workflow}
+    blocking[gate] = found
     advisory = {
         n: c["bucket"]
         for n, c in latest.items()
@@ -101,14 +102,16 @@ def wait(
     while True:
         snapshot = fetch()
         elapsed = clock() - started
-        stale = bool(expected_sha and snapshot.head and snapshot.head != expected_sha)
+        stale = bool(expected_sha and snapshot.head != expected_sha)
         checks = [] if stale else snapshot.checks
         state, advisory = evaluate(checks, gate)
         if state != PENDING:
             out(_result(gate, state, advisory))
             return EXIT[state]
         if not any(c.get("name") == gate for c in checks) and elapsed >= grace:
-            if stale:
+            if stale and not snapshot.head:
+                reason = f"could not read the PR head ({snapshot.error or 'no output'})"
+            elif stale:
                 reason = f"the PR head is {snapshot.head[:10]}, not the pushed {expected_sha[:10]}"
             elif snapshot.error:
                 reason = f"gh failed: {snapshot.error}"
@@ -130,16 +133,23 @@ def _gh(*args: str) -> subprocess.CompletedProcess:
     return subprocess.run(["gh", *args], capture_output=True, text=True)
 
 
+def _head(pr: str) -> subprocess.CompletedProcess:
+    return _gh("pr", "view", pr, "--json", "headRefOid", "--jq", ".headRefOid")
+
+
 def fetch_snapshot(pr: str) -> Snapshot:
+    """Checks plus the head they belong to; a head that moved while reading counts as unknown."""
+    before = _head(pr)
     checks = _gh("pr", "checks", pr, "--json", "name,bucket,startedAt,workflow")
-    head = _gh("pr", "view", pr, "--json", "headRefOid", "--jq", ".headRefOid")
+    after = _head(pr)
     parsed = parse_checks(checks.stdout)
     problem = ""
     if not parsed and NO_CHECKS not in checks.stderr and checks.returncode not in (0, 8):
         problem = checks.stderr.strip()[:200]
-    if not head.stdout.strip() and not problem:
-        problem = head.stderr.strip()[:200]
-    return Snapshot(parsed, head.stdout.strip(), problem)
+    head = after.stdout.strip() if before.stdout.strip() == after.stdout.strip() else ""
+    if not head and not problem:
+        problem = (after.stderr or before.stderr).strip()[:200] or "the PR head changed while reading"
+    return Snapshot(parsed, head, problem)
 
 
 def local_head() -> str:
@@ -163,6 +173,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--grace", type=float, default=120)
     args = parser.parse_args(argv)
     expected = args.sha if args.sha is not None else local_head()
+    if not expected:
+        print("cannot tell which commit was pushed; run this from the checkout you pushed from "
+              "or pass --sha", flush=True)
+        return MISSING_EXIT
     return wait(
         lambda: fetch_snapshot(args.pr), args.gate, args.timeout, args.interval, args.grace,
         time.sleep, time.monotonic, lambda text: print(text, flush=True), expected,

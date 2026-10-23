@@ -51,6 +51,10 @@ class EvaluateTest(unittest.TestCase):
         self.assertEqual(state, "pass")
         self.assertEqual(advisory, {"Analyze (rust)": "pending", "Analyze (python)": "fail"})
 
+    def test_a_gate_without_a_workflow_name_does_not_make_other_workflows_blocking(self):
+        checks = [gate("pass", workflow=""), check("Analyze (rust)", "fail", workflow="")]
+        self.assertEqual(self.state(checks), "pass")
+
     def test_the_latest_run_of_a_check_wins(self):
         old_fail = gate("fail", started="2026-10-01T10:00:00Z")
         new_pass = gate("pass", started="2026-10-01T10:05:00Z")
@@ -135,9 +139,64 @@ class WaitTest(unittest.TestCase):
         code, _ = self.wait([snap([gate("pass")], head="old"), snap([gate("pass")], head="new")], expected="new")
         self.assertEqual(code, 0)
 
+    def test_an_unreadable_head_is_never_trusted_when_a_commit_is_expected(self):
+        code, lines = self.wait([snap([gate("pass")], head="", error="HTTP 502")], expected="new", grace=20)
+        self.assertEqual(code, 3)
+        self.assertIn("could not read the PR head", lines[-1])
+
     def test_progress_is_printed_only_when_the_state_changes(self):
         code, lines = self.wait([snap([gate("pending")])] * 4 + [snap([gate("pass")])])
         self.assertEqual(len([l for l in lines if "pending" in l]), 1)
+
+
+class FakeGh:
+    def __init__(self, heads, checks_out="[]", checks_err="", checks_code=0):
+        self.heads, self.checks = list(heads), (checks_out, checks_err, checks_code)
+
+    def __call__(self, *args):
+        if args[:2] == ("pr", "view"):
+            out, err, code = (self.heads.pop(0) if len(self.heads) > 1 else self.heads[0]), "", 0
+            if out is None:
+                out, err, code = "", "HTTP 502", 1
+        else:
+            out, err, code = self.checks
+        return ci_wait.subprocess.CompletedProcess(args, code, out, err)
+
+
+class FetchSnapshotTest(unittest.TestCase):
+    def fetch(self, gh):
+        original = ci_wait._gh
+        ci_wait._gh = gh
+        self.addCleanup(setattr, ci_wait, "_gh", original)
+        return ci_wait.fetch_snapshot("7")
+
+    def test_checks_and_a_stable_head_are_returned_together(self):
+        snapshot = self.fetch(FakeGh(["abc\n"], json.dumps([gate("pass")])))
+        self.assertEqual((snapshot.head, snapshot.error, len(snapshot.checks)), ("abc", "", 1))
+
+    def test_a_head_that_moves_while_reading_is_unknown(self):
+        snapshot = self.fetch(FakeGh(["old", "new"], json.dumps([gate("pass")])))
+        self.assertEqual(snapshot.head, "")
+        self.assertTrue(snapshot.error)
+
+    def test_a_failing_head_lookup_is_reported(self):
+        snapshot = self.fetch(FakeGh([None], json.dumps([gate("pass")])))
+        self.assertEqual(snapshot.head, "")
+        self.assertIn("502", snapshot.error)
+
+    def test_no_checks_yet_is_not_an_error_but_an_auth_failure_is(self):
+        quiet = self.fetch(FakeGh(["abc"], "", "no checks reported on the 'x' branch", 1))
+        self.assertEqual(quiet.error, "")
+        broken = self.fetch(FakeGh(["abc"], "", "HTTP 401: Bad credentials", 1))
+        self.assertIn("401", broken.error)
+
+
+class MainTest(unittest.TestCase):
+    def test_without_a_known_pushed_commit_it_refuses_instead_of_trusting_the_checks(self):
+        original = ci_wait.local_head
+        ci_wait.local_head = lambda: ""
+        self.addCleanup(setattr, ci_wait, "local_head", original)
+        self.assertEqual(ci_wait.main(["7"]), 3)
 
 
 class ParseTest(unittest.TestCase):
