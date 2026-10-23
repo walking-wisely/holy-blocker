@@ -1,6 +1,8 @@
+import os
 import subprocess
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 from tools.plan.e2e import manifest, runner
@@ -156,6 +158,16 @@ class RecordTest(RepoCase):
     def test_refuses_failed_verdict(self):
         with self.assertRaises(runner.RecordRefused):
             runner.record(self.root, scenario(), runner.decide(1, DecideTest.OK), "2026-10-24")
+
+    def test_records_without_a_configured_identity(self):
+        env = {"GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1", "HOME": str(self.root),
+               "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "user.useConfigOnly", "GIT_CONFIG_VALUE_0": "true"}
+        with unittest.mock.patch.dict(os.environ, env):
+            for key in ("GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL", "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL"):
+                os.environ.pop(key, None)
+            s = scenario()
+            digest = runner.record(self.root, s, self.verdict(), "2026-10-24")
+        self.assertIsNotNone(runner.read_note(self.root, s.id, digest))
 
     def test_no_note_reads_none(self):
         self.assertIsNone(runner.read_note(self.root, "x-smoke", "0" * 40))

@@ -19,6 +19,8 @@ EXIT_PASS, EXIT_FAIL, EXIT_ENV, EXIT_UNVERIFIED = 0, 1, 2, 3
 MAX_LINE = 200
 RUN_TIMEOUT_SECONDS = 1800
 NOTES_NAMESPACE = "refs/notes/hb-e2e"
+FALLBACK_NAME = "hb-e2e"
+FALLBACK_EMAIL = "hb-e2e@localhost"
 
 _ASSERT = re.compile(r"^ASSERT (blocked|permitted) (\d+)$", re.MULTILINE)
 _ARTIFACT = re.compile(r"^ARTIFACT sha256 ([0-9a-f]{64})$", re.MULTILINE)
@@ -121,6 +123,15 @@ def _ref(scenario_id: str) -> str:
     return ref
 
 
+def _identity(root: Path) -> list[str]:
+    configured = subprocess.run(
+        ["git", "var", "GIT_COMMITTER_IDENT"], cwd=root, capture_output=True, text=True
+    )
+    if configured.returncode == 0:
+        return []
+    return ["-c", f"user.name={FALLBACK_NAME}", "-c", f"user.email={FALLBACK_EMAIL}"]
+
+
 def record(
     root: Path, scenario: manifest.Scenario, verdict: Verdict, date: str, expected: str | None = None
 ) -> str:
@@ -142,7 +153,7 @@ def record(
         f"artifact_sha256: {verdict.artifact}\n"
     )
     try:
-        _git(root, "notes", f"--ref={ref}", "add", "-f", "-m", body, digest)
+        _git(root, *_identity(root), "notes", f"--ref={ref}", "add", "-f", "-m", body, digest)
     except subprocess.CalledProcessError as error:
         raise RecordRefused("git refused the note") from error
     return digest
