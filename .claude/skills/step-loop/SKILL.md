@@ -140,10 +140,23 @@ ready**, never as a regression, and the step is treated as unverifiable on this 
 CI does not imply the e2e layer passed; the PR record is the evidence. If `tools/plan/e2e`
 does not exist yet, say so in the PR body.
 
-Commit, push, and open the PR in one pass, then merge by acceptance kind:
+Commit, push, and open the PR in one pass. Then wait for CI with the tool, not a sleep loop:
+
+```
+python -m tools.plan.ci_wait <pr-number>     # Bash timeout 600000
+```
+
+It returns when the `CI gate` check finishes (exit 0 passed, 1 failed, 2 timed out or never
+appeared) and prints every other check that is still pending or failing as **advisory**. Foreground
+`sleep` is refused in unattended sessions, and CodeQL runs for minutes after the gate has passed,
+so never wait for it. Record the advisory checks' state in the PR body. A failed gate is a failed
+step, not something to retry by pushing again without a cause. If an advisory check later fails,
+file a `kind = "bug"` step for it.
+
+Then merge by acceptance kind:
 
 - **`acceptance = "code"`** — done-ness is a claim about the diff. On a clean
-  fresh-context review, green CI and a passing e2e gate, squash-merge.
+  fresh-context review, a green `CI gate` and a passing e2e gate, squash-merge.
 - **`acceptance = "observation"`** — done-ness is a claim about the world. If a scenario
   can observe that truth, run it, record it, and merge on a pass. If no scenario can, or the
   host cannot run it, stop at the PR for a human to confirm against `coverage.md` and

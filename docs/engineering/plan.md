@@ -796,3 +796,30 @@ Reference documents: `claude --help` (`--print`, `--output-format json`, `--sess
 `--permission-mode`, `--max-budget-usd`).
 
 Acceptance: `code`. Verify: `python3 -m unittest discover -s tools/plan/tests -t .`.
+
+## Step 17 — CI wait policy
+
+### Wait for the gate, not for everything
+
+<!-- step: engineering.ci-wait-policy -->
+
+The first unattended step spent most of its ten minutes waiting on CI: two refused `sleep` calls,
+then `Monitor` and sleep loops, and each wait covered every check on the PR, including CodeQL,
+which runs for about six minutes while `CI gate` takes under a minute. CodeQL is not part of `CI
+gate`, `master` has no branch protection, and `test_manifests.py` pins CodeQL's pull-request paths on
+purpose, so the trigger stays and the wait changes instead.
+
+- `python -m tools.plan.ci_wait <pr>` polls `gh pr checks` until the `CI gate` check finishes and
+  prints every other check that is pending or failing as advisory. Exit 0 is a passed gate, 1 a
+  failed one, 2 a timeout or a gate that never appeared. The latest run of the gate wins, so a rerun
+  after a PR body edit is read correctly.
+- The step-loop gate 6 and the driver's prompt name this tool, say that foreground `sleep` is
+  refused in unattended sessions, and say that only `CI gate` gates a merge. A later advisory failure
+  becomes a `kind = "bug"` step.
+
+Not covered: a CodeQL finding that arrives after the merge is not blocked, only reported.
+
+Reference documents: `gh pr checks --help` (`--json name,bucket,startedAt`; bucket is one of
+`pass`, `fail`, `pending`, `skipping`, `cancel`).
+
+Acceptance: `code`. Verify: `python3 -m unittest discover -s tools/plan/tests -t .`.

@@ -116,6 +116,7 @@ class CommandTest(unittest.TestCase):
         self.assertIn("pkg.x", prompt)
         self.assertIn("acceptance kind is product", prompt)
         self.assertIn("continue from it", prompt)
+        self.assertIn("tools.plan.ci_wait", prompt)
         self.assertIn("step-loop", prompt)
         self.assertIn("DRIVER-OUTCOME:", prompt)
 
