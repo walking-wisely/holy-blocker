@@ -452,13 +452,14 @@ Test layers: the manifest parser, exit-code mapping, tree-hash and note logic ar
 temporary git repository. Nothing here needs an emulator. Only the Android scenario step is observed
 on a device.
 
-#### Step 10a — the scenario contract
+#### Step 10a — the scenario contract **Done.**
 
 <!-- step: engineering.e2e-contract -->
 
 `tools/plan/e2e/manifest.py`: load and validate `demos/*/scenario.toml` (fields per decision 1),
-and a `doclint` check that `covers` is closed under `cargo metadata` path dependencies and names the
-scenario's own script and seed paths. No runner yet.
+and a `doclint` check that `covers` is closed under Cargo path dependencies (read from each crate's
+`Cargo.toml`, so docs CI needs no toolchain) and names the scenario's own directory and the files its
+commands invoke. No runner yet.
 
 Acceptance: `code`. Verify: `python -m unittest discover -s tools/plan/tests -t .`.
 
@@ -788,12 +789,34 @@ main checkout, and records the outcome.
 - Each step has a wall-clock timeout (the whole process group is killed), a per-step dollar cap and
   a total cap for the run. Runs append to
   `~/.holy-blocker/driver/runs.jsonl` with the session id, so `sessionlog report` can join them.
-- `driver status` is the digest: recent runs, what is parked and why, total cost.
+- While a session runs, the driver prints its session id and narrates the session's own
+  transcript: each tool call as it happens (the tool, plus the first token of a Bash command, a skill
+  or agent name, or a file's base name, each only when it is a plain identifier, otherwise
+  `other`; never other arguments or any output), each failed call, and a heartbeat with seconds idle after 30 quiet
+  seconds. A growing idle time is the signal for a hung session; the timeout is the stop. A
+  one-line digest (tool calls, subagents, errors, permission blocks, slowest tools) follows each
+  step, and `driver tail [SESSION]` follows a session from another terminal.
+- `driver status` is the digest: runs in progress or interrupted, recent runs, what is parked and
+  why, what failed twice, total cost.
 - The permission mode is a flag. Steps that need privilege park instead of asking, per
   `docs/decisions/agent-privilege-boundary.md`.
 
 Reference documents: `claude --help` (`--print`, `--output-format json`, `--session-id`,
 `--permission-mode`, `--max-budget-usd`).
+
+Acceptance: `code`. Verify: `python3 -m unittest discover -s tools/plan/tests -t .`.
+
+### Driver visibility **Done.**
+
+<!-- step: engineering.driver-visibility -->
+
+The first unattended run printed nothing between its start and its end, so a healthy session and a
+hung one looked the same. The driver now narrates the session's own transcript while it runs: each
+tool call, each failure and a quiet-period heartbeat with seconds idle, then a one-line digest per
+step, and `driver tail [SESSION]` follows a session from another terminal. `driver status` also
+lists runs in progress or interrupted. Labels are limited as above. A file's base name and a
+command's first token are printed to the owner's terminal, so a sensitive file name or a secret used
+as a command word would appear there; unattended output should not be piped to shared logs.
 
 Acceptance: `code`. Verify: `python3 -m unittest discover -s tools/plan/tests -t .`.
 

@@ -5,6 +5,7 @@ Usage:
                                     [--budget USD] [--total-budget USD] [--timeout SECONDS] [--model M]
                                     [--permission-mode MODE]
     python -m tools.plan.driver status
+    python -m tools.plan.driver tail [SESSION]
     python -m tools.plan.driver release STEP
 
 Runs append to HOME/driver/runs.jsonl. The driver itself calls no model; tokens are spent
@@ -14,6 +15,7 @@ only inside the sessions it launches.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import functools
 import json
 import math
@@ -29,7 +31,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from tools.plan import ledger, sessionlog
+from tools.plan import context, ledger, sessionlog
 
 RUNS = sessionlog.RUNS
 OUT_DIR = sessionlog.HOME / "driver" / "out"
@@ -38,8 +40,14 @@ SETTLED = ("merged", "pr-open", "parked")
 FAILED = ("failed", "timeout", "unreported", "violation")
 MAX_ATTEMPTS = 2
 OUT_RETENTION_DAYS = 30
+HEARTBEAT_S = 30
+POLL_S = 5
+TAIL_IDLE_S = 900
+TAIL_FIND_S = 30
+KILL_WAIT_S = 5
 PERMISSION_MODES = ("auto", "acceptEdits", "dontAsk")
 PR_URL = re.compile(r"https://github\.com/[\w.-]+/[\w.-]+/pull/\d+")
+SESSION_ID = re.compile(r"[\w-]{1,64}")
 PR_STATES = {"MERGED": "merged", "OPEN": "pr-open"}
 OUTCOME_LINE = re.compile(
     rf"^\s*{re.escape(OUTCOME_PREFIX)}\s*({'|'.join(SETTLED)})\b:?\s*(.*?)\s*$", re.MULTILINE
@@ -167,18 +175,139 @@ def build_command(prompt: str, session_id: str, options: Options) -> list[str]:
     return command
 
 
-def run_process(command: list[str], cwd: Path, timeout: int) -> Completed | TimedOut:
+def run_process(
+    command: list[str], cwd: Path, timeout: int, on_tick=None, interval: float = POLL_S
+) -> Completed | TimedOut:
     child = subprocess.Popen(
         command, cwd=cwd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
         stderr=subprocess.PIPE, text=True, start_new_session=True,
     )
+    started = time.monotonic()
+    reported = False
     try:
-        stdout, stderr = child.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        os.killpg(child.pid, signal.SIGKILL)
-        stdout, stderr = child.communicate()
-        return TimedOut(stdout or "", stderr or "")
-    return Completed(child.returncode, stdout, stderr)
+        while True:
+            remaining = timeout - (time.monotonic() - started)
+            try:
+                stdout, stderr = child.communicate(timeout=max(0.0, min(interval, remaining)))
+                return Completed(child.returncode, stdout, stderr)
+            except subprocess.TimeoutExpired:
+                if time.monotonic() - started >= timeout:
+                    os.killpg(child.pid, signal.SIGKILL)
+                    stdout, stderr = child.communicate()
+                    return TimedOut(stdout or "", stderr or "")
+                if on_tick:
+                    try:
+                        on_tick(time.monotonic() - started)
+                    except Exception as err:
+                        if not reported:
+                            print(f"  progress unavailable: {err!r}", file=sys.stderr)
+                            reported = True
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.killpg(child.pid, signal.SIGKILL)
+        with contextlib.suppress(Exception):
+            child.communicate(timeout=KILL_WAIT_S)
+        raise
+
+
+class Narrator:
+    """Prints a running session's new tool calls and failures as its transcript grows."""
+
+    def __init__(self, session_id: str, announce=print):
+        self.session_id = session_id
+        self.announce = announce
+        self.offset = 0
+        self.labels: dict[str, str] = {}
+        self.last_printed = 0.0
+        self.last_event = 0.0
+        self.found = False
+
+    def _new_entries(self) -> list[dict]:
+        path = context.session_transcript(self.session_id, context.PROJECTS)
+        if path is None:
+            return []
+        self.found = True
+        try:
+            with path.open("rb") as handle:
+                if path.stat().st_size < self.offset:
+                    self.offset = 0
+                handle.seek(self.offset)
+                chunk = handle.read()
+        except FileNotFoundError:
+            return []
+        complete = chunk[: chunk.rfind(b"\n") + 1]
+        self.offset += len(complete)
+        entries = []
+        for line in complete.decode("utf-8", errors="replace").splitlines():
+            try:
+                entry = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(entry, dict):
+                entries.append(entry)
+        return entries
+
+    def _lines(self, entry: dict) -> list[str]:
+        message = entry.get("message")
+        content = message.get("content") if isinstance(message, dict) else None
+        out = []
+        for block in content if isinstance(content, list) else []:
+            if not isinstance(block, dict):
+                continue
+            if entry.get("type") == "assistant" and block.get("type") == "tool_use":
+                label = sessionlog.describe_tool(block)
+                self.labels[block.get("id")] = label
+                out.append(label)
+            elif block.get("type") == "tool_result" and block.get("is_error"):
+                out.append(f"! {self.labels.get(block.get('tool_use_id'), 'tool')} failed")
+        return out
+
+    def tick(self, elapsed: float) -> None:
+        printed = False
+        entries = self._new_entries()
+        if entries:
+            self.last_event = elapsed
+        for entry in entries:
+            try:
+                texts = self._lines(entry)
+            except (AttributeError, TypeError, ValueError, KeyError):
+                continue
+            for text in texts:
+                self.announce(f"  {sessionlog.fmt_duration(elapsed)} {text}", flush=True)
+                printed = True
+        if printed:
+            self.last_printed = elapsed
+        elif elapsed - self.last_printed >= HEARTBEAT_S:
+            self.announce(progress_line(self.session_id, elapsed), flush=True)
+            self.last_printed = elapsed
+
+
+def finish_line(session_id: str) -> str:
+    transcript = context.session_transcript(session_id, context.PROJECTS)
+    if transcript is None:
+        return ""
+    row = sessionlog.summarize(transcript)
+    slowest = sorted(row["tool_seconds"].items(), key=lambda item: item[1], reverse=True)[:2]
+    parts = [
+        f"{sum(row['tool_counts'].values())} tool calls",
+        f"{row['subagents']} subagents",
+        f"{sum(row['tool_errors'].values())} tool errors",
+        f"{row['permission_blocks']} permission blocks",
+        "slowest " + ", ".join(f"{n} {sessionlog.fmt_duration(v)}" for n, v in slowest)
+        if slowest else "",
+    ]
+    return "  " + ", ".join(part for part in parts if part)
+
+
+def progress_line(session_id: str, elapsed: float) -> str:
+    transcript = context.session_transcript(session_id, context.PROJECTS)
+    head = f"  {sessionlog.fmt_duration(elapsed)}"
+    if transcript is None:
+        return f"{head} · starting"
+    seen = sessionlog.last_activity(transcript)
+    idle = "" if seen["idle_s"] is None else f" · idle {sessionlog.fmt_duration(seen['idle_s'])}"
+    last = f" · last {seen['last_tool']}" if seen["last_tool"] else ""
+    return f"{head} · {seen['tool_calls']} tool calls{last}{idle}"
 
 
 def github_pr_state(url: str) -> str | None:
@@ -212,6 +341,8 @@ def execute(
     process=run_process,
     out_dir: Path = OUT_DIR,
     pr_state=github_pr_state,
+    announce=print,
+    narrate=Narrator,
 ) -> dict:
     session_id = str(uuid.uuid4())
     prompt = build_prompt(candidate.step, candidate.package)
@@ -219,7 +350,11 @@ def execute(
         "event": "run", "step": candidate.step.id, "package": candidate.package,
         "session_id": session_id, "started": _now(),
     }
-    result = process(build_command(prompt, session_id, options), Path(root), options.timeout)
+    announce(f"  session {session_id}", flush=True)
+    result = process(
+        build_command(prompt, session_id, options), Path(root), options.timeout,
+        narrate(session_id, announce).tick,
+    )
     record["ended"] = _now()
     returncode = None if isinstance(result, TimedOut) else result.returncode
     sessionlog.write_private(
@@ -339,10 +474,19 @@ def run_loop(
             break
         candidate = ready[0]
         print(f"running {candidate.step.id} ...", flush=True)
+        append_record(runs, {
+            "event": "start", "step": candidate.step.id, "pid": os.getpid(), "started": _now(),
+        })
         record = run_step(candidate, options, root)
         append_record(runs, record)
         records.append(record)
         print(f"  {record['outcome']} {record.get('detail', '')}".rstrip(), flush=True)
+        try:
+            summary = finish_line(record.get("session_id", ""))
+        except Exception as err:
+            summary = f"  digest unavailable: {err!r}"
+        if summary:
+            print(summary, flush=True)
         spent += record.get("cost_usd") or 0
         streak = streak + 1 if record["outcome"] in FAILED else 0
         if streak >= options.max_failures:
@@ -354,21 +498,42 @@ def run_loop(
     return records
 
 
-def status(records: list[dict]) -> str:
+def pid_alive(pid) -> bool:
+    try:
+        number = int(pid)
+        if number <= 1:
+            return False
+        os.kill(number, 0)
+    except PermissionError:
+        return True
+    except (OSError, TypeError, ValueError):
+        return False
+    return True
+
+
+def status(records: list[dict], alive=pid_alive) -> str:
     runs = [r for r in records if r.get("event") == "run"]
-    if not runs:
-        return "no runs\n"
     latest: dict[str, dict] = {}
+    started: dict[str, dict] = {}
     for record in records:
         if record.get("event") == "release":
             latest.pop(record["step"], None)
+            started.pop(record["step"], None)
+        elif record.get("event") == "start":
+            started[record["step"]] = record
         elif record.get("event") == "run":
             latest[record["step"]] = record
+            started.pop(record["step"], None)
+    if not runs and not started:
+        return "no runs\n"
     skipped = skip_ids(records)
     parked = [r for r in latest.values() if r["outcome"] == "parked"]
     stuck = [r for r in latest.values() if r["outcome"] in FAILED and r["step"] in skipped]
     spend = sum(r.get("cost_usd") or 0 for r in runs)
     lines = [f"{len(runs)} runs, ${spend:.2f}", ""]
+    for r in started.values():
+        state = "running" if alive(r.get("pid")) else "interrupted, no result recorded"
+        lines += [f"{r['step']}: {state} since {r.get('started', '')[:19]}", ""]
     lines += ["| started | step | outcome | detail |", "|---|---|---|---|"]
     for r in sorted(runs, key=lambda r: r.get("started", ""), reverse=True)[:10]:
         lines.append(f"| {r.get('started', '')[:16]} | {r['step']} | {r['outcome']} | {r.get('detail', '')} |")
@@ -381,6 +546,37 @@ def status(records: list[dict]) -> str:
     if parked or stuck:
         lines += ["", "Resume one with `python -m tools.plan.driver release STEP`."]
     return "\n".join(lines) + "\n"
+
+
+def tail_session(session_id: str | None, sleep=time.sleep, clock=time.monotonic) -> int:
+    if session_id is None:
+        rows = sessionlog.refresh(
+            context.PROJECTS, context.project_slug(sessionlog.main_checkout()), sessionlog.INDEX
+        )
+        drivers = [r for r in rows if r["kind"] == "driver"]
+        if not drivers:
+            print("no driver session to follow; pass a session id", file=sys.stderr)
+            return 1
+        session_id = drivers[-1]["session_id"]
+    if not SESSION_ID.fullmatch(session_id):
+        print(f"not a session id: {session_id!r}", file=sys.stderr)
+        return 1
+    narrator = Narrator(session_id)
+    started = clock()
+    print(f"following {session_id} (Ctrl-C to stop)", flush=True)
+    try:
+        while True:
+            elapsed = clock() - started
+            narrator.tick(elapsed)
+            if not narrator.found and elapsed >= TAIL_FIND_S:
+                print(f"no transcript for session {session_id}", file=sys.stderr)
+                return 1
+            if narrator.found and elapsed - narrator.last_event >= TAIL_IDLE_S:
+                print(f"no new activity for {sessionlog.fmt_duration(TAIL_IDLE_S)}; stopped", flush=True)
+                return 0
+            sleep(POLL_S)
+    except KeyboardInterrupt:
+        return 0
 
 
 def _positive(text: str) -> float:
@@ -406,6 +602,8 @@ def main(argv: list[str] | None = None) -> int:
         "--permission-mode", choices=PERMISSION_MODES, default=defaults.permission_mode
     )
     sub.add_parser("status")
+    tail = sub.add_parser("tail")
+    tail.add_argument("session_id", nargs="?")
     release = sub.add_parser("release")
     release.add_argument("step")
     args = parser.parse_args(argv)
@@ -413,6 +611,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "status":
         print(status(read_records(RUNS)))
         return 0
+    if args.command == "tail":
+        return tail_session(args.session_id)
     if args.command == "release":
         append_record(RUNS, {"event": "release", "step": args.step, "at": _now()})
         print(f"released {args.step}")

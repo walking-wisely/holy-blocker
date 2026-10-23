@@ -5,9 +5,8 @@ description: >
   diff creates, stores, or transmits, for how long, and whether it ever leaves the device — and
   audit an existing package's data handling against the inventory in references/data-classes.md.
   Use this skill on any change touching screen capture, OCR or AX text, URL or page-title handling,
-  classification scores or verdicts, blocklist hits, tamper logs, or persistence; once
-  step-loop's full-loop gate wires it unconditionally (step `engineering.mandatory-review-gates`),
-  it runs on every full-loop step. Also triggers on "privacy review", "what data does this collect",
+  classification scores or verdicts, blocklist hits, tamper logs, or persistence; step-loop
+  gate 4 always runs it on a diff that touches those surfaces. Also triggers on "privacy review", "what data does this collect",
   "audit privacy", "is this GDPR ok", or "does this phone home".
 ---
 

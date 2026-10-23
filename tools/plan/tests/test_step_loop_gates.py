@@ -1,7 +1,7 @@
 """Structural guards for the step-loop skill's review, hand-off and e2e gates.
 
 The skill is prose, so these pin the load-bearing phrases and the files it
-leans on: a rewrite that drops the unconditional security and privacy reviews,
+leans on: a rewrite that drops the mandatory security and privacy reviews,
 the fix-attempt cap, or the demo hand-off fails here instead of silently.
 """
 
@@ -19,8 +19,12 @@ class ReviewGatesTest(unittest.TestCase):
         for needle in ("adversarial-review", "holy-blocker-security", "privacy-review"):
             self.assertIn(needle, SKILL)
 
-    def test_security_and_privacy_reviews_are_unconditional(self):
-        self.assertIn("unconditionally", SKILL)
+    def test_sensitive_surfaces_always_get_security_and_privacy_reviews(self):
+        self.assertIn("The triage cannot drop these", SKILL)
+        self.assertIn("TLS/CA", SKILL)
+
+    def test_review_topics_are_selected_by_a_triage(self):
+        self.assertIn("triage subagent", SKILL)
 
     def test_skill_carries_the_fix_attempt_cap_and_triage_doc(self):
         self.assertIn("MAX_FIX_ATTEMPTS", SKILL)

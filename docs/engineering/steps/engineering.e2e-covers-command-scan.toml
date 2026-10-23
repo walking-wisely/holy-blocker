@@ -1,0 +1,8 @@
+id = "engineering.e2e-covers-command-scan"
+title = "covers lint misses crate manifest files and paths inside sh -c strings, globs and flag values"
+status = "pending"
+evidence = ""
+acceptance = "code"
+verify = "python -m unittest discover -s tools/plan/tests -t ."
+kind = "bug"
+regressed_step = "engineering.e2e-contract"

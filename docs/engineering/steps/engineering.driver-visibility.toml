@@ -1,0 +1,7 @@
+id = "engineering.driver-visibility"
+title = "step driver narrates a running session: tool calls, failures, a heartbeat, a digest, and a tail command"
+status = "at-pr"
+evidence = "PR #154"
+acceptance = "code"
+depends_on = ["engineering.step-driver"]
+verify = "python3 -m unittest discover -s tools/plan/tests -t ."

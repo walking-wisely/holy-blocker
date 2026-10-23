@@ -163,5 +163,16 @@ class ComponentIndexTest(unittest.TestCase):
         self.assertEqual(len(doclint.component_problems(self.components)), 1)
 
 
+class ScenarioManifestTest(unittest.TestCase):
+    def test_doclint_reports_an_invalid_scenario_manifest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "docs" / "components").mkdir(parents=True)
+            (root / "docs" / "components" / "README.md").write_text("# c\n", encoding="utf-8")
+            (root / "demos" / "x").mkdir(parents=True)
+            (root / "demos" / "x" / "scenario.toml").write_text('id = "x"\n', encoding="utf-8")
+            self.assertEqual(doclint.main(["--root", tmp]), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

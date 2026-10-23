@@ -38,7 +38,7 @@ change feels small.
 
 | Tier | What | Merge |
 |---|---|---|
-| Full loop (`step-loop`) | any manifest step; any file a `coverage.md` row cites; anything touching preload/IPC, TLS/CA, TUN, named pipes, capture/OCR or OS permissions; every full-loop step gets the security and privacy reviews unconditionally | auto only if the step's `acceptance = "code"`; an `observation` step merges only if a scenario observed it, else it stops at the PR; `product` steps stop at the PR |
+| Full loop (`step-loop`) | any manifest step; any file a `coverage.md` row cites; anything touching preload/IPC, TLS/CA, TUN, named pipes, capture/OCR or OS permissions; the security and privacy reviews are mandatory for diffs touching those surfaces, and a triage selects the review topics for the rest | auto only if the step's `acceptance = "code"`; an `observation` step merges only if a scenario observed it, else it stops at the PR; `product` steps stop at the PR |
 | Loop-lite | docs-only, dependency bumps, mechanical refactor, frontend rendering | normal PR; run the package's own check and update `coverage.md` if a row moves |
 | Exempt | typo fixes; throwaway spikes that never leave the worktree | none |
 
@@ -317,8 +317,9 @@ python3 -m tools.plan.branches reap --only NAME... --yes   # merged and ancestor
 
 `python -m tools.plan.driver run` launches one headless `claude -p` step-loop session per ready
 step (bugs, then milestone steps, then the rest), records each outcome, and parks anything that
-needs an owner decision; `driver status` is the digest and `driver release STEP` resumes a parked
-step. `python -m tools.plan.sessionlog report` indexes every session transcript into metrics (time
+needs an owner decision. While it runs it prints each tool call and failure as it happens and a
+per-step digest at the end; `driver tail` follows a session from another terminal, `driver status`
+is the digest, and `driver release STEP` resumes a parked step. `python -m tools.plan.sessionlog report` indexes every session transcript into metrics (time
 waiting on a human, cost, tool errors, permission blocks) for finding process friction; the
 `session-logs` skill covers reading it. Both keep their state under `~/.holy-blocker/`, never in
 the repo.

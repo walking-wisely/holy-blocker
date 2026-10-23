@@ -57,7 +57,7 @@ heavier passes below are scheduled, not per-change.
 
 | When | Pass |
 |---|---|
-| Every full-loop step | Authoring mode, unconditionally (wired in step-loop gate) |
+| Every diff touching a surface above | Authoring mode, always (wired in step-loop gate 4) |
 | Per package, once | Audit mode — produce the baseline in `docs/engineering/privacy-backlog.md` |
 | Monthly pre-launch | Re-read the class list for new flows the router does not yet cover |
 | Every release | Backlog triage: nothing `open` without an explicit accept |
