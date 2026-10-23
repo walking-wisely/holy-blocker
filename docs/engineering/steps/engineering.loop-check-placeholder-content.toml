@@ -1,7 +1,7 @@
 id = "engineering.loop-check-placeholder-content"
 title = "loop check accepts placeholder section content and unterminated comments"
 status = "done"
-evidence = ""
+evidence = "PR #153"
 acceptance = "code"
 verify = "python -m unittest discover -s tools/plan/tests -t ."
 kind = "bug"
