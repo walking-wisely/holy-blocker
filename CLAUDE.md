@@ -313,6 +313,16 @@ python3 -m tools.plan.branches inventory
 python3 -m tools.plan.branches reap --only NAME... --yes   # merged and ancestor branches only
 ```
 
+### Unattended driver and session logs
+
+`python -m tools.plan.driver run` launches one headless `claude -p` step-loop session per ready
+step (bugs, then milestone steps, then the rest), records each outcome, and parks anything that
+needs an owner decision; `driver status` is the digest and `driver release STEP` resumes a parked
+step. `python -m tools.plan.sessionlog report` indexes every session transcript into metrics (time
+waiting on a human, cost, tool errors, permission blocks) for finding process friction; the
+`session-logs` skill covers reading it. Both keep their state under `~/.holy-blocker/`, never in
+the repo.
+
 ### Pending-step discovery
 
 Scan every worktree for step manifests and report pending steps alongside each

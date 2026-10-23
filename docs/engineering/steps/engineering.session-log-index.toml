@@ -1,0 +1,6 @@
+id = "engineering.session-log-index"
+title = "session transcript index and friction report, with a session-logs skill"
+status = "pending"
+evidence = ""
+acceptance = "code"
+verify = "python3 -m unittest discover -s tools/plan/tests -t ."

@@ -730,3 +730,59 @@ Reference documents: `git-worktree(1)` (`remove`, `list --porcelain`), `git-push
 (`--force-with-lease=<ref>:<expect>`, `--delete`), `gh pr list --json` fields.
 
 Acceptance: `code`. Verify: `python3 -m unittest discover -s tools/plan/tests -t .`.
+
+## Steps 15–16 — unattended step driver and session logs
+
+The step loop runs one step per session, and the owner starts every session by hand, carries
+context between them, and answers gates that earlier decisions already settle. These two steps
+remove the owner as the scheduler and make the remaining friction measurable.
+
+The orchestrator is deterministic Python, not a model: it spends no tokens. Tokens are spent only
+inside a step, and each step is a fresh headless `claude -p` session, so the context-budget gate
+never forces a handoff.
+
+### Session log index **Done.**
+
+<!-- step: engineering.session-log-index -->
+
+Every session already leaves a `.jsonl` transcript under `~/.claude/projects/`, but nothing
+answers "where did the time go" without reading raw transcripts.
+
+- `python -m tools.plan.sessionlog index` summarizes every transcript for this checkout and its
+  worktrees into `~/.holy-blocker/sessions/index.jsonl`, incrementally by transcript mtime. A
+  summary is metrics only: duration, time spent waiting on a human prompt, cost, tool counts,
+  per-tool seconds, tool errors, permission blocks, skills, subagents, edited-file count. No
+  prompt or response text is copied.
+- `report [--since 7d] [--kind driver|interactive]` prints a table and a friction section (longest
+  waits, most errors, slowest tools) and joins driver runs to their sessions.
+- `.claude/skills/session-logs/SKILL.md` tells an agent how to run it and how to read the
+  transcripts behind a row.
+
+Reference documents: Claude Code transcript format is not specified upstream; the fields used
+(`timestamp`, `type`, `message.content[].type`, `cost-state`, `entrypoint`) were observed on this
+machine and the parser skips any line it cannot read.
+
+Acceptance: `code`. Verify: `python3 -m unittest discover -s tools/plan/tests -t .`.
+
+### Unattended step driver **Done.**
+
+<!-- step: engineering.step-driver -->
+
+`python -m tools.plan.driver run` picks the next ready step across all packages (bugs, then
+milestone steps, then the rest), starts one headless `claude -p` session per step from the clean
+main checkout, and records the outcome.
+
+- The session runs the `step-loop` skill and must end with one `DRIVER-OUTCOME:` line: `merged`,
+  `pr-open` or `parked` with a one-line reason. A missing line is a failed attempt.
+- A parked step is skipped until `driver release <step>`; a step that fails twice is skipped too.
+  Two consecutive failures stop the run, so a broken environment cannot burn the budget.
+- Each step has a wall-clock timeout and a dollar cap. Runs append to
+  `~/.holy-blocker/driver/runs.jsonl` with the session id, so `sessionlog report` can join them.
+- `driver status` is the digest: recent runs, what is parked and why, total cost.
+- The permission mode is a flag. Steps that need privilege park instead of asking, per
+  `docs/decisions/agent-privilege-boundary.md`.
+
+Reference documents: `claude --help` (`--print`, `--output-format json`, `--session-id`,
+`--permission-mode`, `--max-budget-usd`).
+
+Acceptance: `code`. Verify: `python3 -m unittest discover -s tools/plan/tests -t .`.
