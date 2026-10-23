@@ -42,6 +42,8 @@ MAX_ATTEMPTS = 2
 OUT_RETENTION_DAYS = 30
 HEARTBEAT_S = 30
 POLL_S = 5
+TAIL_IDLE_S = 900
+TAIL_FIND_S = 30
 KILL_WAIT_S = 5
 PERMISSION_MODES = ("auto", "acceptEdits", "dontAsk")
 PR_URL = re.compile(r"https://github\.com/[\w.-]+/[\w.-]+/pull/\d+")
@@ -217,11 +219,14 @@ class Narrator:
         self.offset = 0
         self.labels: dict[str, str] = {}
         self.last_printed = 0.0
+        self.last_event = 0.0
+        self.found = False
 
     def _new_entries(self) -> list[dict]:
         path = context.session_transcript(self.session_id, context.PROJECTS)
         if path is None:
             return []
+        self.found = True
         try:
             with path.open("rb") as handle:
                 if path.stat().st_size < self.offset:
@@ -259,7 +264,10 @@ class Narrator:
 
     def tick(self, elapsed: float) -> None:
         printed = False
-        for entry in self._new_entries():
+        entries = self._new_entries()
+        if entries:
+            self.last_event = elapsed
+        for entry in entries:
             try:
                 texts = self._lines(entry)
             except (AttributeError, TypeError, ValueError, KeyError):
@@ -540,8 +548,8 @@ def status(records: list[dict], alive=pid_alive) -> str:
     return "\n".join(lines) + "\n"
 
 
-def tail_session(session_id: str | None, sleep=time.sleep) -> int:
-    if not session_id:
+def tail_session(session_id: str | None, sleep=time.sleep, clock=time.monotonic) -> int:
+    if session_id is None:
         rows = sessionlog.refresh(
             context.PROJECTS, context.project_slug(sessionlog.main_checkout()), sessionlog.INDEX
         )
@@ -554,11 +562,18 @@ def tail_session(session_id: str | None, sleep=time.sleep) -> int:
         print(f"not a session id: {session_id!r}", file=sys.stderr)
         return 1
     narrator = Narrator(session_id)
-    started = time.monotonic()
+    started = clock()
     print(f"following {session_id} (Ctrl-C to stop)", flush=True)
     try:
         while True:
-            narrator.tick(time.monotonic() - started)
+            elapsed = clock() - started
+            narrator.tick(elapsed)
+            if not narrator.found and elapsed >= TAIL_FIND_S:
+                print(f"no transcript for session {session_id}", file=sys.stderr)
+                return 1
+            if narrator.found and elapsed - narrator.last_event >= TAIL_IDLE_S:
+                print(f"no new activity for {sessionlog.fmt_duration(TAIL_IDLE_S)}; stopped", flush=True)
+                return 0
             sleep(POLL_S)
     except KeyboardInterrupt:
         return 0

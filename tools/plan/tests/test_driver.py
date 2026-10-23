@@ -549,10 +549,55 @@ class ProgressLineTest(unittest.TestCase):
         self.assertIn("starting", driver.progress_line("no-such-session", 5))
 
 
+class FakeClock:
+    def __init__(self):
+        self.now = 0.0
+
+    def __call__(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.now += seconds
+
+
 class TailTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        (Path(self.tmp.name) / "proj").mkdir()
+        original = driver.context.PROJECTS
+        driver.context.PROJECTS = Path(self.tmp.name)
+        self.addCleanup(setattr, driver.context, "PROJECTS", original)
+        self.clock = FakeClock()
+
+    def tail(self, session_id):
+        out = io.StringIO()
+        with driver.contextlib.redirect_stdout(out), driver.contextlib.redirect_stderr(out):
+            code = driver.tail_session(session_id, sleep=self.clock.sleep, clock=self.clock)
+        return code, out.getvalue()
+
     def test_a_session_id_with_path_characters_is_refused(self):
-        for bad in ("../../out", "a/b", "x y", ""):
-            self.assertEqual(driver.tail_session(bad or "?/", sleep=lambda s: None), 1, bad)
+        for bad in ("../../out", "a/b", "x y", "a\n"):
+            self.assertEqual(self.tail(bad)[0], 1, bad)
+
+    def test_an_empty_id_is_refused_rather_than_meaning_the_newest_session(self):
+        code, text = self.tail("")
+        self.assertEqual(code, 1)
+        self.assertEqual(self.clock.now, 0)
+
+    def test_a_session_with_no_transcript_gives_up_instead_of_waiting_forever(self):
+        code, text = self.tail("no-such-session")
+        self.assertEqual(code, 1)
+        self.assertIn("no transcript", text)
+        self.assertLessEqual(self.clock.now, driver.TAIL_FIND_S + driver.POLL_S)
+
+    def test_a_session_that_goes_quiet_ends_the_tail(self):
+        (Path(self.tmp.name) / "proj" / "sid.jsonl").write_text(_tool_use_line("1", "Bash", command="ls") + "\n")
+        code, text = self.tail("sid")
+        self.assertEqual(code, 0)
+        self.assertIn("Bash(ls)", text)
+        self.assertIn("no new activity", text)
+        self.assertLessEqual(self.clock.now, driver.TAIL_IDLE_S + driver.POLL_S)
 
 
 class PidTest(unittest.TestCase):
