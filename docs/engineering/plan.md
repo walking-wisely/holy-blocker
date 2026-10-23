@@ -452,13 +452,14 @@ Test layers: the manifest parser, exit-code mapping, tree-hash and note logic ar
 temporary git repository. Nothing here needs an emulator. Only the Android scenario step is observed
 on a device.
 
-#### Step 10a — the scenario contract
+#### Step 10a — the scenario contract **Done.**
 
 <!-- step: engineering.e2e-contract -->
 
 `tools/plan/e2e/manifest.py`: load and validate `demos/*/scenario.toml` (fields per decision 1),
-and a `doclint` check that `covers` is closed under `cargo metadata` path dependencies and names the
-scenario's own script and seed paths. No runner yet.
+and a `doclint` check that `covers` is closed under Cargo path dependencies (read from each crate's
+`Cargo.toml`, so docs CI needs no toolchain) and names the scenario's own directory and the files its
+commands invoke. No runner yet.
 
 Acceptance: `code`. Verify: `python -m unittest discover -s tools/plan/tests -t .`.
 

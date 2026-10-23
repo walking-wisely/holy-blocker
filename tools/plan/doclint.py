@@ -1,4 +1,5 @@
-"""Docs navigation lint: relative links resolve, and every component is indexed.
+"""Docs navigation lint: relative links resolve, every component is indexed, and
+e2e scenario manifests are valid with a closed `covers`.
 
     python -m tools.plan.doclint
 
@@ -11,6 +12,8 @@ import re
 import sys
 from pathlib import Path
 from urllib.parse import unquote
+
+from tools.plan.e2e import manifest as e2e_manifest
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -125,6 +128,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     problems = component_problems(args.root / "docs" / "components")
+    problems.extend(e2e_manifest.problems(args.root))
     for page in _pages(args.root):
         problems.extend(broken_links(page))
     for problem in problems:
