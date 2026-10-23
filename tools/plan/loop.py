@@ -25,7 +25,7 @@ from tools.plan import ledger
 
 REQUIRED_SECTIONS = ("Assumption audit", "Adversarial review")
 CODE_ROOTS = ("packages", "apps", "native-modules", "machine-learning")
-_FENCE_RE = re.compile(r"^(```|~~~).*?(?:^\1[^\n]*$|\Z)", re.S | re.M)
+_FENCE_RE = re.compile(r"^(`{3,}|~{3,}).*?(?:^\1[^\n]*$|\Z)", re.S | re.M)
 _COMMENT_RE = re.compile(r"<!--.*?(?:-->|\Z)", re.S)
 _NOT_APPLICABLE_RE = re.compile(r"\bN/A\b", re.I)
 MIN_CONTENT_CHARS = 3

@@ -143,6 +143,13 @@ class CheckTest(unittest.TestCase):
         body = "`desktop.ipc`\n## Adversarial review\nN/A — not needed.\n```\n## Assumption audit\nreal text\n"
         self.assertTrue(any("Assumption audit" in p for p in check(body, ["apps/desktop/a.ts"])))
 
+    def test_longer_fence_holding_a_shorter_one_is_stripped_as_a_unit(self):
+        body = (
+            "`desktop.ipc`\n## Assumption audit\nreal stuff\n````\ncode\n```\nmore\n````\n"
+            "## Adversarial review\nN/A — not needed.\n"
+        )
+        self.assertEqual(check(body, ["apps/desktop/a.ts"]), [])
+
     def test_nested_heading_level_does_not_count(self):
         body = "`desktop.ipc`\n### Assumption audit\nx\n## Adversarial review\nN/A — not needed.\n"
         self.assertTrue(any("Assumption audit" in p for p in check(body, ["apps/desktop/a.ts"])))
