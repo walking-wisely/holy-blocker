@@ -83,17 +83,27 @@ the manifest in the same PR.
 
 ## 4. Review — fresh context, not the author
 
-Three reviews run over the branch's full commit range, each **from a subagent with a
-fresh context**. The implementer reviewing its own diff is confirmation bias with a
-checklist; a review's value depends on it not sharing the author's model of the bug.
+Reviews run over the branch's full commit range, each **from a subagent with a fresh
+context**. The implementer reviewing its own diff is confirmation bias with a checklist; a
+review's value depends on it not sharing the author's model of the bug.
 
-1. `adversarial-review`.
-2. `holy-blocker-security` in Authoring mode.
-3. `privacy-review` in Authoring mode.
+First a triage subagent reads the step, the manifest and the diff and writes the review topics
+that apply, one line each: the claim to attack and the file or decision it rests on. Examples: a
+constant never checked against the real API, a contradiction with a `docs/decisions` record, a
+schema that accepts input the consumer cannot run. One fresh-context reviewer runs per topic, on
+that topic only. A diff with no topic worth attacking gets no reviewer, and the triage says so.
 
-Reviews 2 and 3 run **unconditionally, every time this gate runs** — not only when the diff
-matches a trigger phrase in a skill's `references/review-triggers.md`. Trigger matching is how
-each skill picks which boundary sections to load, never whether it runs.
+The triage cannot drop these. They always run, whatever it writes:
+
+1. `holy-blocker-security` in Authoring mode, when the diff touches preload/IPC, TLS/CA, TUN,
+   named pipes, capture/OCR, OS permissions, network parsing, privileged daemons or model loading.
+2. `privacy-review` in Authoring mode, when the diff touches capture, OCR or AX text, URLs or page
+   titles, scores or verdicts, blocklist hits, the tamper log or persistence.
+3. `adversarial-review`, when the diff changes code that ships in a product package.
+
+Outside those, the triage selects, and a skill's `references/review-triggers.md` still picks which
+boundary sections that skill loads. Record in the PR's `## Adversarial review` section which
+topics ran and which were skipped, with the reason.
 
 Apply the two rules: reproduce or label, and cite or omit. Then triage every finding by
 `docs/engineering/review-triage.md` §3:
@@ -192,7 +202,7 @@ A merged PR's remote branch is removed by GitHub (`deleteBranchOnMerge`); check 
 
 - Merge an `observation` step whose truth no scenario observed.
 - Attempt a third fix for a Blocking finding.
-- Skip the security or privacy review because the diff "obviously" misses their triggers.
+- Skip a mandatory review because the diff "obviously" misses its triggers; the surfaces listed in gate 4 decide, not impressions.
 - Write a status file. Derive it.
 - Remove a worktree the owner has not seen the inventory of, or pass `--discard` without an
   explicit instruction. A worktree with uncommitted files or non-disposable ignored state is

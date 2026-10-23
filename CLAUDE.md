@@ -38,7 +38,7 @@ change feels small.
 
 | Tier | What | Merge |
 |---|---|---|
-| Full loop (`step-loop`) | any manifest step; any file a `coverage.md` row cites; anything touching preload/IPC, TLS/CA, TUN, named pipes, capture/OCR or OS permissions; every full-loop step gets the security and privacy reviews unconditionally | auto only if the step's `acceptance = "code"`; an `observation` step merges only if a scenario observed it, else it stops at the PR; `product` steps stop at the PR |
+| Full loop (`step-loop`) | any manifest step; any file a `coverage.md` row cites; anything touching preload/IPC, TLS/CA, TUN, named pipes, capture/OCR or OS permissions; the security and privacy reviews are mandatory for diffs touching those surfaces, and a triage selects the review topics for the rest | auto only if the step's `acceptance = "code"`; an `observation` step merges only if a scenario observed it, else it stops at the PR; `product` steps stop at the PR |
 | Loop-lite | docs-only, dependency bumps, mechanical refactor, frontend rendering | normal PR; run the package's own check and update `coverage.md` if a row moves |
 | Exempt | typo fixes; throwaway spikes that never leave the worktree | none |
 
