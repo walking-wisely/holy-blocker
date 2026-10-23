@@ -95,14 +95,16 @@ def _result(gate: str, state: str, advisory: dict[str, str]) -> str:
 
 def wait(
     fetch, gate: str, timeout: float, interval: float, grace: float, sleep, clock, out,
-    expected_sha: str = "",
+    expected_sha: str,
 ) -> int:
+    if not expected_sha:
+        raise ValueError("expected_sha is required: checks are only trusted for a known commit")
     started = clock()
     previous = None
     while True:
         snapshot = fetch()
         elapsed = clock() - started
-        stale = bool(expected_sha and snapshot.head != expected_sha)
+        stale = snapshot.head != expected_sha
         checks = [] if stale else snapshot.checks
         state, advisory = evaluate(checks, gate)
         if state != PENDING:

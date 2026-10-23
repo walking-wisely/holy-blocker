@@ -89,7 +89,7 @@ def snap(checks, head="abc", error=""):
 
 
 class WaitTest(unittest.TestCase):
-    def wait(self, responses, expected="", **kwargs):
+    def wait(self, responses, expected="abc", **kwargs):
         clock, lines = Clock(), []
         queue = list(responses)
 
@@ -138,6 +138,10 @@ class WaitTest(unittest.TestCase):
     def test_the_new_head_is_picked_up_once_it_appears(self):
         code, _ = self.wait([snap([gate("pass")], head="old"), snap([gate("pass")], head="new")], expected="new")
         self.assertEqual(code, 0)
+
+    def test_waiting_without_a_known_commit_is_refused(self):
+        with self.assertRaises(ValueError):
+            self.wait([snap([gate("pass")])], expected="")
 
     def test_an_unreadable_head_is_never_trusted_when_a_commit_is_expected(self):
         code, lines = self.wait([snap([gate("pass")], head="", error="HTTP 502")], expected="new", grace=20)
