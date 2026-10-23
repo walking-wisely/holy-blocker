@@ -5,8 +5,10 @@ Usage:
     python -m tools.plan.sessionlog report [--since 7d] [--kind driver|interactive] [--limit N]
     python -m tools.plan.sessionlog show SESSION_ID
 
-A row holds counts and durations only. No prompt or response text is copied out of a
-transcript; the row's `path` points at the transcript for anything deeper.
+A row holds counts, durations, the branch name and identifiers that match SAFE_NAME. No prompt
+or response text, session title or working directory is copied out of a transcript; the row's
+`path` points at the transcript for anything deeper. Files are owner-only and rows older than
+INDEX_RETENTION_DAYS are dropped.
 """
 
 from __future__ import annotations
@@ -18,6 +20,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -32,6 +35,35 @@ EDIT_TOOLS = ("Edit", "Write", "NotebookEdit")
 DENIAL_MARKERS = ("denied", "doesn't want to proceed")
 TOP = 5
 IDLE_S = 600
+INDEX_RETENTION_DAYS = 180
+SAFE_NAME = re.compile(r"[A-Za-z][A-Za-z0-9_+-]*")
+OTHER = "other"
+
+
+def safe_name(value) -> str:
+    return value if isinstance(value, str) and SAFE_NAME.fullmatch(value) else OTHER
+
+
+def private_dir(path: Path) -> None:
+    path = Path(path)
+    path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path.chmod(0o700)
+
+
+def append_private(path: Path, line: str) -> None:
+    private_dir(Path(path).parent)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW
+    descriptor = os.open(path, flags, 0o600)
+    with os.fdopen(descriptor, "a", encoding="utf-8") as out:
+        out.write(line)
+
+
+def write_private(path: Path, text: str) -> None:
+    private_dir(Path(path).parent)
+    descriptor, temporary = tempfile.mkstemp(dir=Path(path).parent, suffix=".tmp")
+    with os.fdopen(descriptor, "w", encoding="utf-8") as out:
+        out.write(text)
+    os.replace(temporary, path)
 
 
 def _time(value: str | None) -> datetime | None:
@@ -76,11 +108,12 @@ def summarize(path: Path) -> dict:
     first = last = last_seen = None
     human_prompts = 0
     wait = longest_wait = active = 0.0
-    assistant_msgs = subagents = output_tokens = peak_context = 0
+    subagents = peak_context = 0
     cost = None
     meta: dict[str, str] = {}
-    title = ""
     models: Counter = Counter()
+    seen_messages: set[str] = set()
+    message_tokens: dict[str, int] = {}
     tool_counts: Counter = Counter()
     tool_errors: Counter = Counter()
     tool_seconds: Counter = Counter()
@@ -93,11 +126,9 @@ def summarize(path: Path) -> dict:
     for entry in _entries(path):
         kind = entry.get("type")
         stamp = _time(entry.get("timestamp"))
-        if kind == "ai-title":
-            title = entry.get("aiTitle", title)
-        elif kind == "cost-state":
+        if kind == "cost-state":
             cost = entry.get("totalCostUSD", cost)
-        for key, field in (("entrypoint", "entrypoint"), ("cwd", "cwd"), ("branch", "gitBranch")):
+        for key, field in (("entrypoint", "entrypoint"), ("branch", "gitBranch")):
             if key not in meta and entry.get(field):
                 meta[key] = entry[field]
         if stamp is None:
@@ -106,6 +137,7 @@ def summarize(path: Path) -> dict:
         last = max(last, stamp) if last else stamp
 
         human = False
+        resumed_tool = False
         if kind == "user":
             content = entry.get("message", {}).get("content")
             if _is_prompt(entry) and entry.get("origin", {}).get("kind") == "human":
@@ -118,11 +150,12 @@ def summarize(path: Path) -> dict:
             for block in content if isinstance(content, list) else []:
                 if not isinstance(block, dict) or block.get("type") != "tool_result":
                     continue
+                resumed_tool = True
                 name, started = pending.pop(block.get("tool_use_id"), ("", None))
                 if name and started:
                     tool_seconds[name] += (stamp - started).total_seconds()
                 if block.get("is_error"):
-                    tool_errors[name or "unknown"] += 1
+                    tool_errors[name or OTHER] += 1
                     text = _flatten(block.get("content")).lower()
                     if any(marker in text for marker in DENIAL_MARKERS):
                         permission_blocks += 1
@@ -131,9 +164,13 @@ def summarize(path: Path) -> dict:
             usage = message.get("usage") or {}
             if message.get("model") == context.SYNTHETIC_MODEL:
                 continue
-            assistant_msgs += 1
-            models[message.get("model", "unknown")] += 1
-            output_tokens += usage.get("output_tokens") or 0
+            message_id = message.get("id") or f"line-{len(seen_messages)}"
+            if message_id not in seen_messages:
+                seen_messages.add(message_id)
+                models[safe_name(message.get("model", "").replace(".", "-"))] += 1
+            message_tokens[message_id] = max(
+                message_tokens.get(message_id, 0), usage.get("output_tokens") or 0
+            )
             if not entry.get("isSidechain"):
                 peak_context = max(
                     peak_context, sum(usage.get(key) or 0 for key in context.USAGE_KEYS)
@@ -141,29 +178,28 @@ def summarize(path: Path) -> dict:
             for block in message.get("content") or []:
                 if not isinstance(block, dict) or block.get("type") != "tool_use":
                     continue
-                name, args = block.get("name", "unknown"), block.get("input") or {}
+                name, args = safe_name(block.get("name")), block.get("input") or {}
                 tool_counts[name] += 1
                 pending[block.get("id")] = (name, stamp)
                 if name == "Agent":
                     subagents += 1
                 elif name == "Skill":
-                    skills[args.get("skill", "unknown")] += 1
+                    skills[safe_name(args.get("skill"))] += 1
                 elif name == "Bash" and str(args.get("command", "")).split():
-                    bash_heads[str(args["command"]).split()[0]] += 1
+                    bash_heads[safe_name(str(args["command"]).split()[0])] += 1
                 elif name in EDIT_TOOLS and args.get("file_path"):
                     edited.add(args["file_path"])
         if last_seen and not human:
             gap = (stamp - last_seen).total_seconds()
-            if gap <= IDLE_S:
+            if gap <= IDLE_S or resumed_tool:
                 active += gap
         last_seen = stamp
 
+    output_tokens = sum(message_tokens.values())
     duration = (last - first).total_seconds() if first and last else 0.0
     return {
         "session_id": path.stem,
         "kind": "driver" if meta.get("entrypoint", "").startswith("sdk") else "interactive",
-        "title": title,
-        "cwd": meta.get("cwd", ""),
         "branch": meta.get("branch", ""),
         "start": first.isoformat() if first else "",
         "duration_s": round(duration),
@@ -171,7 +207,7 @@ def summarize(path: Path) -> dict:
         "longest_wait_s": round(longest_wait),
         "active_s": round(active),
         "human_prompts": human_prompts,
-        "assistant_msgs": assistant_msgs,
+        "assistant_msgs": len(seen_messages),
         "output_tokens": output_tokens,
         "peak_context": peak_context,
         "cost_usd": cost,
@@ -204,18 +240,22 @@ def read_index(index: Path) -> list[dict]:
 def refresh(projects: Path, prefix: str, index: Path) -> list[dict]:
     """Summarize new or changed transcripts of projects whose directory starts with prefix."""
     known = {row["session_id"]: row for row in read_index(index)}
-    for directory in sorted(Path(projects).glob(f"{glob.escape(prefix)}*")):
+    candidates = sorted(Path(projects).glob(f"{glob.escape(prefix)}*"))
+    for directory in candidates:
+        if directory.name != prefix and not directory.name.startswith(f"{prefix}--"):
+            continue
         for transcript in directory.glob("*.jsonl"):
             mtime = transcript.stat().st_mtime
             row = known.get(transcript.stem)
             if row and row.get("mtime") == mtime:
                 continue
             known[transcript.stem] = {**summarize(transcript), "mtime": mtime, "path": str(transcript)}
-    rows = sorted(known.values(), key=lambda r: r.get("start", ""))
-    Path(index).parent.mkdir(parents=True, exist_ok=True)
-    temporary = Path(index).with_suffix(".tmp")
-    temporary.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
-    temporary.replace(index)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=INDEX_RETENTION_DAYS)
+    rows = sorted(
+        (r for r in known.values() if (_time(r.get("start")) or cutoff) >= cutoff),
+        key=lambda r: r.get("start", ""),
+    )
+    write_private(index, "".join(json.dumps(r) + "\n" for r in rows))
     return rows
 
 
@@ -262,12 +302,12 @@ def report(rows: list[dict], kind: str | None, runs: dict[str, dict], limit: int
     if not rows:
         return "no sessions\n"
     table = [
-        "| start | kind | step / title | branch | active | waiting | cost | tool errors | blocks |",
+        "| start | kind | step / session | branch | active | waiting | cost | tool errors | blocks |",
         "|---|---|---|---|---|---|---|---|---|",
     ]
     for row in sorted(rows, key=lambda r: r.get("start", ""), reverse=True)[:limit]:
         run = runs.get(row["session_id"])
-        label = f"{run['step']} ({run['outcome']})" if run else row.get("title", "")
+        label = f"{run['step']} ({run['outcome']})" if run else row["session_id"][:8]
         cost = row.get("cost_usd")
         table.append(
             f"| {row.get('start', '')[:16]} | {row['kind']} | {label} | {row.get('branch', '')} "

@@ -751,8 +751,10 @@ answers "where did the time go" without reading raw transcripts.
 - `python -m tools.plan.sessionlog index` summarizes every transcript for this checkout and its
   worktrees into `~/.holy-blocker/sessions/index.jsonl`, incrementally by transcript mtime. A
   summary is metrics only: duration, time spent waiting on a human prompt, cost, tool counts,
-  per-tool seconds, tool errors, permission blocks, skills, subagents, edited-file count. No
-  prompt or response text is copied.
+  per-tool seconds, tool errors, permission blocks, skills, subagents, edited-file count, branch
+  name. Command, skill and tool names are kept only when they are plain identifiers. No prompt or
+  response text, session title or working directory is copied; files are owner-only and old rows
+  expire.
 - `report [--since 7d] [--kind driver|interactive]` prints a table and a friction section (longest
   waits, most errors, slowest tools) and joins driver runs to their sessions.
 - `.claude/skills/session-logs/SKILL.md` tells an agent how to run it and how to read the
@@ -773,10 +775,16 @@ milestone steps, then the rest), starts one headless `claude -p` session per ste
 main checkout, and records the outcome.
 
 - The session runs the `step-loop` skill and must end with one `DRIVER-OUTCOME:` line: `merged`,
-  `pr-open` or `parked` with a one-line reason. A missing line is a failed attempt.
+  `pr-open` or `parked` with a one-line reason. A missing line is a failed attempt. A `merged` or
+  `pr-open` claim is checked against the PR's real state through `gh`, which overrides the
+  claim; merging a `product` step is recorded as a violation and counts as a failure.
+- A step named by any open PR, and a step whose `pr-open` PR is still open, is not started again.
+  A PR closed unmerged releases its step. A step in flight in another worktree with no PR yet is
+  not detected.
 - A parked step is skipped until `driver release <step>`; a step that fails twice is skipped too.
   Two consecutive failures stop the run, so a broken environment cannot burn the budget.
-- Each step has a wall-clock timeout and a dollar cap. Runs append to
+- Each step has a wall-clock timeout (the whole process group is killed), a per-step dollar cap and
+  a total cap for the run. Runs append to
   `~/.holy-blocker/driver/runs.jsonl` with the session id, so `sessionlog report` can join them.
 - `driver status` is the digest: recent runs, what is parked and why, total cost.
 - The permission mode is a flag. Steps that need privilege park instead of asking, per

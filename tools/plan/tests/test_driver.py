@@ -1,5 +1,8 @@
 import json
+import os
+import stat
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -107,10 +110,12 @@ class CommandTest(unittest.TestCase):
     def test_model_is_omitted_when_unset(self):
         self.assertNotIn("--model", driver.build_command("p", "s", driver.Options()))
 
-    def test_prompt_names_the_step_and_the_marker_contract(self):
-        step = driver.ledger.Step("pkg.x", "Do x", "pending", "")
+    def test_prompt_names_the_step_the_acceptance_kind_and_existing_work(self):
+        step = driver.ledger.Step("pkg.x", "Do x", "pending", "", acceptance="product")
         prompt = driver.build_prompt(step, "pkg")
         self.assertIn("pkg.x", prompt)
+        self.assertIn("acceptance kind is product", prompt)
+        self.assertIn("continue from it", prompt)
         self.assertIn("step-loop", prompt)
         self.assertIn("DRIVER-OUTCOME:", prompt)
 
@@ -138,7 +143,8 @@ class LoopTest(unittest.TestCase):
     def loop(self, outcomes, **options):
         fake = FakeRun(outcomes)
         records = driver.run_loop(
-            self.root, driver.Options(**options), self.runs, run_step=fake, prepare=lambda root: None
+            self.root, driver.Options(**options), self.runs, run_step=fake,
+            prepare=lambda root: None, pr_state=lambda url: "OPEN", in_flight=lambda ids: set(),
         )
         return fake, records
 
@@ -181,44 +187,164 @@ class LoopTest(unittest.TestCase):
             driver.run_loop(self.root, driver.Options(), self.runs, run_step=fake, prepare=refuse)
         self.assertEqual(fake.steps, [])
 
+    def test_preflight_failing_after_a_step_ends_the_run_with_its_records(self):
+        calls = []
+
+        def refuse_second(root):
+            calls.append(root)
+            if len(calls) > 1:
+                raise driver.PreflightError("dirty")
+        fake = FakeRun(["merged", "merged"])
+        records = driver.run_loop(
+            self.root, driver.Options(max_steps=3), self.runs, run_step=fake,
+            prepare=refuse_second, pr_state=lambda url: "OPEN", in_flight=lambda ids: set(),
+        )
+        self.assertEqual(len(records), 1)
+
+    def test_steps_named_by_an_open_pr_are_not_started(self):
+        fake = FakeRun(["merged"])
+        driver.run_loop(
+            self.root, driver.Options(max_steps=1), self.runs, run_step=fake,
+            prepare=lambda root: None, pr_state=lambda url: "OPEN",
+            in_flight=lambda ids: {"a.s0", "a.s1"},
+        )
+        self.assertEqual(fake.steps, ["a.s2"])
+
+    def test_total_budget_stops_the_run(self):
+        fake, records = self.loop(["merged"] * 5, max_steps=5, total_budget=2.5)
+        self.assertEqual(len(records), 3)
+
+    def test_a_pr_closed_unmerged_releases_its_step(self):
+        driver.append_record(self.runs, {
+            "event": "run", "step": "a.s0", "outcome": "pr-open",
+            "detail": "https://github.com/o/r/pull/9", "session_id": "x",
+        })
+        fake = FakeRun(["merged"])
+        driver.run_loop(
+            self.root, driver.Options(max_steps=1), self.runs, run_step=fake,
+            prepare=lambda root: None, pr_state=lambda url: "CLOSED", in_flight=lambda ids: set(),
+        )
+        self.assertEqual(fake.steps, ["a.s0"])
+
+    def test_a_pr_still_open_keeps_its_step_skipped(self):
+        driver.append_record(self.runs, {
+            "event": "run", "step": "a.s0", "outcome": "pr-open",
+            "detail": "https://github.com/o/r/pull/9", "session_id": "x",
+        })
+        fake, _ = self.loop(["merged"], max_steps=1)
+        self.assertEqual(fake.steps, ["a.s1"])
+
+    def test_run_records_are_owner_only(self):
+        self.loop(["merged"], max_steps=1)
+        self.assertEqual(stat.S_IMODE(self.runs.stat().st_mode), 0o600)
+
+
+PR = "https://github.com/o/r/pull/2"
+
 
 class ExecuteTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.candidate = driver.Candidate(driver.ledger.Step("p.s", "t", "pending", ""), "p")
+        self.out = Path(self.tmp.name) / "out"
 
-    def execute(self, result, **options):
-        def fake_process(command, cwd, timeout):
-            return result
+    def execute(self, result, state="MERGED", acceptance="code", **options):
+        candidate = driver.Candidate(
+            driver.ledger.Step("p.s", "t", "pending", "", acceptance=acceptance), "p"
+        )
         return driver.execute(
-            self.candidate, driver.Options(**options), Path(self.tmp.name), process=fake_process,
-            out_dir=Path(self.tmp.name) / "out",
+            candidate, driver.Options(**options), Path(self.tmp.name),
+            process=lambda command, cwd, timeout: result, out_dir=self.out,
+            pr_state=lambda url: state,
         )
 
-    def test_success_with_marker_is_the_reported_outcome(self):
-        payload = {"result": "x\nDRIVER-OUTCOME: merged https://x/pull/2", "is_error": False,
-                   "total_cost_usd": 1.25, "num_turns": 40, "duration_ms": 5000,
-                   "permission_denials": [{}, {}]}
-        record = self.execute(driver.Completed(0, json.dumps(payload), ""))
-        self.assertEqual((record["outcome"], record["detail"]), ("merged", "https://x/pull/2"))
+    def answer(self, text, **extra):
+        return driver.Completed(0, json.dumps({"result": text, "is_error": False, **extra}), "")
+
+    def test_a_verified_claim_is_the_reported_outcome_with_its_metrics(self):
+        result = self.answer(
+            f"x\nDRIVER-OUTCOME: merged {PR}", total_cost_usd=1.25, num_turns=40,
+            duration_ms=5000, permission_denials=[{}, {}],
+        )
+        record = self.execute(result)
+        self.assertEqual((record["outcome"], record["detail"]), ("merged", PR))
         self.assertEqual((record["cost_usd"], record["turns"], record["denials"]), (1.25, 40, 2))
 
+    def test_the_prs_real_state_overrides_the_claim(self):
+        record = self.execute(self.answer(f"DRIVER-OUTCOME: merged {PR}"), state="OPEN")
+        self.assertEqual(record["outcome"], "pr-open")
+
+    def test_a_closed_pr_is_a_failure(self):
+        record = self.execute(self.answer(f"DRIVER-OUTCOME: pr-open {PR}"), state="CLOSED")
+        self.assertEqual(record["outcome"], "failed")
+
+    def test_a_claim_without_a_pr_url_is_unreported(self):
+        self.assertEqual(self.execute(self.answer("DRIVER-OUTCOME: merged"))["outcome"], "unreported")
+
+    def test_an_unreadable_pr_is_unreported(self):
+        record = self.execute(self.answer(f"DRIVER-OUTCOME: merged {PR}"), state=None)
+        self.assertEqual(record["outcome"], "unreported")
+
+    def test_merging_a_product_step_is_a_violation(self):
+        record = self.execute(self.answer(f"DRIVER-OUTCOME: merged {PR}"), acceptance="product")
+        self.assertEqual(record["outcome"], "violation")
+
+    def test_parked_needs_no_pr(self):
+        record = self.execute(self.answer("DRIVER-OUTCOME: parked: which signing key?"))
+        self.assertEqual((record["outcome"], record["detail"]), ("parked", "which signing key?"))
+
     def test_is_error_is_a_failure_even_with_a_marker(self):
-        payload = {"result": "DRIVER-OUTCOME: merged x", "is_error": True}
-        self.assertEqual(self.execute(driver.Completed(0, json.dumps(payload), ""))["outcome"], "failed")
+        result = driver.Completed(
+            0, json.dumps({"result": f"DRIVER-OUTCOME: merged {PR}", "is_error": True}), ""
+        )
+        self.assertEqual(self.execute(result)["outcome"], "failed")
 
     def test_nonzero_exit_or_garbage_output_is_a_failure(self):
         self.assertEqual(self.execute(driver.Completed(1, "", "boom"))["outcome"], "failed")
         self.assertEqual(self.execute(driver.Completed(0, "not json", ""))["outcome"], "failed")
 
-    def test_timeout_is_recorded(self):
-        self.assertEqual(self.execute(driver.TimedOut())["outcome"], "timeout")
+    def test_timeout_is_recorded_and_its_partial_output_kept_owner_only(self):
+        record = self.execute(driver.TimedOut("partial", ""))
+        self.assertEqual(record["outcome"], "timeout")
+        saved = self.out / f"{record['session_id']}.json"
+        self.assertIn("partial", saved.read_text())
+        self.assertEqual(stat.S_IMODE(saved.stat().st_mode), 0o600)
 
-    def test_raw_output_is_kept_for_investigation(self):
-        record = self.execute(driver.Completed(1, "out", "err"))
-        saved = (Path(self.tmp.name) / "out" / f"{record['session_id']}.json").read_text()
-        self.assertIn("out", saved)
+
+class ProcessTest(unittest.TestCase):
+    def test_timeout_kills_the_whole_process_group(self):
+        started = time.monotonic()
+        result = driver.run_process(["sh", "-c", "sleep 30 & sleep 30"], Path.cwd(), 1)
+        self.assertIsInstance(result, driver.TimedOut)
+        self.assertLess(time.monotonic() - started, 10)
+
+    def test_output_and_exit_code_are_returned(self):
+        result = driver.run_process(["sh", "-c", "echo hi; exit 3"], Path.cwd(), 10)
+        self.assertEqual((result.returncode, result.stdout.strip()), (3, "hi"))
+
+
+class PruneTest(unittest.TestCase):
+    def test_old_outputs_are_removed_and_new_ones_kept(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old, new = Path(tmp) / "old.json", Path(tmp) / "new.json"
+            old.write_text("{}")
+            new.write_text("{}")
+            ancient = time.time() - (driver.OUT_RETENTION_DAYS + 1) * 86400
+            os.utime(old, (ancient, ancient))
+            driver.prune_out(Path(tmp))
+            self.assertFalse(old.exists())
+            self.assertTrue(new.exists())
+
+
+class ArgumentTest(unittest.TestCase):
+    def test_budgets_must_be_positive_and_finite(self):
+        for bad in ("nan", "inf", "-1", "0"):
+            with self.assertRaises(driver.argparse.ArgumentTypeError):
+                driver._positive(bad)
+        self.assertEqual(driver._positive("2.5"), 2.5)
+
+    def test_unattended_modes_exclude_bypass(self):
+        self.assertNotIn("bypassPermissions", driver.PERMISSION_MODES)
 
 
 class StatusTest(unittest.TestCase):
@@ -231,6 +357,15 @@ class StatusTest(unittest.TestCase):
         text = driver.status(records)
         self.assertIn("needs owner call", text)
         self.assertIn("$3.00", text)
+
+    def test_status_lists_steps_that_failed_twice(self):
+        records = [
+            {**_run("a", "failed"), "started": "2026-10-01T00:00:00+00:00", "detail": "boom"},
+            {**_run("a", "timeout"), "started": "2026-10-01T01:00:00+00:00", "detail": "over 60s"},
+        ]
+        text = driver.status(records)
+        self.assertIn("Failed 2 times", text)
+        self.assertIn("a (timeout): over 60s", text)
 
     def test_status_with_no_runs(self):
         self.assertIn("no runs", driver.status([]))

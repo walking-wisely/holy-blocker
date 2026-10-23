@@ -1,4 +1,6 @@
 import json
+import os
+import stat
 import tempfile
 import unittest
 from pathlib import Path
@@ -20,11 +22,12 @@ def _prompt(second, text="go", origin="human", **extra):
     }
 
 
-def _assistant(second, blocks, output_tokens=10, input_tokens=100, model="m"):
+def _assistant(second, blocks, output_tokens=10, input_tokens=100, model="m", message_id=None):
     return {
         "type": "assistant",
         "timestamp": _ts(second),
         "message": {
+            "id": message_id or f"msg-{second}",
             "model": model,
             "content": blocks,
             "usage": {"input_tokens": input_tokens, "output_tokens": output_tokens},
@@ -141,16 +144,54 @@ class SummarizeTest(unittest.TestCase):
         self.assertEqual(summary["peak_context"], 4000)
         self.assertEqual(summary["cost_usd"], 2.25)
 
-    def test_kind_title_and_cwd(self):
-        summary = self.summarize([
-            _prompt(0, entrypoint="sdk-cli", cwd="/w", gitBranch="feat/x"),
-            {"type": "ai-title", "aiTitle": "First"},
-            {"type": "ai-title", "aiTitle": "Second"},
-        ])
+    def test_kind_and_branch(self):
+        summary = self.summarize([_prompt(0, entrypoint="sdk-cli", gitBranch="feat/x")])
         self.assertEqual(summary["kind"], "driver")
-        self.assertEqual(summary["title"], "Second")
-        self.assertEqual(summary["cwd"], "/w")
         self.assertEqual(summary["branch"], "feat/x")
+
+    def test_titles_and_working_directories_are_not_stored(self):
+        summary = self.summarize([
+            _prompt(0, cwd="/Users/someone/private"),
+            {"type": "ai-title", "aiTitle": "a sensitive title"},
+        ])
+        self.assertNotIn("title", summary)
+        self.assertNotIn("cwd", summary)
+        self.assertNotIn("sensitive", json.dumps(summary))
+        self.assertNotIn("someone", json.dumps(summary))
+
+    def test_command_heads_skills_and_tool_names_are_bucketed_unless_plain_identifiers(self):
+        summary = self.summarize([
+            _prompt(0),
+            _assistant(1, [
+                _tool_use("a", "Bash", command="API_TOKEN=sk-abc123 curl https://x"),
+                _tool_use("b", "Bash", command="some-site.example/path --flag"),
+                _tool_use("c", "Bash", command="cargo test"),
+                _tool_use("d", "Skill", skill="a b/c"),
+                _tool_use("e", "mcp__server__tool", x=1),
+            ]),
+        ])
+        self.assertEqual(summary["bash_heads"], {"other": 2, "cargo": 1})
+        self.assertEqual(summary["skills"], {"other": 1})
+        self.assertEqual(summary["tool_counts"]["mcp__server__tool"], 1)
+        self.assertNotIn("sk-abc123", json.dumps(summary))
+
+    def test_one_message_split_across_lines_is_counted_once(self):
+        summary = self.summarize([
+            _prompt(0),
+            _assistant(1, [], output_tokens=5, message_id="m1"),
+            _assistant(2, [], output_tokens=40, message_id="m1"),
+            _assistant(3, [], output_tokens=7, message_id="m2"),
+        ])
+        self.assertEqual(summary["assistant_msgs"], 2)
+        self.assertEqual(summary["output_tokens"], 47)
+
+    def test_a_long_tool_run_stays_active_time(self):
+        summary = self.summarize([
+            _prompt(0),
+            _assistant(5, [_tool_use("t1", "Bash", command="cargo build")]),
+            _tool_result(5 + 3 * sessionlog.IDLE_S, "t1"),
+        ])
+        self.assertEqual(summary["active_s"], 5 + 3 * sessionlog.IDLE_S)
 
     def test_interactive_is_the_default_kind(self):
         self.assertEqual(self.summarize([_prompt(0, entrypoint="cli")])["kind"], "interactive")
@@ -196,6 +237,36 @@ class IndexTest(unittest.TestCase):
         rows = sessionlog.refresh(self.projects, "-r-holy-blocker", self.index)
         self.assertEqual([r["session_id"] for r in rows], ["a"])
 
+    def test_a_sibling_project_with_a_longer_name_is_not_included(self):
+        self.transcript("-r-holy-blocker", "a", [_prompt(0)])
+        self.transcript("-r-holy-blocker-other", "b", [_prompt(0)])
+        rows = sessionlog.refresh(self.projects, "-r-holy-blocker", self.index)
+        self.assertEqual([r["session_id"] for r in rows], ["a"])
+
+    def test_index_is_owner_only_and_rows_past_retention_are_dropped(self):
+        self.transcript("-r-holy-blocker", "new", [_prompt(0)])
+        old = self.transcript("-r-holy-blocker", "old", [_prompt(0)])
+        sessionlog.refresh(self.projects, "-r-holy-blocker", self.index)
+        rows = sessionlog.read_index(self.index)
+        for row in rows:
+            if row["session_id"] == "old":
+                row["start"] = "2020-01-01T00:00:00+00:00"
+        self.index.write_text("".join(json.dumps(r) + "\n" for r in rows))
+        os.unlink(old)
+        kept = sessionlog.refresh(self.projects, "-r-holy-blocker", self.index)
+        self.assertEqual([r["session_id"] for r in kept], ["new"])
+        self.assertEqual(stat.S_IMODE(self.index.stat().st_mode), 0o600)
+        self.assertEqual(stat.S_IMODE(self.index.parent.stat().st_mode), 0o700)
+
+    def test_write_private_replaces_a_planted_symlink_instead_of_following_it(self):
+        victim = self.root / "victim"
+        victim.write_text("keep")
+        self.index.parent.mkdir(parents=True)
+        target = self.index.parent / "index.tmp"
+        target.symlink_to(victim)
+        sessionlog.write_private(self.index, "x\n")
+        self.assertEqual(victim.read_text(), "keep")
+
     def test_unchanged_transcripts_are_not_resummarized(self):
         self.transcript("-r-holy-blocker", "a", [_prompt(0)])
         sessionlog.refresh(self.projects, "-r-holy-blocker", self.index)
@@ -229,6 +300,10 @@ class ReportTest(unittest.TestCase):
         text = sessionlog.report(self.rows(), kind="driver", runs={})
         self.assertIn("s2", text)
         self.assertNotIn("s1", text)
+
+    def test_report_never_prints_a_title(self):
+        rows = [{**r, "title": "leaky title"} for r in self.rows()]
+        self.assertNotIn("leaky", sessionlog.report(rows, kind=None, runs={}))
 
     def test_report_joins_driver_runs(self):
         runs = {"s2": {"step": "pkg.step", "outcome": "merged"}}

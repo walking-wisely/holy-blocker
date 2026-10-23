@@ -466,3 +466,14 @@ and depends on the third to contain it.
   working directory can substitute its own CA.
 - **Evidence:** `packages/mitm-proxy/src/cli.rs:37`
 - **Status:** open
+
+### Unattended step driver: pull and merge trust
+
+- **What:** `tools/plan/driver.py` runs `git pull --ff-only origin master` before every step and then
+  launches a session that treats `CLAUDE.md` and the skills on master as instructions. It trusts
+  master as it stands rather than a reviewed commit. It also cannot tell whether an `observation`
+  step's scenario really observed its claim before the session merged it.
+- **Impact:** a bad change that lands on master steers the next unattended session, and an
+  `observation` merge rests on the session's own report.
+- **Evidence:** `tools/plan/driver.py` `preflight`, `verify_pr`
+- **Status:** open
