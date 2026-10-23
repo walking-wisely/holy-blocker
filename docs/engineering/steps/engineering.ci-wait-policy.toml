@@ -1,6 +1,6 @@
 id = "engineering.ci-wait-policy"
 title = "step loop waits for the CI gate only, with a tool instead of sleep loops"
-status = "pending"
-evidence = ""
+status = "at-pr"
+evidence = "PR #155"
 acceptance = "code"
 verify = "python3 -m unittest discover -s tools/plan/tests -t ."
