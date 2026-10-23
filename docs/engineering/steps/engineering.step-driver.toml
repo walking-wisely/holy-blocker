@@ -1,7 +1,7 @@
 id = "engineering.step-driver"
 title = "unattended step driver: one headless session per ready step, with a run record and digest"
-status = "pending"
-evidence = ""
+status = "at-pr"
+evidence = "PR #152"
 acceptance = "code"
 depends_on = ["engineering.session-log-index"]
 verify = "python3 -m unittest discover -s tools/plan/tests -t ."
