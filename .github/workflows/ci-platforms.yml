@@ -49,6 +49,7 @@ jobs:
               - ".github/workflows/ci-platforms.yml"
               - "rust-toolchain.toml"
               - "apps/desktop/**"
+              - "packages/daemon-ipc/**"
               - "pnpm-lock.yaml"
             android:
               - ".github/workflows/ci-platforms.yml"

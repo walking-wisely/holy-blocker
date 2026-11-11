@@ -6,11 +6,11 @@ The crate does no I/O. The transport (Unix socket on macOS, named pipe on Window
 
 ## Current state
 
-Nothing exists yet. The first framing, a 4-byte big-endian length with a 16 MiB cap, lives twice: `native-modules/mac-daemon/Sources/MacDaemon/DaemonIPC.swift` and `apps/desktop/src-tauri/src/frame.rs`, with vectors in `apps/desktop/src-tauri/tests/vectors/daemon-ipc-framing.json` that no Swift test reads.
+`daemon-ipc.core` is done: `packages/daemon-ipc` holds the frame decoder, the `ToDaemon` and `ToPanel` enums, the handshake and a minimal `Session`, tested against hand-written vectors in `packages/daemon-ipc/tests/vectors/`. The old framing still lives twice, in `native-modules/mac-daemon/Sources/MacDaemon/DaemonIPC.swift` and `apps/desktop/src-tauri/src/frame.rs`, until `desktop.adopt-daemon-ipc` and `mac-daemon.adopt-daemon-ipc-ffi` replace them; the Tauri test now reads the shared framing vectors. No Swift test reads them yet.
 
 ## Implementation order
 
-1. `daemon-ipc.core` — frames, messages, handshake, vectors, property tests. <!-- step: daemon-ipc.core -->
+1. ~~`daemon-ipc.core` — frames, messages, handshake, vectors, property tests.~~ **Done.** <!-- step: daemon-ipc.core -->
 2. `daemon-ipc.limits` — the session state machine on an injected clock: caps, deadlines, rate limiter, liveness. <!-- step: daemon-ipc.limits -->
 3. `daemon-ipc.ffi` — the UniFFI wrapper for Swift, every export returning `Result`. <!-- step: daemon-ipc.ffi -->
 4. `daemon-ipc.c-abi` — a cbindgen C ABI for the Windows daemon, when `win-daemon.ipc` starts. <!-- step: daemon-ipc.c-abi -->
@@ -24,7 +24,7 @@ Decision (3, 5). Write the message enumeration and the vectors first, from the d
 [custom-app-blocking.md](../../decisions/custom-app-blocking.md) (the add and remove payloads), then the code.
 
 - `frame`: 4-byte big-endian length, then UTF-8 JSON; the length is checked before any body is buffered. The cap is a `Limits` field, not a constant.
-- `msg`: two serde enums, `ToDaemon` and `ToPanel`, tagged `type` in snake_case, plus `hello` and the agent-role messages. Messages that carry an app identity do not derive `Debug` and never format it into an error.
+- `msg`: two serde enums, `ToDaemon` and `ToPanel`, tagged `type` in snake_case, plus `hello` and the agent-role messages. Messages that carry an app identity hold it only as `AppIdentity`, whose `Debug` prints nothing of it, and no error built from it carries it; `Next::Frame` prints its length, never its body. Tests assert both, including the byte-array form.
 - Handshake: `{"type":"hello","proto":N}` first each way, accepted when `MIN_PROTO <= N <= PROTO`; any other message before it closes. Unknown `type` is `Unsupported` and the connection stays open; malformed or oversized closes.
 - Vectors: valid, truncated, oversized, at-cap, split across reads, unknown type, pre-hello, version below and above range. The existing `daemon-ipc-framing.json` moves here.
 - Property tests: any chunking of a valid stream yields the same events; arbitrary bytes never panic and never buffer more than `max_frame + 4`. A decoder fuzz target runs on the pinned toolchain through proptest, because `cargo-fuzz` needs nightly.
@@ -37,6 +37,7 @@ Decision (6, 9). `Session::new(role, limits, now_ms)`, `receive`, `tick`, with t
 - Caps: 4 KiB toward the daemon, 64 KiB toward the panel; 5 s to finish a frame; 60 s idle; close on the first invalid frame.
 - Token bucket per connection, 10 messages per second and 1 state-changing message per second; over-limit messages are dropped and counted. `cancel_disarm` and `raise_protection` are exempt.
 - A repeated request while one is pending is an `Event::Duplicate` that writes nothing.
+- A pre-`hello` deadline, a partial-frame deadline, and a budget of consecutive `Unsupported` frames after which the session closes, so a peer cannot hold a connection or send unknown tags forever. The caller adds the connection cap.
 - Liveness: an agent-role session that sends no heartbeat within its window yields `CloseReason::HeartbeatLost`, independent of the connection staying open.
 - Counters are memory only and carry a count and a window, never a peer, path or message text; a test asserts the event types hold no string from a frame body.
 

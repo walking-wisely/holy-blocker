@@ -4,7 +4,7 @@ Sans-IO Rust core for the channel between the root policy daemon and its clients
 
 | | |
 |---|---|
-| Code | `packages/daemon-ipc/`, `packages/daemon-ipc-ffi/` (Rust). Planned, not yet created. |
+| Code | `packages/daemon-ipc/`, `packages/daemon-ipc-ffi/` (Rust). `daemon-ipc` exists; `daemon-ipc-ffi` is planned. |
 | Status | [packages-daemon-ipc](../../status/packages-daemon-ipc.md) |
 | Next step | `python -m tools.plan.ledger next docs/components/daemon-ipc` |
 | Decision | [daemon-ipc-and-process-model](../../decisions/daemon-ipc-and-process-model.md) |
