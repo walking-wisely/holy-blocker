@@ -16,7 +16,7 @@ The package at `native-modules/win-daemon/` already has:
 - `main.cpp` — registers two `SetWinEventHook` handles (`EVENT_SYSTEM_FOREGROUND` and `EVENT_OBJECT_LOCATIONCHANGE`), extracts the foreground window title and bounds in the callback, logs them to stdout, and runs a standard Win32 message loop to keep the process alive.
 - `CMakeLists.txt` — minimal single-source build: one executable target, C++20, MSVC `/W4 /permissive-` flags, no external dependencies.
 
-What is missing is everything above event observation: capturing pixels from the foreground window, routing frames through a scanner interface, debouncing and scheduling scans, and communicating results to the Electron control panel over IPC.
+What is missing is everything above event observation: capturing pixels from the foreground window, routing frames through a scanner interface, debouncing and scheduling scans, and communicating results to the desktop control panel over IPC.
 
 ## Modules to add
 
@@ -135,7 +135,7 @@ src/ipc.h
 src/ipc.cpp
 ```
 
-Manages the named pipe channel between the daemon and the Electron control panel:
+Manages the named pipe channel between the daemon and the desktop control panel:
 
 ```cpp
 // Pipe name: \\.\pipe\holy-blocker-daemon
@@ -238,7 +238,7 @@ Logic-only source files (`scan_loop.cpp`, `ipc.cpp`) should be compiled into a s
    <!-- step: win-daemon.ipc -->
 5. Wire scan loop into `main.cpp`: forward `HandleWinEvent` events to `ScanLoop::OnForegroundChange` / `OnLocationChange`, run `Tick` on a background thread timer.
    <!-- step: win-daemon.wire-scan-loop -->
-6. Wire IPC heartbeats: emit a `heartbeat` message from the background thread every 5 seconds so the Electron app can detect daemon presence.
+6. Wire IPC heartbeats: emit a `heartbeat` message from the background thread every 5 seconds so the desktop app can detect daemon presence.
    <!-- step: win-daemon.wire-ipc-heartbeats -->
 7. Update `CMakeLists.txt` with `FetchContent` GoogleTest and the `tests` target.
    <!-- step: win-daemon.cmake-tests -->

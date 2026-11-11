@@ -32,7 +32,7 @@ The service runs as `LocalSystem` (required for driver installation and routing 
 \\.\pipe\HolyBlockerNetSvc
 ```
 
-The desktop app (Electron, normal user session) sends JSON commands over the pipe; the service acknowledges with a JSON response. The service enforces that clients have the same machine SID — no cross-machine connections.
+The desktop app (Tauri, normal user session) sends JSON commands over the pipe; the service acknowledges with a JSON response. The service enforces that clients have the same machine SID — no cross-machine connections.
 
 ```
 desktop app (user)

@@ -63,7 +63,7 @@ Why now:
 
 Focus areas:
 
-- Electron IPC and preload exposure
+- Tauri command and capability exposure
 - Unsafe filesystem handling
 - Rust parsing and proxy input handling
 - C++ memory and handle lifetime issues
@@ -81,7 +81,7 @@ release workflow.
 
 Why now:
 
-- Electron, Rust TLS crates, Python ML tooling, and test dependencies will age quickly.
+- Tauri, Rust TLS crates, Python ML tooling, and test dependencies will age quickly.
 - GitHub Actions are part of the supply chain and should be pinned and updated deliberately.
 
 Definition of done:
@@ -136,8 +136,8 @@ Why now:
 
 Minimum threat-model scope:
 
-- renderer -> preload -> Electron main
-- Electron main -> named pipe -> Windows daemon
+- renderer -> Tauri command -> Rust core
+- Rust core -> Unix socket -> macOS agent (Windows named-pipe transport returns as a later step)
 - daemon -> local storage
 - browser/client -> MITM proxy -> origin
 - proxy -> CA key material

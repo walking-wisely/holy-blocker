@@ -104,6 +104,8 @@ Verdict-and-time events are held in memory only.
 
 ### desktop.tauri-shell
 
+**Done.** Toolchain verified on macOS 27.2.1 with Xcode 27.2; footprint is in [apps-desktop status](../../status/apps-desktop.md).
+
 Decision: [tauri-desktop-panel.md](../../decisions/tauri-desktop-panel.md) (1, 7, 10).
 
 First act: `cargo install tauri-cli` or the pnpm CLI and run a hello-world build on this machine. If it does not

@@ -14,6 +14,7 @@ jobs:
       windows-rust: ${{ steps.filter.outputs.windows-rust }}
       windows-native: ${{ steps.filter.outputs.windows-native }}
       macos: ${{ steps.filter.outputs.macos }}
+      macos-desktop: ${{ steps.filter.outputs.macos-desktop }}
       android: ${{ steps.filter.outputs.android }}
     steps:
       - name: Checkout
@@ -44,6 +45,11 @@ jobs:
               - "packages/text-policy-ffi/**"
               - "packages/image-sandbox/**"
               - "packages/image-sandbox-ffi/**"
+            macos-desktop:
+              - ".github/workflows/ci-platforms.yml"
+              - "rust-toolchain.toml"
+              - "apps/desktop/**"
+              - "pnpm-lock.yaml"
             android:
               - ".github/workflows/ci-platforms.yml"
               - "rust-toolchain.toml"
@@ -157,6 +163,56 @@ jobs:
       - name: Test (development configuration)
         working-directory: native-modules/mac-daemon
         run: ./scripts/test.sh --scratch-path .build-dev -Xswiftc -DHOLY_BLOCKER_DEV_BUILD
+
+  macos-desktop:
+    name: macos / desktop
+    needs: changes
+    if: needs.changes.outputs.macos-desktop == 'true'
+    runs-on: macos-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          version: 11.9.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build renderer
+        run: pnpm --filter @holy-blocker/desktop build
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # stable
+        with:
+          toolchain: 1.90.0
+          components: clippy
+
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        with:
+          workspaces: apps/desktop/src-tauri
+
+      - name: Clippy
+        working-directory: apps/desktop/src-tauri
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Test
+        working-directory: apps/desktop/src-tauri
+        run: cargo test --locked
 
   android:
     name: android / mobile

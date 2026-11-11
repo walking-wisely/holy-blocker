@@ -9,7 +9,7 @@ Sources/MacDaemon/DaemonIPC.swift
 The macOS counterpart to the Windows daemon's named-pipe server. Every flow in
 [block.md](../../../product/flows/block.md) and
 [warn-interstitial.md](../../../product/flows/warn-interstitial.md) ends with the daemon emitting a
-`scan_event` that the Electron app records, and
+`scan_event` that the desktop panel records, and
 [protection-mode-change.md](../../../product/flows/protection-mode-change.md) sends a `config_update`
 back the other way — none of which is possible without this module.
 

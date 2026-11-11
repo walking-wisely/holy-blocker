@@ -114,7 +114,7 @@ user clicks "Re-enable protection" in tray menu (visible when mode == "off")
 
 ## What the gate does not protect against
 
-- The user killing the Electron process or daemon directly.
+- The user killing the desktop panel process or daemon directly.
 - The user disabling the TUN adapter manually.
 - The user uninstalling the app.
 
@@ -130,4 +130,4 @@ outside the scope of this flow.
 - [../decisions/protection-modes.md](../../decisions/protection-modes.md) — why Off requires a gate but Full/Warn do not
 - `packages/voice-gate/` — verse pool, transcript matching, rate check, liveness check
 - `apps/desktop/src/renderer/src/views/OverrideGateView.tsx` — the modal UI
-- `apps/desktop/src/main/voice-adapter-electron.ts` — IPC bridge for audio/transcript
+- `apps/desktop/src-tauri/` voice adapter (planned, on-device recognition only) — IPC bridge for audio/transcript

@@ -3,7 +3,7 @@ name: holy-blocker-security
 description: >
   Review Holy Blocker changes against the project's trust boundaries, and audit existing packages
   for security debt. Use this skill when a change touches network parsing, TLS interception or the
-  local CA, Electron preload/IPC, named pipes or Unix sockets, privileged daemons or services,
+  local CA, Tauri commands and capabilities, named pipes or Unix sockets, privileged daemons or services,
   OS permission grants, tamper-resistance guards, screen capture or OCR, VPN/TUN logic, or
   dependency and model-artifact loading. Also triggers on "threat model", "security review",
   "is this safe", "audit this package", "attack surface", "can this be bypassed", or any request
@@ -84,15 +84,16 @@ anything that shells out or elevates.
 
 ### IPC
 
-Electron preload/`contextBridge`, the Windows named pipe, the mac Unix socket
+Tauri commands and capabilities, the Windows named pipe, the mac Unix socket
 (`DaemonIPCCodec`), Android Intents and exported components.
 
 - Every IPC message is untrusted input — apply the parser rules above. `DaemonIPCCodec`'s
   `.oversized` case exists for this reason; check any new message type validates before dispatch.
 - Named pipes and Unix sockets need an ACL or filesystem permissions that stop another local user
   connecting. Default-permissive is the common mistake.
-- Electron: context isolation stays on, node integration stays off, the preload surface stays a
-  narrow allowlist of named channels. Never expose `ipcRenderer` itself.
+- Tauri: capabilities list commands by name, one Rust command per action, no command takes a path or
+  a raw message, no shell, fs, http, updater or opener plugin, CSP is bundled assets only, no `devUrl`
+  or devtools in release. Never add a generic send-to-socket command.
 - Android: an exported component with no permission is callable by any installed app.
 
 ### Tamper resistance and permission state
@@ -196,7 +197,7 @@ causal link, it does not claim the work.
 
 ## Standards this skill draws on
 
-NIST SSDF for lifecycle structure, OWASP ASVS where app/API requirements apply, Electron's official
+NIST SSDF for lifecycle structure, OWASP ASVS where app/API requirements apply, Tauri's official
 security guidance, OWASP MASVS/MASTG for Android, Microsoft SDL and the Win32 IPC docs for the
 Windows service, Apple Platform Security for macOS, SEI CERT C++ for native C++, and
 RustSec/cargo-deny/SLSA for supply chain.

@@ -45,7 +45,7 @@ Focus is restricted to proving on-device, event-driven scanning efficiency and d
 - **Windows Native Engine (`win-daemon`):** Implement low-level C++ background subprocess attaching `SetWinEventHook` to global system foreground and window bounds mutations.
 - **Android Native Engine (`android-service`):** Build Kotlin-based `AccessibilityService` intercepting layout changes (`TYPE_WINDOW_STATE_CHANGED`) and scroll events (`TYPE_VIEW_SCROLLED`).
 - **Local ML Baseline Initialization:** Source and clean baseline image classification datasets. Train, quantize, and export a $<15\text{ MB}$ PyTorch model into static runtime formats: `.onnx` for Windows and `.tflite` for Android.
-- **Local Action UI:** Complete basic React Native and Electron dashboards allowing users to view logs locally and manually flag missed items to trigger instant, local-only backpropagation.
+- **Local Action UI:** Complete basic React Native and Tauri dashboards allowing users to view logs locally and manually flag missed items to trigger instant, local-only backpropagation.
 
 ### PHASE 2: NEXT — Infrastructure Scale & Platform Parity
 

@@ -1,0 +1,31 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Holy Blocker",
+  "version": "0.1.0",
+  "identifier": "app.holyblocker.desktop",
+  "build": {
+    "beforeDevCommand": "pnpm exec vite --host 127.0.0.1",
+    "frontendDist": "../dist/renderer",
+    "beforeBuildCommand": "pnpm build"
+  },
+  "app": {
+    "withGlobalTauri": false,
+    "windows": [
+      {
+        "title": "Holy Blocker",
+        "width": 1080,
+        "height": 720,
+        "minWidth": 900,
+        "minHeight": 600
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; connect-src ipc: 'self'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["app"],
+    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/icon.icns", "icons/icon.png"]
+  }
+}

@@ -49,7 +49,7 @@ Disabling the system requires speaking a scripture passage aloud (voice gate). T
 
 | Component | Language | Status |
 |---|---|---|
-| `apps/desktop` | TypeScript / Electron + React | Skeleton — BrowserWindow, IPC stub, status UI |
+| `apps/desktop` | TypeScript + Rust / Tauri 2 + React | Skeleton — Tauri window, one status command, status UI |
 | `packages/text-policy` | Rust | Normalize + lexicon + verdict + scorer + evaluator + policy done |
 | `packages/mitm-proxy` | Rust | HTTP forwarding + TLS + CONNECT + scan hooks + text-policy wired |
 | `native-modules/win-daemon` | C++20 | WinEvent hooks + message loop |
@@ -64,7 +64,7 @@ Disabling the system requires speaking a scripture passage aloud (voice gate). T
 
 ```
 NOW   Edge Engines & Local ML Core
-      Windows native daemon · pre-trained baseline model · Electron control panel
+      Windows native daemon · pre-trained baseline model · Tauri control panel
 
 NEXT  Infrastructure Scale & Platform Parity
       Android AccessibilityService · iOS Network Extension · macOS / Linux daemons
@@ -96,7 +96,7 @@ Full specification: [PLAN.md](PLAN.md)
 # Install JS dependencies
 pnpm install
 
-# Start the Electron control panel (hot-reload)
+# Start the Tauri control panel (hot-reload)
 pnpm dev:desktop
 ```
 
@@ -138,7 +138,7 @@ cmake -B build && cmake --build build
 
 ```
 apps/
-  desktop/              Electron control panel
+  desktop/              Tauri control panel
 
 packages/
   text-policy/          Rust text classification and rule engine

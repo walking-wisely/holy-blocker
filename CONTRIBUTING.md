@@ -25,7 +25,7 @@ Each component has a README that says what to read first, and a step-by-step imp
 | [docs/components/mitm-proxy/plan.md](docs/components/mitm-proxy/plan.md) | Rust MITM proxy |
 | [docs/components/win-daemon/plan.md](docs/components/win-daemon/plan.md) | C++ Windows daemon |
 | [docs/components/machine-learning/plan.md](docs/components/machine-learning/plan.md) | Python ML pipeline |
-| [docs/components/desktop/plan.md](docs/components/desktop/plan.md) | Electron control panel |
+| [docs/components/desktop/plan.md](docs/components/desktop/plan.md) | Tauri control panel |
 | [docs/components/net-shield/plan.md](docs/components/net-shield/plan.md) | Rust TUN packet filter |
 | [docs/components/image-sandbox/plan.md](docs/components/image-sandbox/plan.md) | Rust image classifier |
 | [docs/components/video-watchdog/plan.md](docs/components/video-watchdog/plan.md) | Rust video segment sampler |
@@ -80,7 +80,7 @@ For any new business-logic function, write focused unit tests first, then implem
 - Text matching, normalization, scoring, or allow/block decisions
 - ML pipeline configuration and artifact-selection logic
 - Daemon event filtering, debouncing, IPC message shaping, and state transitions
-- Electron main/preload logic that affects daemon status, local data, or policy decisions
+- Tauri Rust-core commands that affect daemon status, local data, or policy decisions
 
 Frontend-only rendering changes do not need test-first treatment by default, but any extracted non-UI logic should still get unit tests.
 
@@ -93,7 +93,7 @@ When a test framework is missing, add the smallest appropriate test setup for th
 - **Local-first**: no network access in runtime blocking paths. All decisions happen on-device.
 - **Language boundaries**: do not move daemon, ML, policy, or UI responsibilities across layers without a clear reason stated in the PR description.
 - **Pure functions for policy**: keep classification and rule decisions in pure functions. Put side effects at the edges.
-- **Electron security**: preserve context isolation. Do not enable Node integration in the renderer.
+- **Tauri security**: one named command per action, listed by name in the capabilities. Add no shell, fs, http, updater or opener plugin, keep the CSP at bundled assets only, and keep state out of webview storage.
 - **Rust**: keep policy logic in testable modules instead of burying it in `main`.
 - **Python**: keep training/export orchestration thin and move reusable behavior into importable functions.
 - **C++**: keep Win32 callback glue small and move decision logic into testable helpers.

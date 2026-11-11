@@ -1,3 +1,4 @@
+import { invoke } from "@tauri-apps/api/core";
 import { Activity, AlertTriangle, Database, ShieldCheck } from "lucide-react";
 import { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
@@ -9,14 +10,6 @@ type DaemonStatus = {
   watchedWindows: number;
 };
 
-declare global {
-  interface Window {
-    holyBlocker?: {
-      getDaemonStatus: () => Promise<DaemonStatus>;
-    };
-  }
-}
-
 function App() {
   const [status, setStatus] = useState<DaemonStatus>({
     state: "loading",
@@ -25,16 +18,9 @@ function App() {
   });
 
   useEffect(() => {
-    if (window.holyBlocker) {
-      void window.holyBlocker.getDaemonStatus().then(setStatus);
-      return;
-    }
-
-    setStatus({
-      state: "not-connected",
-      lastHeartbeatAt: null,
-      watchedWindows: 0,
-    });
+    invoke<DaemonStatus>("daemon_status")
+      .then(setStatus)
+      .catch(() => setStatus({ state: "panel-error", lastHeartbeatAt: null, watchedWindows: 0 }));
   }, []);
 
   return (
@@ -60,7 +46,7 @@ function App() {
         <header className="pageHeader">
           <div>
             <h1>Local Monitor</h1>
-            <p>Desktop control surface for the Windows daemon and on-device classifier.</p>
+            <p>Control panel for the on-device protection agent.</p>
           </div>
           <span className="statusPill">{status.state}</span>
         </header>
