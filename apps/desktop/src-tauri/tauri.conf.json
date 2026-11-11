@@ -4,6 +4,7 @@
   "version": "0.1.0",
   "identifier": "app.holyblocker.desktop",
   "build": {
+    "beforeDevCommand": "pnpm exec vite --host 127.0.0.1",
     "frontendDist": "../dist/renderer",
     "beforeBuildCommand": "pnpm build"
   },
