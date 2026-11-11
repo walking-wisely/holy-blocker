@@ -1,0 +1,9 @@
+id = "desktop.socket-hardening"
+title = "socket client checks the peer and the socket, reports connected only after a valid frame, and writes without holding a lock"
+status = "pending"
+evidence = ""
+kind = "bug"
+regressed_step = "desktop.daemon-socket"
+acceptance = "code"
+depends_on = ["desktop.daemon-socket"]
+verify = "pnpm --filter @holy-blocker/desktop build && cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml"

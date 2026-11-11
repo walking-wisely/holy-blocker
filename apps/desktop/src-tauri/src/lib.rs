@@ -30,27 +30,27 @@ fn daemon_status(link: State<Link>) -> DaemonStatus {
 }
 
 #[tauri::command]
-fn request_disarm(link: State<Link>) -> Result<(), &'static str> {
+async fn request_disarm(link: State<'_, Link>) -> Result<(), &'static str> {
     send(&link, Outbound::RequestDisarm)
 }
 
 #[tauri::command]
-fn confirm_disarm(link: State<Link>) -> Result<(), &'static str> {
+async fn confirm_disarm(link: State<'_, Link>) -> Result<(), &'static str> {
     send(&link, Outbound::ConfirmDisarm)
 }
 
 #[tauri::command]
-fn cancel_disarm(link: State<Link>) -> Result<(), &'static str> {
+async fn cancel_disarm(link: State<'_, Link>) -> Result<(), &'static str> {
     send(&link, Outbound::CancelDisarm)
 }
 
 #[tauri::command]
-fn raise_protection(link: State<Link>) -> Result<(), &'static str> {
+async fn raise_protection(link: State<'_, Link>) -> Result<(), &'static str> {
     send(&link, Outbound::RaiseProtection)
 }
 
 #[tauri::command]
-fn list_apps(link: State<Link>) -> Result<(), &'static str> {
+async fn list_apps(link: State<'_, Link>) -> Result<(), &'static str> {
     send(&link, Outbound::ListApps)
 }
 

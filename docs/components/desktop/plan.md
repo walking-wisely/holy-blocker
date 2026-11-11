@@ -77,10 +77,24 @@ Enumeration is in memory and discarded when the panel closes. The panel never op
 
 Decision: [tauri-desktop-panel.md](../../decisions/tauri-desktop-panel.md) (3, 5).
 
-Rust client with the same framing as `DaemonIPCCodec`, driven by shared test vectors with the Swift side. Reconnect with
+Rust client with the same framing as `DaemonIPCCodec`. The framing vectors are written and read on the Rust side; the Swift side adopting them is part of `mac-daemon.panel-socket`. Reconnect with
 backoff (500 ms start, 30 s cap). Connection state is a status value the UI reads. No command accepts a path or a raw message.
 The five payload-free messages have commands; `request_add_app`, `request_remove_app`, `confirm_remove_app` and `cancel_remove_app` carry
 payloads and come with `desktop.custom-app-panel`. The shared vectors live in `apps/desktop/src-tauri/tests/vectors/`.
+
+### desktop.socket-hardening
+
+<!-- step: desktop.socket-hardening -->
+
+Found reviewing `desktop.daemon-socket`; none blocks it, because the agent's side of decision 5 owns the peer check.
+
+- After connect, check the peer uid (`LOCAL_PEERCRED`) and refuse a socket that is not owned by the user or not mode 0600, or a `$HOME` that is empty or relative.
+- `Connected` only after the first valid frame, plus a read deadline, so a silent or trickling peer cannot hold the status at connected.
+- Reset the backoff only after a connection has lasted, so a peer that sends one frame and closes does not cause a reconnect every 500 ms.
+- Write through a channel to a writer thread instead of holding the writer lock across a blocking write; recover from a poisoned lock.
+- `Drop` rechecks `stop` after the writer is installed.
+
+Needs the agent's socket (`mac-daemon.panel-socket`) to settle the connect-time contract first.
 
 ### desktop.e2e-panel
 

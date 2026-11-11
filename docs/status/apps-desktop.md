@@ -43,3 +43,4 @@ step's choice, to be agreed there); a command call from the webview through the 
 the owner and peer-uid check on the socket (the agent's job, decision 5). A `$HOME` long enough to push the
 path over macOS's 104-byte `sun_path` limit leaves the panel at `not-connected` for good. Add and remove app
 messages carry payloads and arrive with `desktop.custom-app-panel`. `lastHeartbeatAt` is still `None`.
+Known limits, filed as `desktop.socket-hardening`: `Connected` is set when the connect succeeds, before any frame, so a silent listener on the path reads as connected; there is no read deadline; the client does not check the socket's owner or mode.
