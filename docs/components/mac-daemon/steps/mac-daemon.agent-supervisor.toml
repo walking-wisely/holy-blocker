@@ -1,0 +1,9 @@
+id = "mac-daemon.agent-supervisor"
+title = "Root daemon restarts a killed or stopped capture agent in the console user's session within seconds, fails closed while it is gone, and records each restart"
+status = "pending"
+evidence = ""
+acceptance = "observation"
+depends_on = ["mac-daemon.heartbeat-liveness"]
+verify = "./scripts/test.sh from native-modules/mac-daemon; then observed on the installed bundle: kill -9 and kill -STOP on the agent each end with a running agent inside the restart window, one tamper entry per event, and no lowering is accepted while it is down"
+group = "tamper"
+milestone = "mvp"

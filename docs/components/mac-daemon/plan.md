@@ -778,8 +778,21 @@ in the tamper log; how that is read is falsified in `mac-daemon.protection-sched
 
 Decision (9). A SIGSTOP'd agent keeps its socket open (probed), so a closed connection is not the signal.
 The agent sends a heartbeat; when it stops, the daemon records `agent_stopped` once and keeps blocking at the
-proxy, while text and app blocking pause until the agent returns. Liveness timing comes from
+proxy. Restart and app enforcement are the next two steps. Liveness timing comes from
 `daemon-ipc.limits`. Observed on the installed bundle with `kill -STOP` and `kill -CONT`.
+
+### Agent supervisor <!-- step: mac-daemon.agent-supervisor -->
+
+Decision (9). On a missing heartbeat the daemon kills a stopped agent and starts it again in the console
+user's GUI domain, rate-bounded and recorded; lowering stays refused while it is down. First act: probe
+whether the capture process can run under a separate service uid, and record the result either way.
+
+### Root app enforcement <!-- step: mac-daemon.root-app-enforcement -->
+
+Decision (9). The daemon enumerates processes and terminates a listed app by bundle id, so the agent's
+absence does not pause custom-app blocking. It reuses `custom-app-core`'s matching, writes no per-app
+record, and feeds no block count.
+
 
 ### Install through `SMAppService`
 

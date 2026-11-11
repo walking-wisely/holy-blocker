@@ -43,10 +43,11 @@ and one that shows the UI. Three things surfaced while building `desktop.daemon-
    LaunchDaemon. The agent and the panel are clients. The socket sits in its own root-owned directory, mode 0755 with the socket at 0666 gated by the peer check of decision 4, because a user-level client cannot pass through the 0700 store directory; the exact path is fixed by `mac-daemon.root-policy-store`. This amends
    tauri-desktop-panel decisions 3 and 5 and sets the install layout, which is a one-way door.
    - **What it protects, stated plainly:** a standard user can no longer edit the list, reset the
-     cooldown, rewrite the log or squat the endpoint. **It does not protect the blocking:** capture,
-     AX and app termination stay in the user-level agent, which a standard user can still stop,
-     SIGSTOP or strip of its permissions. The daemon detects that (decision 9) and keeps the
-     proxy-level blocking running; text and app blocking pause until the agent returns.
+     cooldown, rewrite the log or squat the endpoint. Screen capture and AX text stay in a
+     user-session agent, which a standard user can stop, SIGSTOP or strip of its permissions.
+     Decision 9 makes that stop short-lived and costly instead of free: the daemon restarts the
+     agent, tightens what it controls while the agent is gone, and itself enforces custom-app
+     blocking, which needs no GUI session.
    - **Store posture, carried from custom-app-blocking decision 13:** directory
      `/Library/Application Support/holy-blocker/`, root-owned, mode 0700, files 0600, excluded from
      Time Machine, never in iCloud. The store is readable by an admin and by no standard account; that
@@ -119,11 +120,26 @@ and one that shows the UI. Three things surfaced while building `desktop.daemon-
      installed one and records a version decrease or a missing app as tamper. That check protects
      against a casual downgrade only: an admin removes it.
 
-9. **Liveness by heartbeat, not by the connection closing.** This is the daemon's internal check on the agent, not the user-facing liveness signal that mvp-scope decision 2 keeps out of the MVP. A stopped (SIGSTOP) agent keeps its
-   socket open, so the daemon expects a heartbeat from the agent and records `agent_stopped` when it
-   stops. When the agent is stopped the daemon keeps blocking at the proxy and records the tamper
-   event, as the existing Layer 1 plan does; this is unchanged behaviour restated, not a new owner
-   decision.
+9. **The agent is supervised, and its absence is not free.** This is the daemon's internal check
+   on the agent, not the user-facing liveness signal that mvp-scope decision 2 keeps out of the MVP.
+   - **Detection by heartbeat, not by the connection closing:** a stopped (SIGSTOP) agent keeps its
+     socket open, so the daemon expects a heartbeat and records `agent_stopped` once when it stops.
+   - **Restart:** root can start a job in the user's GUI domain, so the daemon re-starts a dead or
+     stopped agent within seconds (SIGKILL on a stopped one, then `launchctl kickstart` into the
+     console user's domain). A standard user can kill the agent; keeping it dead is the part that is
+     meant to fail. Restart attempts are rate-bounded and recorded.
+   - **Fail closed while the agent is gone:** protection cannot be lowered and the cooldown does not
+     advance toward lowering while the heartbeat is missing; the proxy keeps blocking.
+   - **Custom-app blocking is enforced by the root daemon** (process enumeration and termination
+     need no GUI session), so killing the agent does not pause it. Capture-based text and image
+     blocking of the screen still needs the agent and pauses only until the restart.
+   - **Native OS calls stay in Swift** (owner, 2026-11-11): capture, AX, OCR, `SMAppService`, the
+     code-signature check and the launchd calls are Swift in the daemon and the agent. Rust holds the
+     portable core (`daemon-ipc`, the policy crates), reached through UniFFI.
+   - **Unverified:** that the restart works against a user who bootouts or disables their own agent
+     in their domain, and that root can terminate a user's blocked app by bundle id reliably.
+     Whether the capture process can run under a separate service uid, so the user cannot signal it
+     at all, is **unobserved** and is probed by `mac-daemon.agent-supervisor` before it is relied on.
 
 10. **Windows is not in the first cut.** The Windows plan is amended to big-endian, to drop the raw
     `config_update` that contradicts tauri-desktop-panel decision 3, and to consume `daemon-ipc` when
@@ -203,8 +219,9 @@ marked; the rest is static reasoning.
 
 - An admin, or anyone who can build the public repo, can install, downgrade or remove the product
   ([mvp-scope.md](mvp-scope.md)); signing and notarization raise the cost of casual tampering only.
-- A standard user can still stop the capture agent. The daemon detects it and keeps the proxy
-  blocking; text and app blocking pause. Whether a standard user can also disable the approved
+- A standard user can still stop the capture agent for the seconds the restart takes, and an admin
+  can remove the restart. Screen-text capture pauses in that window; the daemon records it and the
+  rest keeps running (decision 9). Whether a standard user can also disable the approved
   daemon through Login Items is **unverified**.
 - Live patching and reverse engineering of the binaries is not defensible by local software.
 - Safe mode, booting another volume and a VM are detectable at best.
