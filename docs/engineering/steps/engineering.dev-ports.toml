@@ -1,0 +1,6 @@
+id = "engineering.dev-ports"
+title = "per-worktree dev port reservations with a devrun wrapper, replacing Portless"
+status = "done"
+evidence = "docs/engineering/plan.md: engineering.dev-ports Done"
+acceptance = "code"
+verify = "python3 -m unittest discover -s tools/plan/tests -t ."

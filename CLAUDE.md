@@ -99,53 +99,39 @@ Use `pnpm` for the JavaScript workspace.
 - Build the desktop package only: `pnpm --filter @holy-blocker/desktop build`
 - Typecheck the desktop package only: `pnpm --filter @holy-blocker/desktop typecheck`
 
-### Local Ports and Services (Portless is the default)
+### Local Ports and Services (`devrun` is the default)
 
 This repo runs many parallel git worktrees (see "Working Rhythm" below), and a hardcoded port
-number is a collision waiting to happen the moment two worktrees run the same dev server or
-proxy at once. **[Portless](https://github.com/vercel-labs/portless)** (`portless run -- <cmd>`)
-is the default way to run anything that binds a local TCP port:
+number is a collision waiting to happen the moment two worktrees run the same dev server or proxy
+at once. `python3 -m tools.plan.devrun NAME -- <cmd>` is the default way to run anything that binds
+a local TCP port:
 
-- It assigns a free ephemeral port via the `PORT` env var and exposes the resulting address as
-  `PORTLESS_URL`, so nothing in a script or config should hardcode a port number.
-- It detects git worktrees automatically and namespaces the URL by branch, so `pnpm dev:desktop`
-  in two different worktrees never collides.
-- One-time per machine, not per worktree: the Portless proxy daemon must be started once before
-  first use, and `portless run` cannot start it itself non-interactively (it wants `sudo` for a
-  privileged port and there's no TTY to prompt). Run `portless proxy start --port 1355 --https`
-  once — this also installs Portless's CA into the system trust store, which is what lets
-  `curl` trust `*.localhost` HTTPS without extra config.
-- `apps/desktop`'s `pnpm dev` script and `vite.config.ts` already use this pattern
-  (`process.env.PORT`, `$PORTLESS_URL`) — follow the same shape for any new package that binds a
-  TCP port for local development or manual testing (e.g. `packages/mitm-proxy`'s `--listen`
-  flag: run it as `portless run --name mitm-proxy -- sh -c 'cargo run -- --listen
-  127.0.0.1:$PORT'` rather than the hardcoded `127.0.0.1:8080` default).
-- Portless auto-injects `--port` for frameworks that ignore `PORT` (Vite, Astro, etc.), but this
-  only works when the framework binary is the literal top-level command — not when it's a quoted
-  sub-command inside `concurrently` or another shell wrapper. In that case (as with
-  `apps/desktop`), have the underlying tool read `process.env.PORT` itself instead of relying on
-  auto-injection.
-- **Quoting trap, hit live while wiring `apps/desktop`:** a `$PORTLESS_URL` reference inside a
-  *double*-quoted sub-command string (e.g. one of `concurrently`'s quoted args) gets expanded
-  immediately by the outer shell that runs the whole `pnpm` script — before `portless run` has
-  even started and set the variable — so it silently resolves to an empty string. Single-quote
-  any segment that needs `$PORTLESS_URL`/`$PORT` so expansion is deferred to the child shell
-  `concurrently` (or whatever wraps it) spawns later, once Portless has actually set the env var.
-- **Verified live 2026-09-19 on the Electron shell, not re-observed under Portless on Tauri:** the dev window loaded from
-  `https://<worktree>.desktop.localhost:1355` with no certificate warning. `pnpm dev:desktop` now
-  runs `tauri dev` with `build.devUrl` passed through `--config` and Vite started by `beforeDevCommand`,
-  so the committed `tauri.conf.json` carries no `devUrl`. Observed 2026-11-11 with a plain `PORT` and
-  http URL; WKWebView's trust of the Portless CA is unobserved.
-- Portless is macOS/Linux only. `native-modules/win-daemon`/`win-network` will need a different
-  mechanism (e.g. binding port 0 and passing the OS-assigned port through env/config) once they
-  grow a local TCP listener.
-- **Docker Compose is not covered by `portless run`** — it only wraps a single launched process
-  and cannot inject a port into a static `ports:` mapping in a compose file. If a package
-  introduces Compose: never hardcode `container_name:` (let it default from the worktree's
-  directory name, which is already unique), bind host ports as `ports: ["127.0.0.1::5432"]` (no
-  host port — Docker assigns a free one), discover it with `docker compose port <service>
-  <container_port>`, and register it with `portless alias <name> <port>` so callers still get a
-  stable hostname instead of needing to know the number.
+- It reserves a free port from 5200 up (`--base N` to start elsewhere), passes it as `PORT`, and
+  exposes `DEV_URL` (`http://127.0.0.1:$PORT`). Nothing in a script or config hardcodes a port.
+- Reservations live in `~/.holy-blocker/ports.json` under a file lock, outside every checkout, so
+  two worktrees starting at the same moment cannot pick the same port. An entry lives while the
+  `devrun` process lives, and a port is also skipped while anything is bound to it on loopback, `0.0.0.0` or `::1`. Running the same `NAME` twice in one worktree is
+  refused. `python3 -m tools.plan.devrun list` shows who holds what.
+- `devrun` runs the command in its own process group and forwards Ctrl-C, SIGTERM and SIGHUP to the group,
+  so Vite and the app stop with it. Killing `devrun` with SIGKILL cannot be caught and leaves the child running. It needs no root, no proxy daemon and no certificate.
+- `apps/desktop`'s `pnpm dev` and `vite.config.ts` use this pattern (`process.env.PORT`,
+  `$DEV_URL`, `strictPort`). A new package that binds a TCP port for local development or manual
+  testing follows the same shape, e.g. `packages/mitm-proxy`:
+  `PYTHONPATH=<repo root> python3 -m tools.plan.devrun mitm-proxy -- sh -c 'cargo run -- --listen
+  127.0.0.1:$PORT'` instead of the hardcoded `127.0.0.1:8080` default.
+- **Quoting trap:** a `$PORT` or `$DEV_URL` inside a *double*-quoted string is expanded by the
+  outer shell before `devrun` has set it, and silently becomes empty. Single-quote the `sh -c`
+  string so the child shell expands it.
+- The dev URL is plain http on loopback. WKWebView loads it with no certificate, and the committed
+  `tauri.conf.json` carries no `devUrl`: `pnpm dev:desktop` passes it through `--config`, and Vite is
+  started by `beforeDevCommand`. Observed 2026-11-11.
+- `devrun` is macOS/Linux (it uses `fcntl` and `os.killpg`). `native-modules/win-daemon` and
+  `win-network` will need another mechanism (bind port 0 and pass the OS-assigned port through
+  env or config) once they grow a local TCP listener.
+- **Docker Compose is not covered by `devrun`**, which wraps one launched process. If a package
+  introduces Compose: never hardcode `container_name:`, bind host ports as
+  `ports: ["127.0.0.1::5432"]` (Docker assigns a free one) and discover it with
+  `docker compose port <service> <container_port>`.
 
 For Rust policy code:
 
