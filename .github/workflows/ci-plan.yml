@@ -55,6 +55,8 @@ jobs:
               - "apps/mobile/**"
               - "packages/net-shield/**"
               - "packages/net-shield-ffi/**"
+              - "packages/daemon-ipc/**"
+              - "packages/daemon-ipc-ffi/**"
               - "packages/text-policy/**"
               - "packages/text-policy-ffi/**"
               - "native-modules/win-daemon/**"

@@ -1,7 +1,8 @@
 id = "mac-daemon.tamper-log"
-title = "On-device tamper log: fixed content-free vocabulary, bounded, no package or bundle names"
+title = "On-device tamper log in the root store: fixed content-free vocabulary, severity tiers with a stated bound per tier, low-severity entries coalesced and never evicting high-severity ones, no package or bundle names"
 status = "pending"
 evidence = ""
 acceptance = "code"
+depends_on = ["mac-daemon.root-policy-store"]
 group = "tamper"
 milestone = "mvp"

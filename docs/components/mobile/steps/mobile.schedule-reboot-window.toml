@@ -1,0 +1,8 @@
+id = "mobile.schedule-reboot-window"
+title = "Reproduce, then fix: a disarm or request stamp from before a reboot is read against the reset elapsedRealtime clock once uptime passes it; stamp with a boot id and void on mismatch"
+status = "pending"
+evidence = ""
+kind = "bug"
+acceptance = "code"
+verify = "./gradlew testDebugUnitTest from apps/mobile"
+milestone = "mvp"

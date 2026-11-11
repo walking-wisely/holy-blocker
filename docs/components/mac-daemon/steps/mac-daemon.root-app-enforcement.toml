@@ -1,0 +1,9 @@
+id = "mac-daemon.root-app-enforcement"
+title = "Custom-app blocking runs in the root daemon: process enumeration and termination by bundle id with no GUI session, so stopping the capture agent does not pause it"
+status = "pending"
+evidence = ""
+acceptance = "observation"
+depends_on = ["mac-daemon.root-policy-store", "mac-daemon.custom-app-core"]
+verify = "./scripts/test.sh from native-modules/mac-daemon; then observed: with the agent stopped, launching a listed app is terminated by the daemon, and no app identity reaches a log or a block count"
+group = "tamper"
+milestone = "mvp"

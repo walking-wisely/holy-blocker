@@ -1,8 +1,8 @@
 id = "mac-daemon.panel-socket"
-title = "Unix socket server in the agent: peer-uid check, enumerated request messages for the panel, no raw mode set"
+title = "Unix socket server in the root daemon over daemon-ipc: hello handshake, panel and agent roles behind peer-auth, enumerated request messages, no raw mode set"
 status = "pending"
 evidence = ""
 acceptance = "code"
-depends_on = ["mac-daemon.custom-app-core", "mac-daemon.protection-schedule"]
+depends_on = ["mac-daemon.custom-app-core", "mac-daemon.protection-schedule", "mac-daemon.root-policy-store", "mac-daemon.peer-auth", "mac-daemon.adopt-daemon-ipc-ffi"]
 group = "panel"
 milestone = "mvp"

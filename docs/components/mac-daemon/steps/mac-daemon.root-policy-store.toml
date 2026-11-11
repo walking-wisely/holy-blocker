@@ -1,0 +1,8 @@
+id = "mac-daemon.root-policy-store"
+title = "Root daemon owns policy state: list, cooldown stamps, tamper log and block counts in a root-owned store, the panel socket served by the root LaunchDaemon, agent and panel as clients"
+status = "pending"
+evidence = ""
+acceptance = "code"
+verify = "./scripts/test.sh from native-modules/mac-daemon: store posture (root:wheel, 0700 directory, 0600 files, Time Machine exclusion), uninstall removes it, stdout and stderr to /dev/null, no app identity in any log call or Debug output"
+group = "tamper"
+milestone = "mvp"

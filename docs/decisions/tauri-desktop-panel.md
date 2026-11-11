@@ -6,7 +6,7 @@
 | **Date** | 2026-11-11 |
 | **Owner** | Ivan Dutov |
 | **Supersedes** | The Electron choice in [desktop/plan.md](../components/desktop/plan.md); the "desktop control panel is out of the MVP" and "macOS panel is native in the agent" parts of [mvp-scope.md](mvp-scope.md) |
-| **Superseded by** | — |
+| **Superseded by** | In part, 2026-11-11: decisions 3 and 5 as to where policy state and the socket live, by [daemon-ipc-and-process-model.md](daemon-ipc-and-process-model.md) decisions 2 and 4 |
 
 Tier: architecture decision that moves a trust boundary (the process holding the UI, its IPC
 surface and its path to the daemon), extending a product decision (what the MVP contains). Red-team
@@ -50,6 +50,12 @@ wants it in the MVP.
    `mac-daemon.protection-schedule` and `mac-daemon.custom-app-core`. Anything the panel writes
    to disk (window geometry, last tab) is a display cache and is never read back as policy.
 
+   *Amended 2026-11-11 by [daemon-ipc-and-process-model.md](daemon-ipc-and-process-model.md)
+   decision 2: the list, the cooldown clock, the tamper log and the block counts live in a root
+   LaunchDaemon, not the agent; the agent and the panel are both its clients. Where decisions 2, 4
+   and 6 say "the agent" holds state, read "the root daemon". The enumerated message set is
+   unchanged.*
+
 4. **Enforcement does not depend on the panel.** Quitting, crashing or removing the panel changes
    no enforcement state. The agent persists its own counts and tamper events; the panel reads
    them.
@@ -59,6 +65,14 @@ wants it in the MVP.
    panel from a terminal run by the same person: any process of the protected user can connect.
    That is accepted and is why decision 3 matters. A rogue same-user client can do what the user can
    do, which is start a cooldown, and starting one is recorded in the tamper log.
+
+   *Amended 2026-11-11 by [daemon-ipc-and-process-model.md](daemon-ipc-and-process-model.md)
+   decisions 2 and 4: the socket is served by the root daemon from a root-owned directory, no
+   longer `~/Library/Application Support/holy-blocker/panel.sock` in the user's home. The peer-uid
+   check is replaced by the peer's audit token (`LOCAL_PEERTOKEN`) and a code-signature requirement
+   pinned to the Developer ID team and the role's bundle id, with one slot per role; the panel
+   checks the daemon's signature the same way. A same-user terminal is no longer accepted as the
+   panel.*
 
 6. **Block counts are content-free.** The agent keeps one integer per day for text and domain
    blocks, retained for 30 days, mode 0600, in the agent's own store. There are no window titles,

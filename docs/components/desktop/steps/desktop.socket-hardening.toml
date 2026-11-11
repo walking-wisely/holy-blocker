@@ -1,9 +1,10 @@
 id = "desktop.socket-hardening"
-title = "socket client checks the peer and the socket, reports connected only after a valid frame, and writes without holding a lock"
+title = "socket client connects to the root-owned socket, verifies the daemon's code signature, completes hello before connected, shows updating and retries on a version mismatch, and writes without holding a lock"
 status = "pending"
 evidence = ""
 kind = "bug"
 regressed_step = "desktop.daemon-socket"
 acceptance = "code"
-depends_on = ["desktop.daemon-socket"]
+depends_on = ["desktop.daemon-socket", "desktop.adopt-daemon-ipc"]
+milestone = "mvp"
 verify = "pnpm --filter @holy-blocker/desktop build && cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml"

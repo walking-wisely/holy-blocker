@@ -18,6 +18,7 @@ Exists today means code is in the repo. Detailed state lives in [`../status/`](.
 | [image-sandbox](image-sandbox/README.md) | Rust | `packages/image-sandbox*` | Image classification path |
 | [domain-blocklist](domain-blocklist/README.md) | Rust | `packages/domain-blocklist`, `domain-normalize` | Offline blocklist build pipeline |
 | [classifier-head](classifier-head/README.md) | Rust | planned | Shared head over per-platform backbones |
+| [daemon-ipc](daemon-ipc/README.md) | Rust | planned | Shared IPC core between the root daemon, the agent and the panel |
 | [video-watchdog](video-watchdog/README.md) | Rust | planned | HLS/DASH segment sampler |
 | [machine-learning](machine-learning/README.md) | Python | `machine-learning/` | Evaluation and export for the backbone |
 | [mac-daemon](mac-daemon/README.md) | Swift | `native-modules/mac-daemon` | macOS network and render paths |

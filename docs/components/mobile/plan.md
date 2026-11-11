@@ -343,6 +343,18 @@ scaffolding and will fail at load time if they fall out of sync with the `.so`.
     an emulator. Do not start before `engineering.e2e-runner` is done; the ledger cannot express a
     dependency across packages.
     <!-- step: mobile.e2e-android-scenario -->
+16. **Bug — the protection schedule across a reboot.** Suspected by static reasoning in
+    [daemon-ipc-and-process-model.md](../../decisions/daemon-ipc-and-process-model.md) decision 7, not yet
+    reproduced. `ProtectionSchedule` stores `elapsedRealtime` start stamps and treats a stamp in the future as a
+    reboot. After a reboot the clock restarts at zero, and once uptime passes a stored stamp the stamp is read as
+    current: a `disarmedAtElapsed` from before the reboot can put the device back in `DISARMED` for what remains of
+    the window, with no new request. Reproduce first with a unit test (stamp, reset the clock, advance past the
+    stamp, expect `ARMED`); only then fix by storing a boot identifier with each stamp and voiding the stamp on a
+    mismatch, which returns to the most protective state. `Settings.Global.BOOT_COUNT` is the candidate identifier
+    and is **unverified** on the emulator. The manifest sets no `regressed_step`: the schedule landed in PR #76,
+    which the ledger records under `mobile.empty-harvest`, while the plan describes it under
+    `mobile.settings-guard`, so the owning step could not be verified.
+    <!-- step: mobile.schedule-reboot-window -->
 
 #### Reference documents — steps 7 and 8
 

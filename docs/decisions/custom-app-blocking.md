@@ -6,7 +6,7 @@
 | **Date** | 2026-10-05 |
 | **Owner** | Ivan Dutov |
 | **Supersedes** | — |
-| **Superseded by** | — |
+| **Superseded by** | In part, 2026-11-11: decision 16's wait for `mac-daemon.standard-user-tamper` and decision 13's macOS store path, by [daemon-ipc-and-process-model.md](daemon-ipc-and-process-model.md) decision 2 |
 
 *Amended 2026-11-11 by [tauri-desktop-panel.md](tauri-desktop-panel.md): the macOS panel is a view in the
 Tauri app, not in the agent. The list store, the protected-set check and the removal cooldown stay in the
@@ -151,6 +151,11 @@ neither platform has a per-app check. Measured 2026-10-05:
       in a `0700` directory, excluded from Time Machine and iCloud backup. The macOS list is
       readable by the protected user's own account, and the claim that it stays on the device carries
       the standard-account scope of mvp-scope.md.
+      *Amended 2026-11-11 by [daemon-ipc-and-process-model.md](daemon-ipc-and-process-model.md)
+      decision 2: on macOS the list and any pending lowering live in the root daemon's store,
+      `/Library/Application Support/holy-blocker/`, root-owned, directory `0700`, files `0600`,
+      excluded from Time Machine and never in iCloud. It is readable by an admin and by no standard
+      account, the protected user's included. Uninstall removes it.*
     - A pending lowering (app and request time) is stored in the same private store, one record per
       app, deleted on confirm or expiry.
     - Enforcement writes no per-block record anywhere: not the tamper log, not a log line, not a
@@ -183,6 +188,11 @@ neither platform has a per-app check. Measured 2026-10-05:
     wording claims no parity with Android for requirement 2 on macOS until then. Hardening the store
     (root-owned, written only through the daemon) is a trust-boundary change that passes through the
     owner after that result.
+    *Amended 2026-11-11 by [daemon-ipc-and-process-model.md](daemon-ipc-and-process-model.md)
+    decision 2: the owner moved the store to the root daemon without waiting for that result.
+    `mac-daemon.standard-user-tamper` now measures the result of the move rather than gating it.
+    The agent can still be stopped by a standard user, so decisions 5 and 6 on macOS stay advisory
+    for app termination until that step observes it, and the parity wording above still applies.*
 
 ### Keyword stoplist
 
