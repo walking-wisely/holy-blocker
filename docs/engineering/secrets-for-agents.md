@@ -28,7 +28,7 @@ one, so it:
 ## Proposal
 
 **1. Separate the two kinds of value.**
-Instance config is never stored: it is derived at run time (Portless assigns ports,
+Instance config is never stored: it is derived at run time (`devrun` assigns ports,
 `ANDROID_SERIAL` is set per emulator). Only secrets are stored, and only once, globally.
 
 **2. Store secrets in the OS keychain, not the filesystem.**

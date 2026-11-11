@@ -111,8 +111,8 @@ Decision: [tauri-desktop-panel.md](../../decisions/tauri-desktop-panel.md) (1, 7
 First act: `cargo install tauri-cli` or the pnpm CLI and run a hello-world build on this machine. If it does not
 build on macOS 26 with Xcode 27, stop and report; do not continue on an unverified toolchain.
 
-- Rust crate under `apps/desktop/src-tauri`, React renderer unchanged in behaviour, `portless` dev flow kept
-  (`PORT`, `PORTLESS_URL`; single-quote the deferred expansion, see `CLAUDE.md`).
+- Rust crate under `apps/desktop/src-tauri`, React renderer unchanged in behaviour, dev flow kept on `devrun`
+  (`PORT`, `DEV_URL`; single-quote the deferred expansion, see `CLAUDE.md`).
 - Capabilities list commands by name. No shell, fs, http, updater or opener plugin. CSP and bundled assets as in the decision.
 - Delete `electron`, `src/main`, `src/preload`, the Windows pipe client and their tests; keep a minimal status screen.
 - Record bundle size and resident memory of the built shell next to the Electron skeleton's, in `docs/status/apps-desktop.md`.

@@ -851,3 +851,27 @@ Reference documents: `gh pr checks --help` (`--json name,bucket,startedAt`; buck
 `pass`, `fail`, `pending`, `skipping`, `cancel`).
 
 Acceptance: `code`. Verify: `python3 -m unittest discover -s tools/plan/tests -t .`.
+
+### Local dev ports
+
+**Done.**
+
+<!-- step: engineering.dev-ports -->
+
+Parallel worktrees collide on any hardcoded dev port. Portless fixed that but needed a root-level
+proxy daemon and a CA in the system trust store, which the unattended driver cannot install, so
+`pnpm dev` failed in a fresh session. The same problem is solved smaller:
+
+- `tools/plan/ports.py` keeps `~/.holy-blocker/ports.json` under `fcntl.flock`. A port is handed
+  out only if nothing is bound to it and no live reservation holds it; an entry is live while its
+  process is alive, so a crash needs no cleanup.
+- `python3 -m tools.plan.devrun NAME [--base N] -- CMD` reserves a port, sets `PORT` and
+  `DEV_URL=http://127.0.0.1:PORT`, runs `CMD` in its own process group, forwards INT and TERM to the
+  group, and releases on exit. `devrun list` prints the holders.
+- `apps/desktop` drops `portless`; `vite.config.ts` sets `strictPort`. `CLAUDE.md` "Local Ports and
+  Services" is rewritten around `devrun`.
+
+Not covered: Windows (`fcntl`, `killpg`), Docker Compose, and WKWebView over HTTPS, which is no longer
+exercised in dev.
+
+Acceptance: `code`. Verify: `python3 -m unittest discover -s tools/plan/tests -t .`.
