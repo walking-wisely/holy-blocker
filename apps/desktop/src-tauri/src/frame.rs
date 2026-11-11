@@ -45,7 +45,7 @@ mod tests {
     use serde_json::Value;
 
     fn vectors() -> Value {
-        serde_json::from_str(include_str!("../tests/vectors/daemon-ipc-framing.json")).unwrap()
+        serde_json::from_str(include_str!("../../../../packages/daemon-ipc/tests/vectors/daemon-ipc-framing.json")).unwrap()
     }
 
     fn unhex(s: &str) -> Vec<u8> {

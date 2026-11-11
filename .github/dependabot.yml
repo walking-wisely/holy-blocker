@@ -27,6 +27,7 @@ updates:
     directories:
       - /packages/text-policy
       - /packages/text-policy-ffi
+      - /packages/daemon-ipc
       - /packages/domain-normalize
       - /packages/domain-blocklist
       - /packages/net-shield

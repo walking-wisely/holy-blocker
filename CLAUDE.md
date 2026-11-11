@@ -63,6 +63,7 @@ Full per-package status lives in `docs/status/<package>.md` — read the one for
 |---|---|---|
 | `apps/desktop` | TypeScript + Rust / Tauri 2 + React | Skeleton — Tauri window, one status command, status UI — [details](docs/status/apps-desktop.md) |
 | `packages/text-policy` | Rust | Policy core done; consumed over UniFFI by Android and the mac daemon — [details](docs/status/packages-text-policy.md) |
+| `packages/daemon-ipc` | Rust | Core done: frame decoder, message enums, handshake, minimal session; limits next — [details](docs/status/packages-daemon-ipc.md) |
 | `packages/text-policy-ffi` | Rust | UniFFI wrapper (Kotlin + Swift); its API is a cross-platform contract — [details](docs/status/packages-text-policy-ffi.md) |
 | `apps/mobile` | Kotlin / Android | Android text, VPN/DNS and MediaProjection paths verified on emulator; LiteRT image path is next — [details](docs/status/apps-mobile.md) |
 | `packages/mitm-proxy` | Rust | HTTPS interception with text and image scan hooks and ProtectionMode; two known gaps — [details](docs/status/packages-mitm-proxy.md) |
@@ -78,7 +79,7 @@ Full per-package status lives in `docs/status/<package>.md` — read the one for
 The packages below are **planned but not yet created** — do not assume they exist:
 
 - `packages/classifier-head` (+ `packages/classifier-head-ffi`) — the classifier head (embedding → score → verdict) in Rust behind UniFFI, plus a later gradient path. Fully specified in `docs/components/classifier-head/plan.md` (cut point, weights format, parity-fixture rules). It exists because the runtime split is per-platform: LiteRT runs the frozen backbone on Android, ONNX Runtime on Windows, and only the head is shared — see `docs/decisions/learning-from-feedback.md`. Do not wire `apps/mobile` to `packages/image-sandbox`, which is the ONNX half. No threshold ships in the crate; a threshold belongs to a (checkpoint, geometry) pair
-- `packages/daemon-ipc` (+ `packages/daemon-ipc-ffi`) — the sans-IO Rust core of the daemon-to-panel channel: framing, message schema, version handshake, session limits, liveness and shared vectors; the panel links it and Swift gets a UniFFI wrapper. Specified in `docs/components/daemon-ipc/plan.md` under [the decision](docs/decisions/daemon-ipc-and-process-model.md). Transport, peer authentication and policy stay with each platform
+- `packages/daemon-ipc-ffi` — the UniFFI wrapper over `packages/daemon-ipc` (the sans-IO Rust core of the daemon-to-panel channel) for Swift; the panel links the core directly. Specified in `docs/components/daemon-ipc/plan.md` under [the decision](docs/decisions/daemon-ipc-and-process-model.md). Transport, peer authentication and policy stay with each platform
 - `native-modules/win-network` — Windows Service: Wintun driver install, routing rules, named-pipe IPC for net-shield
 - `packages/video-watchdog` — async HLS/DASH segment sampler
 - `machine-learning` — MobileNetV3 fine-tuning, evaluation, and ONNX/TFLite export pipeline for the frozen backbone `packages/image-sandbox` and `packages/classifier-head` consume. Planned in `docs/components/machine-learning/plan.md`. A prior implementation existed and was removed; nothing under `machine-learning/` should be assumed to exist

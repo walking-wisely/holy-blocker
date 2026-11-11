@@ -1,0 +1,490 @@
+{
+  "format": "stream segments are concatenated; a frame segment gets the 4-byte big-endian length prefix, a hex segment is raw bytes. Every case is replayed whole, in 1-byte chunks and in 3-byte chunks, with identical events.",
+  "proto": 1,
+  "min_proto": 1,
+  "events": "hello:N | msg:TAG | unsupported | close:REASON",
+  "cases": [
+    {
+      "name": "hello_then_list_apps",
+      "end": "daemon_panel",
+      "max_frame": 4096,
+      "stream": [
+        {
+          "frame": "{\"type\":\"hello\",\"proto\":1}"
+        },
+        {
+          "frame": "{\"type\":\"list_apps\"}"
+        }
+      ],
+      "expect": [
+        "hello:1",
+        "msg:list_apps"
+      ]
+    },
+    {
+      "name": "pre_hello_message_closes",
+      "end": "daemon_panel",
+      "max_frame": 4096,
+      "stream": [
+        {
+          "frame": "{\"type\":\"list_apps\"}"
+        }
+      ],
+      "expect": [
+        "close:pre_hello"
+      ]
+    },
+    {
+      "name": "proto_below_range",
+      "end": "daemon_panel",
+      "max_frame": 4096,
+      "stream": [
+        {
+          "frame": "{\"type\":\"hello\",\"proto\":0}"
+        }
+      ],
+      "expect": [
+        "close:proto_mismatch:0"
+      ]
+    },
+    {
+      "name": "proto_above_range",
+      "end": "daemon_panel",
+      "max_frame": 4096,
+      "stream": [
+        {
+          "frame": "{\"type\":\"hello\",\"proto\":2}"
+        }
+      ],
+      "expect": [
+        "close:proto_mismatch:2"
+      ]
+    },
+    {
+      "name": "proto_u32_max",
+      "end": "daemon_panel",
+      "max_frame": 4096,
+      "stream": [
+        {
+          "frame": "{\"type\":\"hello\",\"proto\":4294967295}"
+        }
+      ],
+      "expect": [
+        "close:proto_mismatch:4294967295"
+      ]
+    },
+    {
+      "name": "hello_without_proto_is_malformed",
+      "end": "daemon_panel",
+      "max_frame": 4096,
+      "stream": [
+        {
+          "frame": "{\"type\":\"hello\"}"
+        }
+      ],
+      "expect": [
+        "close:malformed"
+      ]
+    },
+    {
+      "name": "first_frame_not_json",
+      "end": "daemon_panel",
+      "max_frame": 4096,
+      "stream": [
+        {
+          "frame": "not json"
+        }
+      ],
+      "expect": [
+        "close:malformed"
+      ]
+    },
+    {
+      "name": "unknown_type_keeps_the_connection",
+      "end": "daemon_panel",
+      "max_frame": 4096,
+      "stream": [
+        {
+          "frame": "{\"type\":\"hello\",\"proto\":1}"
+        },
+        {
+          "frame": "{\"type\":\"future_thing\",\"x\":1}"
+        },
+        {
+          "frame": "{\"type\":\"list_apps\"}"
+        }
+      ],
+      "expect": [
+        "hello:1",
+        "unsupported",
+        "msg:list_apps"
+      ]
+    },
+    {
+      "name": "extra_fields_are_ignored",
+      "end": "daemon_panel",
+      "max_frame": 4096,
+      "stream": [
+        {
+          "frame": "{\"type\":\"hello\",\"proto\":1}"
+        },
+        {
+          "frame": "{\"type\":\"list_apps\",\"later\":[1,2]}"
+        }
+      ],
+      "expect": [
+        "hello:1",
+        "msg:list_apps"
+      ]
+    },
+    {
+      "name": "malformed_json_closes_and_drops_the_rest",
+      "end": "daemon_panel",
+      "max_frame": 4096,
+      "stream": [
+        {
+          "frame": "{\"type\":\"hello\",\"proto\":1}"
+        },
+        {
+          "frame": "{\"type\":"
+        },
+        {
+          "frame": "{\"type\":\"list_apps\"}"
+        }
+      ],
+      "expect": [
+        "hello:1",
+        "close:malformed"
+      ]
+    },
+    {
+      "name": "known_type_missing_field_closes",
+      "end": "daemon_panel",
+      "max_frame": 4096,
+      "stream": [
+        {
+          "frame": "{\"type\":\"hello\",\"proto\":1}"
+        },
+        {
+          "frame": "{\"type\":\"request_add_app\"}"
+        }
+      ],
+      "expect": [
+        "hello:1",
+        "close:malformed"
+      ]
+    },
+    {
+      "name": "invalid_identity_closes",
+      "end": "daemon_panel",
+      "max_frame": 4096,
+      "stream": [
+        {
+          "frame": "{\"type\":\"hello\",\"proto\":1}"
+        },
+        {
+          "frame": "{\"type\":\"request_add_app\",\"identity\":\"bad id!\"}"
+        }
+      ],
+      "expect": [
+        "hello:1",
+        "close:malformed"
+      ]
+    },
+    {
+      "name": "empty_identity_closes",
+      "end": "daemon_panel",
+      "max_frame": 4096,
+      "stream": [
+        {
+          "frame": "{\"type\":\"hello\",\"proto\":1}"
+        },
+        {
+          "frame": "{\"type\":\"request_add_app\",\"identity\":\"\"}"
+        }
+      ],
+      "expect": [
+        "hello:1",
+        "close:malformed"
+      ]
+    },
+    {
+      "name": "empty_body_closes",
+      "end": "daemon_panel",
+      "max_frame": 4096,
+      "stream": [
+        {
+          "frame": "{\"type\":\"hello\",\"proto\":1}"
+        },
+        {
+          "frame": ""
+        }
+      ],
+      "expect": [
+        "hello:1",
+        "close:malformed"
+      ]
+    },
+    {
+      "name": "non_utf8_body_closes",
+      "end": "daemon_panel",
+      "max_frame": 4096,
+      "stream": [
+        {
+          "frame": "{\"type\":\"hello\",\"proto\":1}"
+        },
+        {
+          "hex": "00000002c328"
+        }
+      ],
+      "expect": [
+        "hello:1",
+        "close:malformed"
+      ]
+    },
+    {
+      "name": "oversized_declared_length_closes",
+      "end": "daemon_panel",
+      "max_frame": 64,
+      "stream": [
+        {
+          "frame": "{\"type\":\"hello\",\"proto\":1}"
+        },
+        {
+          "hex": "00000041"
+        }
+      ],
+      "expect": [
+        "hello:1",
+        "close:oversized"
+      ]
+    },
+    {
+      "name": "body_at_the_cap_is_accepted",
+      "end": "daemon_panel",
+      "max_frame": 43,
+      "stream": [
+        {
+          "frame": "{\"type\":\"hello\",\"proto\":1}"
+        },
+        {
+          "frame": "{\"type\":\"request_add_app\",\"identity\":\"a.b\"}"
+        }
+      ],
+      "expect": [
+        "hello:1",
+        "msg:request_add_app"
+      ]
+    },
+    {
+      "name": "second_hello_closes",
+      "end": "daemon_panel",
+      "max_frame": 4096,
+      "stream": [
+        {
+          "frame": "{\"type\":\"hello\",\"proto\":1}"
+        },
+        {
+          "frame": "{\"type\":\"hello\",\"proto\":1}"
+        }
+      ],
+      "expect": [
+        "hello:1",
+        "close:duplicate_hello"
+      ]
+    },
+    {
+      "name": "panel_cannot_send_agent_messages",
+      "end": "daemon_panel",
+      "max_frame": 4096,
+      "stream": [
+        {
+          "frame": "{\"type\":\"hello\",\"proto\":1}"
+        },
+        {
+          "frame": "{\"type\":\"heartbeat\"}"
+        }
+      ],
+      "expect": [
+        "hello:1",
+        "close:wrong_role"
+      ]
+    },
+    {
+      "name": "agent_cannot_send_panel_messages",
+      "end": "daemon_agent",
+      "max_frame": 4096,
+      "stream": [
+        {
+          "frame": "{\"type\":\"hello\",\"proto\":1}"
+        },
+        {
+          "frame": "{\"type\":\"request_disarm\"}"
+        }
+      ],
+      "expect": [
+        "hello:1",
+        "close:wrong_role"
+      ]
+    },
+    {
+      "name": "agent_heartbeat_and_scan",
+      "end": "daemon_agent",
+      "max_frame": 4096,
+      "stream": [
+        {
+          "frame": "{\"type\":\"hello\",\"proto\":1}"
+        },
+        {
+          "frame": "{\"type\":\"heartbeat\"}"
+        },
+        {
+          "frame": "{\"type\":\"scan_event\",\"verdict\":\"blocked\",\"at_ms\":5}"
+        }
+      ],
+      "expect": [
+        "hello:1",
+        "msg:heartbeat",
+        "msg:scan_event"
+      ]
+    },
+    {
+      "name": "every_panel_request",
+      "end": "daemon_panel",
+      "max_frame": 4096,
+      "stream": [
+        {
+          "frame": "{\"type\":\"hello\",\"proto\":1}"
+        },
+        {
+          "frame": "{\"type\":\"request_disarm\"}"
+        },
+        {
+          "frame": "{\"type\":\"confirm_disarm\"}"
+        },
+        {
+          "frame": "{\"type\":\"cancel_disarm\"}"
+        },
+        {
+          "frame": "{\"type\":\"raise_protection\"}"
+        },
+        {
+          "frame": "{\"type\":\"list_apps\"}"
+        },
+        {
+          "frame": "{\"type\":\"request_add_app\",\"identity\":\"com.example.app\"}"
+        },
+        {
+          "frame": "{\"type\":\"request_remove_app\",\"identity\":\"com.example.app\"}"
+        },
+        {
+          "frame": "{\"type\":\"confirm_remove_app\",\"identity\":\"com.example.app\"}"
+        },
+        {
+          "frame": "{\"type\":\"cancel_remove_app\",\"identity\":\"com.example.app\"}"
+        }
+      ],
+      "expect": [
+        "hello:1",
+        "msg:request_disarm",
+        "msg:confirm_disarm",
+        "msg:cancel_disarm",
+        "msg:raise_protection",
+        "msg:list_apps",
+        "msg:request_add_app",
+        "msg:request_remove_app",
+        "msg:confirm_remove_app",
+        "msg:cancel_remove_app"
+      ]
+    },
+    {
+      "name": "panel_end_reads_status",
+      "end": "panel",
+      "max_frame": 65536,
+      "stream": [
+        {
+          "frame": "{\"type\":\"hello\",\"proto\":1}"
+        },
+        {
+          "frame": "{\"type\":\"status\",\"protection\":\"full\",\"agent\":\"running\",\"disarm\":{\"state\":\"idle\"}}"
+        },
+        {
+          "frame": "{\"type\":\"counts\",\"days\":[{\"day\":20000,\"text\":3,\"domain\":9}]}"
+        }
+      ],
+      "expect": [
+        "hello:1",
+        "msg:status",
+        "msg:counts"
+      ]
+    },
+    {
+      "name": "panel_end_unknown_type",
+      "end": "panel",
+      "max_frame": 65536,
+      "stream": [
+        {
+          "frame": "{\"type\":\"hello\",\"proto\":1}"
+        },
+        {
+          "frame": "{\"type\":\"newer_status\"}"
+        }
+      ],
+      "expect": [
+        "hello:1",
+        "unsupported"
+      ]
+    },
+    {
+      "name": "panel_end_status_missing_field_closes",
+      "end": "panel",
+      "max_frame": 65536,
+      "stream": [
+        {
+          "frame": "{\"type\":\"hello\",\"proto\":1}"
+        },
+        {
+          "frame": "{\"type\":\"status\"}"
+        }
+      ],
+      "expect": [
+        "hello:1",
+        "close:malformed"
+      ]
+    },
+    {
+      "name": "agent_end_ignores_unknown_traffic",
+      "end": "agent",
+      "max_frame": 4096,
+      "stream": [
+        {
+          "frame": "{\"type\":\"hello\",\"proto\":1}"
+        },
+        {
+          "frame": "{\"type\":\"anything\"}"
+        }
+      ],
+      "expect": [
+        "hello:1",
+        "unsupported"
+      ]
+    },
+    {
+      "name": "one_byte_over_the_cap_closes",
+      "end": "daemon_panel",
+      "max_frame": 42,
+      "stream": [
+        {
+          "frame": "{\"type\":\"hello\",\"proto\":1}"
+        },
+        {
+          "frame": "{\"type\":\"request_add_app\",\"identity\":\"a.b\"}"
+        }
+      ],
+      "expect": [
+        "hello:1",
+        "close:oversized"
+      ]
+    }
+  ]
+}

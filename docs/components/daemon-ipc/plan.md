@@ -6,11 +6,11 @@ The crate does no I/O. The transport (Unix socket on macOS, named pipe on Window
 
 ## Current state
 
-Nothing exists yet. The first framing, a 4-byte big-endian length with a 16 MiB cap, lives twice: `native-modules/mac-daemon/Sources/MacDaemon/DaemonIPC.swift` and `apps/desktop/src-tauri/src/frame.rs`, with vectors in `apps/desktop/src-tauri/tests/vectors/daemon-ipc-framing.json` that no Swift test reads.
+`daemon-ipc.core` is done: `packages/daemon-ipc` holds the frame decoder, the `ToDaemon` and `ToPanel` enums, the handshake and a minimal `Session`, tested against hand-written vectors in `packages/daemon-ipc/tests/vectors/`. The old framing still lives twice, in `native-modules/mac-daemon/Sources/MacDaemon/DaemonIPC.swift` and `apps/desktop/src-tauri/src/frame.rs`, until `desktop.adopt-daemon-ipc` and `mac-daemon.adopt-daemon-ipc-ffi` replace them; the Tauri test now reads the shared framing vectors. No Swift test reads them yet.
 
 ## Implementation order
 
-1. `daemon-ipc.core` — frames, messages, handshake, vectors, property tests. <!-- step: daemon-ipc.core -->
+1. ~~`daemon-ipc.core` — frames, messages, handshake, vectors, property tests.~~ **Done.** <!-- step: daemon-ipc.core -->
 2. `daemon-ipc.limits` — the session state machine on an injected clock: caps, deadlines, rate limiter, liveness. <!-- step: daemon-ipc.limits -->
 3. `daemon-ipc.ffi` — the UniFFI wrapper for Swift, every export returning `Result`. <!-- step: daemon-ipc.ffi -->
 4. `daemon-ipc.c-abi` — a cbindgen C ABI for the Windows daemon, when `win-daemon.ipc` starts. <!-- step: daemon-ipc.c-abi -->
