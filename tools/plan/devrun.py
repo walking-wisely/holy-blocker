@@ -51,18 +51,28 @@ def main(argv=None):
         print(f"devrun: {e}", file=sys.stderr)
         return 1
     env = {**os.environ, "PORT": str(port), "DEV_URL": f"http://127.0.0.1:{port}"}
+    child = None
+
+    def forward(sig, _frame):
+        if child is not None:
+            try:
+                os.killpg(child.pid, sig)
+            except ProcessLookupError:
+                pass
+
+    for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+        signal.signal(sig, forward)
     try:
         child = subprocess.Popen(cmd, env=env, start_new_session=True)
     except OSError as e:
         registry.release(port, os.getpid())
         print(f"devrun: {e}", file=sys.stderr)
         return 127
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        signal.signal(sig, lambda s, _f: os.killpg(child.pid, s))
     try:
-        return child.wait()
+        code = child.wait()
     finally:
         registry.release(port, os.getpid())
+    return 128 - code if code < 0 else code
 
 
 if __name__ == "__main__":

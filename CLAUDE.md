@@ -110,10 +110,10 @@ a local TCP port:
   exposes `DEV_URL` (`http://127.0.0.1:$PORT`). Nothing in a script or config hardcodes a port.
 - Reservations live in `~/.holy-blocker/ports.json` under a file lock, outside every checkout, so
   two worktrees starting at the same moment cannot pick the same port. An entry lives while the
-  `devrun` process lives; a crash frees it. Running the same `NAME` twice in one worktree is
+  `devrun` process lives, and a port is also skipped while anything is bound to it on loopback, `0.0.0.0` or `::1`. Running the same `NAME` twice in one worktree is
   refused. `python3 -m tools.plan.devrun list` shows who holds what.
-- `devrun` runs the command in its own process group and forwards Ctrl-C and SIGTERM to the group,
-  so Vite and the app do not outlive it. It needs no root, no proxy daemon and no certificate.
+- `devrun` runs the command in its own process group and forwards Ctrl-C, SIGTERM and SIGHUP to the group,
+  so Vite and the app stop with it. Killing `devrun` with SIGKILL cannot be caught and leaves the child running. It needs no root, no proxy daemon and no certificate.
 - `apps/desktop`'s `pnpm dev` and `vite.config.ts` use this pattern (`process.env.PORT`,
   `$DEV_URL`, `strictPort`). A new package that binds a TCP port for local development or manual
   testing follows the same shape, e.g. `packages/mitm-proxy`:

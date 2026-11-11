@@ -1,4 +1,5 @@
 import os
+import signal
 import socket
 import subprocess
 import sys
@@ -60,6 +61,18 @@ class RegistryTest(unittest.TestCase):
         self.reg.release(port, os.getpid() + 1)
         self.assertIn(str(port), self.reg.live())
 
+    def test_listener_on_other_interfaces_blocks_the_port(self):
+        with socket.socket() as s:
+            s.bind(("0.0.0.0", 0))
+            s.listen()
+            self.assertFalse(ports.is_free(s.getsockname()[1]))
+
+    def test_malformed_entries_are_dropped(self):
+        (Path(self.tmp.name) / "ports.json").write_text(
+            '{"5200": {"pid": "abc"}, "5201": {"pid": 0, "owner": "x", "name": "y"}, "5202": {"pid": 1}}'
+        )
+        self.assertEqual(self.reg.live(), {})
+
     def test_corrupt_registry_is_treated_as_empty(self):
         (Path(self.tmp.name) / "ports.json").write_text("{not json")
         self.assertIsInstance(self.reg.reserve("wt-a", "desktop", os.getpid()), int)
@@ -82,6 +95,10 @@ class DevrunTest(unittest.TestCase):
         port, url = out.read_text().split()
         self.assertEqual(code, 3)
         self.assertEqual(url, f"http://127.0.0.1:{port}")
+
+    def test_signal_killed_child_maps_to_shell_convention(self):
+        code = devrun.main(["web", "--owner", "wt-a", "--", "sh", "-c", "kill -TERM $$"])
+        self.assertEqual(code, 128 + signal.SIGTERM)
 
     def test_port_is_released_after_the_child_exits(self):
         devrun.main(["web", "--owner", "wt-a", "--", "true"])

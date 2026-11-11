@@ -4,6 +4,7 @@ The registry lives in ~/.holy-blocker/ports.json under a file lock, outside any 
 worktrees starting a dev server at the same moment cannot pick the same port before either binds it.
 An entry is live while the process that reserved it is alive.
 """
+import errno
 import fcntl
 import json
 import os
@@ -24,6 +25,8 @@ def state_dir():
 
 
 def pid_alive(pid):
+    if not isinstance(pid, int) or pid <= 0:
+        return False
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -34,11 +37,13 @@ def pid_alive(pid):
 
 
 def is_free(port):
-    with socket.socket() as s:
-        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    for family, host in ((socket.AF_INET, "127.0.0.1"), (socket.AF_INET, "0.0.0.0"), (socket.AF_INET6, "::1")):
         try:
-            s.bind(("127.0.0.1", port))
-        except OSError:
+            with socket.socket(family) as s:
+                s.bind((host, port))
+        except OSError as e:
+            if family == socket.AF_INET6 and e.errno in (errno.EAFNOSUPPORT, errno.EADDRNOTAVAIL):
+                continue
             return False
     return True
 
@@ -63,7 +68,11 @@ class Registry:
             return {}
         if not isinstance(data, dict):
             return {}
-        return {p: e for p, e in data.items() if isinstance(e, dict) and pid_alive(e.get("pid", 0))}
+        return {
+            p: e
+            for p, e in data.items()
+            if isinstance(e, dict) and {"owner", "name", "pid"} <= e.keys() and pid_alive(e["pid"])
+        }
 
     def _save(self, entries):
         self.file.write_text(json.dumps(entries, indent=1))
