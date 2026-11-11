@@ -1,0 +1,19 @@
+[package]
+name = "holy-blocker-desktop"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "holy_blocker_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+serde_json = "1"

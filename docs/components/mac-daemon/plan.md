@@ -264,7 +264,7 @@ Four things, recorded because they alter the plan rather than merely detail it:
    install.
 2. **The sketch was missing two modules.** It listed capture, overlay, hooks, AX text, fullscreen
    and permissions — but nothing that *schedules* scans (the Windows daemon's `scan_loop`) and
-   nothing that carries verdicts to the Electron app (the Windows daemon's `ipc`). Both are load
+   nothing that carries verdicts to the desktop panel (the Windows daemon's `ipc`). Both are load
    bearing and both are specified below. Without the scheduler there is no debounce, no cadence
    split between the image and text models, and nowhere for `ProtectionMode` to be applied; without
    the IPC module the daemon can detect but cannot respond.

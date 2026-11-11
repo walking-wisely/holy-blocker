@@ -23,7 +23,7 @@ This document and `mission.md` are covered by that policy.
 The distinction that matters for the codebase: *embedding verse text in a distributed
 application binary or bundle* is a separate use case and likely requires a commercial
 license from Biblica. Compiling the JSON pools into the Rust binary via `include_str!`
-or bundling them into the Electron/Vite build is that use case. Before shipping, verify
+or bundling them into the Tauri/Vite build is that use case. Before shipping, verify
 the current terms at biblica.com or contact them directly.
 
 **If a license cannot be obtained for the binary:** the **World English Bible (WEB)** is a

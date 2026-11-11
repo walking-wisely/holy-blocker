@@ -64,10 +64,10 @@ async ML frame check → flagged
 ```
 ScanLoop::Tick → ScanVerdict { action: Block, raw_action: Block, score, source }
   → daemon sends scan_event { action: "block", score, source, ts } over named pipe
-  → (future) daemon signals Electron to spawn full-screen block overlay
+  → (future) daemon signals the desktop panel to spawn full-screen block overlay
 ```
 
-Until the overlay is implemented the daemon emits the event and the Electron app
+Until the overlay is implemented the daemon emits the event and the desktop panel
 records it, but no visual interrupt is shown to the user.
 
 ---

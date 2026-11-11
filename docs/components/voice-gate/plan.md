@@ -24,7 +24,7 @@ without restricting soft speech.
 packages/voice-gate/
 ```
 
-A TypeScript package shared by `apps/desktop` (Electron) and the planned React Native mobile
+A TypeScript package shared by `apps/desktop` (Tauri) and the planned React Native mobile
 app. It owns all platform-independent logic. Each host app supplies a `VoiceAdapter`
 implementation that handles mic access and speech recognition for its platform.
 
@@ -116,7 +116,7 @@ Responsibilities:
 - Load an ONNX anti-spoofing model (RawNet2 or equivalent) from a path supplied at
   construction time.
 - Accept a 16 kHz mono PCM `ArrayBuffer`.
-- Run inference via `onnxruntime-node` (Electron) or `onnxruntime-react-native` (mobile) —
+- Run inference via `onnxruntime-node` (desktop; re-planned by `voice-gate.desktop-adapter`) or `onnxruntime-react-native` (mobile) —
   the binding is injected so this module stays platform-neutral.
 - Return `{ liveness: number }` where `1.0` = definitely human, `0.0` = synthetic/silent.
 - Default pass threshold: 0.6 (configurable).

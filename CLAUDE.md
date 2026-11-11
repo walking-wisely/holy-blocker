@@ -61,7 +61,7 @@ Full per-package status lives in `docs/status/<package>.md` — read the one for
 
 | Package | Language | Status |
 |---|---|---|
-| `apps/desktop` | TypeScript / Electron + React | Skeleton — BrowserWindow, one IPC stub, status UI — [details](docs/status/apps-desktop.md) |
+| `apps/desktop` | TypeScript + Rust / Tauri 2 + React | Skeleton — Tauri window, one status command, status UI — [details](docs/status/apps-desktop.md) |
 | `packages/text-policy` | Rust | Policy core done; consumed over UniFFI by Android and the mac daemon — [details](docs/status/packages-text-policy.md) |
 | `packages/text-policy-ffi` | Rust | UniFFI wrapper (Kotlin + Swift); its API is a cross-platform contract — [details](docs/status/packages-text-policy-ffi.md) |
 | `apps/mobile` | Kotlin / Android | Android text, VPN/DNS and MediaProjection paths verified on emulator; LiteRT image path is next — [details](docs/status/apps-mobile.md) |
@@ -114,7 +114,7 @@ is the default way to run anything that binds a local TCP port:
   first use, and `portless run` cannot start it itself non-interactively (it wants `sudo` for a
   privileged port and there's no TTY to prompt). Run `portless proxy start --port 1355 --https`
   once — this also installs Portless's CA into the system trust store, which is what lets
-  Electron/Chromium and `curl` trust `*.localhost` HTTPS without extra config.
+  `curl` trust `*.localhost` HTTPS without extra config.
 - `apps/desktop`'s `pnpm dev` script and `vite.config.ts` already use this pattern
   (`process.env.PORT`, `$PORTLESS_URL`) — follow the same shape for any new package that binds a
   TCP port for local development or manual testing (e.g. `packages/mitm-proxy`'s `--listen`
@@ -131,11 +131,10 @@ is the default way to run anything that binds a local TCP port:
   even started and set the variable — so it silently resolves to an empty string. Single-quote
   any segment that needs `$PORTLESS_URL`/`$PORT` so expansion is deferred to the child shell
   `concurrently` (or whatever wraps it) spawns later, once Portless has actually set the env var.
-- **Verified live 2026-09-19:** `pnpm dev:desktop` under this scheme renders the real Electron
-  window (title "Holy Blocker", the Monitor/Local Data UI) loaded from
-  `https://<worktree>.desktop.localhost:1355` with no certificate warning — Electron trusts
-  Portless's CA via the system trust store the same way `curl` does; no `NODE_EXTRA_CA_CERTS`
-  wiring was needed on the Electron side. The `--no-tls` fallback is not needed.
+- **Verified live 2026-09-19 on the Electron shell, not re-observed on Tauri:** the dev window loaded from
+  `https://<worktree>.desktop.localhost:1355` with no certificate warning. `pnpm dev:desktop` now
+  runs `tauri dev` with `build.devUrl` passed through `--config`, so the committed `tauri.conf.json`
+  carries no `devUrl`; WKWebView's trust of the Portless CA is unobserved.
 - Portless is macOS/Linux only. `native-modules/win-daemon`/`win-network` will need a different
   mechanism (e.g. binding port 0 and passing the OS-assigned port through env/config) once they
   grow a local TCP listener.
@@ -171,7 +170,7 @@ For any new business-logic function, write focused unit tests first, then implem
 - text matching, normalization, scoring, or allow/block decisions;
 - ML pipeline configuration and artifact-selection logic;
 - daemon event filtering, debouncing, IPC message shaping, and state transitions;
-- Electron main/preload logic that affects daemon status, local data, or policy decisions.
+- Tauri Rust-core commands that affect daemon status, local data, or policy decisions.
 
 Frontend-only rendering changes do not need test-first treatment by default, but extracted non-UI logic should still get unit tests.
 
@@ -182,7 +181,7 @@ When a test framework is missing, add the smallest appropriate test setup for th
 - Preserve the existing language boundaries. Do not move daemon, ML, policy, or UI responsibilities into another layer without a clear reason.
 - Keep code local-first. Avoid network access in runtime paths unless explicitly requested.
 - Prefer pure functions for policy and classification decisions. Put side effects at the edges.
-- Keep Electron security settings strict: preserve context isolation and avoid enabling Node integration in the renderer.
+- Keep the Tauri capability model strict: one Rust command per action, listed by name in `capabilities/`; no shell, fs, http, updater or opener plugin; CSP limited to bundled assets; no `devUrl` or devtools in a release build.
 - In the renderer, follow the existing React + TypeScript style and use `lucide-react` icons where icons are needed.
 - In Rust, keep policy logic in testable modules instead of burying it in `main`.
 - In Python, keep training/export orchestration thin and move reusable behavior into importable functions.

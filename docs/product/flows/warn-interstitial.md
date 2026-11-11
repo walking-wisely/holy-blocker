@@ -72,12 +72,12 @@ because native windows cannot be injected into.
 ```
 ScanLoop::Tick → ScanVerdict { action: Warn, raw_action: Warn, score, source }
   → daemon sends scan_event { action: "warn", score, source, captured_frame_b64, ts }
-    over named pipe to Electron
-  → Electron main process creates frameless BrowserWindow:
+    over the daemon socket to the desktop panel
+  → Tauri Rust core creates a frameless window:
       alwaysOnTop: true
       transparent: true
       bounds: full primary screen
-  → BrowserWindow renders WarnOverlay component:
+  → the window renders the WarnOverlay component:
       backdrop: <img src={captured_frame_b64}> with CSS blur(20px)
       card: verse + "I understand" / "Close" buttons
   → "I understand": closes the BrowserWindow, records suppression in memory
