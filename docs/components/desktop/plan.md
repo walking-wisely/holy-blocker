@@ -73,10 +73,14 @@ Enumeration is in memory and discarded when the panel closes. The panel never op
 
 ### desktop.daemon-socket
 
+**Done.**
+
 Decision: [tauri-desktop-panel.md](../../decisions/tauri-desktop-panel.md) (3, 5).
 
 Rust client with the same framing as `DaemonIPCCodec`, driven by shared test vectors with the Swift side. Reconnect with
 backoff (500 ms start, 30 s cap). Connection state is a status value the UI reads. No command accepts a path or a raw message.
+The five payload-free messages have commands; `request_add_app`, `request_remove_app`, `confirm_remove_app` and `cancel_remove_app` carry
+payloads and come with `desktop.custom-app-panel`. The shared vectors live in `apps/desktop/src-tauri/tests/vectors/`.
 
 ### desktop.e2e-panel
 

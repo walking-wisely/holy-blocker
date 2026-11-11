@@ -1,7 +1,14 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "The main window may call the status command and nothing else.",
+  "description": "The main window may call the named daemon commands and nothing else.",
   "windows": ["main"],
-  "permissions": ["allow-daemon-status"]
+  "permissions": [
+    "allow-daemon-status",
+    "allow-request-disarm",
+    "allow-confirm-disarm",
+    "allow-cancel-disarm",
+    "allow-raise-protection",
+    "allow-list-apps"
+  ]
 }
