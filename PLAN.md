@@ -77,7 +77,7 @@ Focus shifts to removing human trust dependencies, verifying the open-source pip
 holy-blocker-monorepo/
 ├── apps/
 │   ├── mobile/                 # Expo (Shared mobile settings dashboard)
-│   └── desktop/                # Electron / Tauri (Shared desktop control panel)
+│   └── desktop/                # Tauri (desktop control panel)
 ├── backend/                    # Go or Node.js Aggregator & Telemetry Service
 │   ├── src/
 │   │   ├── middleware/         # HMAC verification, replay protection, and check layers

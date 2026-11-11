@@ -1,0 +1,5 @@
+id = "voice-gate.desktop-adapter"
+title = "Desktop voice adapter in the Tauri app: microphone capture, on-device recognition only, in-memory audio buffer"
+status = "pending"
+evidence = ""
+depends_on = ["voice-gate.verse-picker"]

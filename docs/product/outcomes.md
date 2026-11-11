@@ -101,8 +101,7 @@ addresses; it is the least proven of the blocking outcomes.
 
 ## Ship a desktop control panel
 
-**Status:** not started. An internal shell and daemon-status plumbing exist, but there is no usable
-control panel and no packaged, user-installable build.
+**Status:** not started. The panel is being rebuilt as a Tauri app ([tauri-desktop-panel.md](../decisions/tauri-desktop-panel.md)); the macOS panel is in the MVP with five contents (status, content-free block counts, lowering protection through the cooldown, raising it, the custom-app list). There is no usable control panel and no packaged, user-installable build.
 
 **Packages:** `apps/desktop`, `native-modules/mac-daemon`, `native-modules/win-daemon`
 

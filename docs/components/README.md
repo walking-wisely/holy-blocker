@@ -24,7 +24,7 @@ Exists today means code is in the repo. Detailed state lives in [`../status/`](.
 | [win-daemon](win-daemon/README.md) | C++20 | `native-modules/win-daemon` | Windows event hooks and scan loop |
 | [win-network](win-network/README.md) | C++20 | planned (`native-modules/win-network`, not yet created) | Wintun Windows Service |
 | [mobile](mobile/README.md) | Kotlin | `apps/mobile` | Android guard, VPN and capture |
-| [desktop](desktop/README.md) | TypeScript | `apps/desktop` | Electron control panel |
+| [desktop](desktop/README.md) | TypeScript | `apps/desktop` | Tauri control panel |
 | [voice-gate](voice-gate/README.md) | TypeScript | planned | Read-aloud override gate |
 | [backend](backend/README.md) | Go | planned | Partner invites and notifications |
 | [frontend](frontend/README.md) | TypeScript | planned | Public web app |

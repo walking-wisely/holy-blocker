@@ -1,5 +1,0 @@
-id = "desktop.monitor-view"
-title = "MonitorView — sobriety counter, weekly summary, histogram, top windows, live events"
-status = "pending"
-evidence = ""
-depends_on = ["desktop.stats-store"]

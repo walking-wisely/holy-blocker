@@ -2,4 +2,4 @@ id = "desktop.override-gate-view"
 title = "OverrideGateView — full-screen verse-reading overlay"
 status = "pending"
 evidence = ""
-depends_on = ["desktop.stats-store"]
+depends_on = ["desktop.tauri-shell"]

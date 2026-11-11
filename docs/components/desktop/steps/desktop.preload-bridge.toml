@@ -1,5 +1,0 @@
-id = "desktop.preload-bridge"
-title = "extend preload.ts bridge methods and renderer types.ts"
-status = "pending"
-evidence = ""
-depends_on = ["desktop.stats-store"]

@@ -34,7 +34,7 @@ The system is split into platform-specific daemons, shared Rust packages, and na
 
 ```text
 apps/
-  desktop/                 Electron control panel
+  desktop/                 Tauri control panel
   mobile/                  Android AccessibilityService text guard and overlay
 
 native-modules/
