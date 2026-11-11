@@ -1,4 +1,11 @@
-const COMMANDS: &[&str] = &["daemon_status"];
+const COMMANDS: &[&str] = &[
+    "daemon_status",
+    "request_disarm",
+    "confirm_disarm",
+    "cancel_disarm",
+    "raise_protection",
+    "list_apps",
+];
 
 fn main() {
     tauri_build::try_build(

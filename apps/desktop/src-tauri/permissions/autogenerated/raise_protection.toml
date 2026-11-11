@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-raise-protection"
+description = "Enables the raise_protection command without any pre-configured scope."
+commands.allow = ["raise_protection"]
+
+[[permission]]
+identifier = "deny-raise-protection"
+description = "Denies the raise_protection command without any pre-configured scope."
+commands.deny = ["raise_protection"]

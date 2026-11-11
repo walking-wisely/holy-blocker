@@ -12,11 +12,12 @@ pub struct DaemonStatus {
 #[serde(rename_all = "kebab-case")]
 pub enum ConnectionState {
     NotConnected,
+    Connected,
 }
 
-pub fn current() -> DaemonStatus {
+pub fn snapshot(state: ConnectionState) -> DaemonStatus {
     DaemonStatus {
-        state: ConnectionState::NotConnected,
+        state,
         last_heartbeat_at: None,
         watched_windows: 0,
     }
@@ -27,8 +28,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn current_reports_not_connected_with_no_data() {
-        let status = current();
+    fn a_snapshot_carries_the_state_with_no_other_data() {
+        let status = snapshot(ConnectionState::NotConnected);
         assert_eq!(status.state, ConnectionState::NotConnected);
         assert_eq!(status.last_heartbeat_at, None);
         assert_eq!(status.watched_windows, 0);
@@ -36,7 +37,7 @@ mod tests {
 
     #[test]
     fn serialises_with_the_field_names_the_renderer_reads() {
-        let json = serde_json::to_value(current()).unwrap();
+        let json = serde_json::to_value(snapshot(ConnectionState::NotConnected)).unwrap();
         assert_eq!(
             json,
             serde_json::json!({
@@ -45,5 +46,11 @@ mod tests {
                 "watchedWindows": 0,
             })
         );
+    }
+
+    #[test]
+    fn connected_serialises_in_kebab_case() {
+        let json = serde_json::to_value(ConnectionState::Connected).unwrap();
+        assert_eq!(json, serde_json::json!("connected"));
     }
 }

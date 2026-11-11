@@ -1,0 +1,48 @@
+{
+  "format": "4-byte big-endian body length, then that many bytes of UTF-8 JSON",
+  "max_body": 16777216,
+  "valid": [
+    {
+      "name": "list_apps",
+      "frame_hex": "000000147b2274797065223a226c6973745f61707073227d",
+      "body_utf8": "{\"type\":\"list_apps\"}",
+      "consumed": 24
+    },
+    {
+      "name": "empty_object",
+      "frame_hex": "000000027b7d",
+      "body_utf8": "{}",
+      "consumed": 6
+    },
+    {
+      "name": "utf8_body",
+      "frame_hex": "000000157b2274797065223a2278222c226b223a22c3a9227d",
+      "body_utf8": "{\"type\":\"x\",\"k\":\"\u00e9\"}",
+      "consumed": 25
+    }
+  ],
+  "needs_more": [
+    {
+      "name": "two_prefix_bytes",
+      "bytes_hex": "0000"
+    },
+    {
+      "name": "prefix_only",
+      "bytes_hex": "00000014"
+    },
+    {
+      "name": "body_short_by_one",
+      "bytes_hex": "000000147b2274797065223a226c6973745f6170707322"
+    }
+  ],
+  "oversized": [
+    {
+      "name": "one_over_cap",
+      "bytes_hex": "01000001",
+      "declared": 16777217
+    }
+  ],
+  "at_cap_is_not_oversized": {
+    "bytes_hex": "01000000"
+  }
+}

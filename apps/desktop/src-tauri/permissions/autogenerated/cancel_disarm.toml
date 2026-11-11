@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-cancel-disarm"
+description = "Enables the cancel_disarm command without any pre-configured scope."
+commands.allow = ["cancel_disarm"]
+
+[[permission]]
+identifier = "deny-cancel-disarm"
+description = "Denies the cancel_disarm command without any pre-configured scope."
+commands.deny = ["cancel_disarm"]
