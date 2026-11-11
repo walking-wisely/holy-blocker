@@ -3,6 +3,6 @@ title = "Replace Electron with a Tauri 2 shell in apps/desktop, keep the React r
 status = "done"
 evidence = "docs/components/desktop/plan.md: desktop.tauri-shell Done"
 acceptance = "code"
-verify = "pnpm --filter @holy-blocker/desktop typecheck && cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml"
+verify = "pnpm --filter @holy-blocker/desktop typecheck && pnpm --filter @holy-blocker/desktop build && cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml"
 group = "shell"
 milestone = "mvp"
