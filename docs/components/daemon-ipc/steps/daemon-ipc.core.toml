@@ -1,0 +1,7 @@
+id = "daemon-ipc.core"
+title = "frames, messages, handshake and shared vectors with property tests for the sans-IO daemon IPC core"
+status = "pending"
+evidence = ""
+acceptance = "code"
+verify = "cargo test --manifest-path packages/daemon-ipc/Cargo.toml"
+milestone = "mvp"

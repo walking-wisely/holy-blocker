@@ -1,4 +1,4 @@
 id = "win-daemon.ipc"
-title = "ipc — named pipe server"
+title = "ipc — named pipe server consuming daemon-ipc through its C ABI: big-endian framing, hello handshake, no raw config_update"
 status = "pending"
 evidence = ""

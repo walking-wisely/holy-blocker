@@ -1,0 +1,9 @@
+id = "mac-daemon.heartbeat-liveness"
+title = "Agent liveness by heartbeat: a SIGSTOP'd agent keeps its socket open, so the daemon records agent_stopped when heartbeats stop and keeps proxy blocking running"
+status = "pending"
+evidence = ""
+acceptance = "observation"
+depends_on = ["mac-daemon.panel-socket", "mac-daemon.tamper-log"]
+verify = "./scripts/test.sh from native-modules/mac-daemon; then observed: kill -STOP on the installed agent yields one agent_stopped entry within the heartbeat window while the proxy still blocks, and kill -CONT ends it"
+group = "tamper"
+milestone = "mvp"

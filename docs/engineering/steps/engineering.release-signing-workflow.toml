@@ -1,0 +1,8 @@
+id = "engineering.release-signing-workflow"
+title = "Release workflow that signs the macOS bundle with Developer ID, notarizes it with the hardened runtime and staples it, from owner-provided CI secrets no agent reads"
+status = "pending"
+evidence = ""
+acceptance = "observation"
+verify = "a workflow run produces a stapled bundle: spctl -a -vv reports a notarized Developer ID source, and xcrun stapler validate passes"
+group = "release"
+milestone = "mvp"

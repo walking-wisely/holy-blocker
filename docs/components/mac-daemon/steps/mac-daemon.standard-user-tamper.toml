@@ -1,7 +1,8 @@
 id = "mac-daemon.standard-user-tamper"
-title = "Observe tccutil reset and stopping or killing the agent from a standard, non-admin account"
+title = "Observe from a standard, non-admin account: tccutil reset, stopping or SIGSTOPping the agent, editing the root store, and disabling the approved daemon in Login Items"
 status = "pending"
 evidence = ""
 acceptance = "observation"
+depends_on = ["mac-daemon.install", "mac-daemon.root-policy-store"]
 group = "tamper"
 milestone = "mvp"

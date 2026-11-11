@@ -1,0 +1,8 @@
+id = "daemon-ipc.ffi"
+title = "UniFFI wrapper for Swift whose every export returns Result, wired into build-ffi.sh and Package.swift"
+status = "pending"
+evidence = ""
+acceptance = "code"
+depends_on = ["daemon-ipc.limits"]
+verify = "cargo test --manifest-path packages/daemon-ipc-ffi/Cargo.toml"
+milestone = "mvp"

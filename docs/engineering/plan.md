@@ -888,3 +888,33 @@ suits real-world tasks better. `THRESHOLD` in `tools/plan/context.py`, its tests
 gate 2a text move together; `difficulty = "hard"` still skips the gate.
 
 Acceptance: `code`. Verify: `python3 -m unittest discover -s tools/plan/tests -t .`.
+
+### Release signing workflow
+
+<!-- step: engineering.release-signing-workflow -->
+
+[daemon-ipc-and-process-model.md](../decisions/daemon-ipc-and-process-model.md) decision 8 moves the macOS release
+build to Developer ID: signed with the Developer ID Application identity, notarized with the hardened runtime, stapled,
+and installed in `/Applications` so `SMAppService` can register the agent and the root daemon. The repository has no
+release workflow and no CI secrets today.
+
+- A workflow, run on a release tag or by hand, builds the bundle, signs it with the hardened runtime, submits it with
+  `xcrun notarytool submit --wait`, staples the ticket, and uploads the stapled bundle as a workflow artifact.
+- The certificate, its password and the notarization credentials are GitHub Actions secrets the owner creates. No agent
+  reads, prints or provisions them; the workflow passes them only to `security` and `notarytool`, and a log line never
+  carries one. Where they live follows [secrets-for-agents.md](secrets-for-agents.md).
+- The development build is never signed or notarized here, which keeps the certificate difference that
+  `engineering.dev-build-release-guard-macos` asserts.
+- Apple receives the binary for notarization and keeps a hash of it. That is an owner-visible fact, not a flow of the
+  protected person's content.
+
+Unverified: the notarytool credentials (the Developer ID identity itself is probed present in the build host's
+keychain), and whether a hosted macOS runner can import the identity without an interactive prompt. Both are settled by
+the first run, which the owner triggers once the secrets exist.
+
+Reference documents:
+[Notarizing macOS software before distribution](https://developer.apple.com/documentation/security/notarizing-macos-software-before-distribution),
+[Customizing the notarization workflow](https://developer.apple.com/documentation/security/customizing-the-notarization-workflow).
+
+Acceptance: `observation`. Verify: a workflow run produces a stapled bundle that `spctl -a -vv` reports as a notarized
+Developer ID source and `xcrun stapler validate` accepts.

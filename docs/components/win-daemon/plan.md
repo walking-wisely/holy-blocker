@@ -7,7 +7,7 @@ This document is the build plan: what modules to add, in what order, and what ea
 
 - [../flows/block.md](../../product/flows/block.md) — daemon scan_event on Block verdict
 - [../flows/warn-interstitial.md](../../product/flows/warn-interstitial.md) — future full-screen native overlay on Warn verdict
-- [../flows/protection-mode-change.md](../../product/flows/protection-mode-change.md) — how config_update updates ScanLoop mode at runtime
+- [../flows/protection-mode-change.md](../../product/flows/protection-mode-change.md) — how a protection change reaches the ScanLoop; the raw `config_update` is dropped, see module 4
 
 ## Current state
 
@@ -140,7 +140,7 @@ Manages the named pipe channel between the daemon and the desktop control panel:
 ```cpp
 // Pipe name: \\.\pipe\holy-blocker-daemon
 
-enum class MessageType { Heartbeat, ScanEvent, StatusUpdate, ConfigUpdate };
+enum class MessageType { Heartbeat, ScanEvent, StatusUpdate };
 
 struct IpcMessage {
     MessageType type;
@@ -163,7 +163,7 @@ public:
 };
 ```
 
-Outbound message payloads:
+Outbound message payloads (indicative; the shapes and the `ts` encoding are fixed by the `daemon-ipc` schema):
 
 | `type`          | Key fields                                              |
 | --------------- | ------------------------------------------------------- |
@@ -171,23 +171,22 @@ Outbound message payloads:
 | `scan_event`    | `{"action": "block\|warn\|allow", "score": 0.0, "source": "ocr\|image\|text", "ts": "<iso8601>"}` |
 | `status_update` | `{"state": "idle\|scanning\|acting"}`                   |
 
-Inbound `config_update` payload:
-```json
-{
-  "block_threshold": 0.8,
-  "warn_threshold": 0.5,
-  "protection_mode": "full"
-}
-```
-`protection_mode` ∈ `{ "full", "warn", "off" }`. See [../flows/protection-mode-change.md](../../product/flows/protection-mode-change.md)
-for the full propagation flow and [../decisions/protection-modes.md](../../decisions/protection-modes.md)
-for rationale. The mode is stored in `ScanLoopConfig::protection_mode` as a
-`std::atomic<ProtectionMode>` and updated on receipt without restarting the loop.
+There is no inbound `config_update`. A raw message carrying `protection_mode` and thresholds lets any client
+set `off` with no cooldown, which [tauri-desktop-panel.md](../../decisions/tauri-desktop-panel.md) decision 3
+forbids; [daemon-ipc-and-process-model.md](../../decisions/daemon-ipc-and-process-model.md) decision 10 drops
+it from this plan. Inbound messages are the enumerated requests of the shared schema in `packages/daemon-ipc`
+(`request_disarm`, `confirm_disarm`, `cancel_disarm`, `raise_protection` and the list requests), answered by the
+daemon's own cooldown. The mode is still held in `ScanLoopConfig::protection_mode` as a
+`std::atomic<ProtectionMode>` and changed by that cooldown, never by a message.
 
 Responsibilities:
 
 - Wrap the Win32 named pipe API (`CreateNamedPipe`, `ConnectNamedPipe`, `ReadFile`, `WriteFile`) behind the `IpcServer` interface; no pipe handles escape the implementation file.
-- Frame messages with a 4-byte little-endian length prefix followed by UTF-8 JSON.
+- Frame messages with a 4-byte **big-endian** length prefix followed by UTF-8 JSON, matching macOS and the panel
+  ([daemon-ipc-and-process-model.md](../../decisions/daemon-ipc-and-process-model.md) decision 3). Framing, the
+  `hello` handshake, the message schema and the limits are not written here: when this step starts it consumes
+  `packages/daemon-ipc` through the C ABI that `daemon-ipc.c-abi` adds, and replays the shared vectors. This module
+  keeps the transport, the pipe ACLs and the peer checks.
 - Handle broken pipe errors gracefully: drop the disconnected client and continue serving others.
 - `IpcServer::Send` and `Receive` are callable from any thread; use a mutex to protect the client list.
 - Test send/receive in isolation with a loopback client that opens the same pipe name.
@@ -234,7 +233,7 @@ Logic-only source files (`scan_loop.cpp`, `ipc.cpp`) should be compiled into a s
    <!-- step: win-daemon.scanner -->
 3. `scan_loop.h/cpp` — debounce and state machine driven by `NullScanner`; unit-test all state transitions and debounce behavior with a fake clock and a fake scanner that records calls.
    <!-- step: win-daemon.scan-loop -->
-4. `ipc.h/cpp` — named pipe server; test send/receive round-trip with a loopback client in the same test process.
+4. `ipc.h/cpp` — named pipe server over `packages/daemon-ipc` (big-endian framing, `hello`, limits) through `daemon-ipc.c-abi`, which starts with this step; test send/receive round-trip with a loopback client in the same test process and replay the shared vectors.
    <!-- step: win-daemon.ipc -->
 5. Wire scan loop into `main.cpp`: forward `HandleWinEvent` events to `ScanLoop::OnForegroundChange` / `OnLocationChange`, run `Tick` on a background thread timer.
    <!-- step: win-daemon.wire-scan-loop -->
@@ -245,6 +244,9 @@ Logic-only source files (`scan_loop.cpp`, `ipc.cpp`) should be compiled into a s
 
 ## What this does not cover
 
+- win-network's newline-delimited JSON over its own named pipe ([win-network plan](../win-network/plan.md)) is out
+  of scope of the shared framing.
+- Windows tamper resistance: a default Windows user is an administrator, so it needs its own owner decision.
 - ONNX Runtime integration and real image classification — deferred until a trained model artifact exists in `data/models/image-v1/`.
 - Windows native OCR (`Windows.Media.Ocr`) integration — deferred; requires WinRT headers and async/coroutine plumbing.
 - Accessibility tree scanning — planned; see [edge-daemons.md](../../architecture/edge-daemons.md).

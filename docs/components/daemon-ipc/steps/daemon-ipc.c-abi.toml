@@ -1,0 +1,7 @@
+id = "daemon-ipc.c-abi"
+title = "cbindgen C ABI for the Windows daemon replaying the shared vectors"
+status = "pending"
+evidence = ""
+acceptance = "code"
+depends_on = ["daemon-ipc.ffi"]
+verify = "cargo test --manifest-path packages/daemon-ipc/Cargo.toml"

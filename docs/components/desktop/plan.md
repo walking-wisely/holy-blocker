@@ -21,12 +21,14 @@ are superseded: `desktop.tauri-shell` deletes them. The renderer (`src/renderer`
 ## Shape
 
 ```
-React renderer  ──(named Tauri commands only)──▶  Rust core  ──(Unix socket, peer-checked)──▶  agent / daemon
-   no state                                          no policy                                   all state
+React renderer  ──(named Tauri commands only)──▶  Rust core  ──(Unix socket, signature-checked)──▶  root daemon
+   no state                                          no policy                                        all state
 ```
 
-- **The agent owns every state machine.** Protection lowering, the custom-app list and its cooldowns, the tamper
-  log and the block counts live in the macOS agent. The panel sends `request_*`, `confirm_*`, `cancel_*` and
+- **The root daemon owns every state machine.** Protection lowering, the custom-app list and its cooldowns, the
+  tamper log and the block counts live in the macOS root LaunchDaemon
+  ([daemon-ipc-and-process-model.md](../../decisions/daemon-ipc-and-process-model.md) decision 2, amending
+  decision 3 of the panel decision); the agent is another client of it. The panel sends `request_*`, `confirm_*`, `cancel_*` and
   `raise_protection`; it never sets a mode, a threshold or a list entry directly.
 - **The panel holds no policy.** Anything it writes (window geometry, last tab) is a display cache and is never read back as
   input.
@@ -47,10 +49,11 @@ The ledger computes order from `depends_on`; each step's specification is in "St
 | Group | Steps | MVP |
 |---|---|---|
 | shell | `desktop.tauri-shell`, `desktop.release-guard` | yes |
-| panel | `desktop.daemon-socket`, `desktop.status-view`, `desktop.protection-view`, `desktop.custom-app-panel`, `desktop.e2e-panel` | yes |
+| panel | `desktop.daemon-socket`, `desktop.adopt-daemon-ipc`, `desktop.socket-hardening`, `desktop.status-view`, `desktop.protection-view`, `desktop.custom-app-panel`, `desktop.e2e-panel` | yes |
 | deferred | `desktop.tray`, `desktop.voice-adapter`, `desktop.override-gate-view` | no |
 
-The daemon side lives in `mac-daemon`: `mac-daemon.panel-socket` and `mac-daemon.block-counts`. Cross-component edges are
+The daemon side lives in `mac-daemon`: `mac-daemon.panel-socket`, `mac-daemon.peer-auth` and `mac-daemon.block-counts`; the
+shared framing, handshake and limits live in `daemon-ipc`. Cross-component edges are
 in the build-order table of [mvp-scope.md](../../decisions/mvp-scope.md), since `depends_on` stays inside one component.
 
 Finished before the decision, superseded by `desktop.tauri-shell`:
@@ -77,24 +80,40 @@ Enumeration is in memory and discarded when the panel closes. The panel never op
 
 Decision: [tauri-desktop-panel.md](../../decisions/tauri-desktop-panel.md) (3, 5).
 
-Rust client with the same framing as `DaemonIPCCodec`. The framing vectors are written and read on the Rust side; the Swift side adopting them is part of `mac-daemon.panel-socket`. Reconnect with
+Rust client with the same framing as `DaemonIPCCodec`. The framing vectors are written and read on the Rust side; both sides now take them from `daemon-ipc` (`desktop.adopt-daemon-ipc`, `mac-daemon.adopt-daemon-ipc-ffi`). Reconnect with
 backoff (500 ms start, 30 s cap). Connection state is a status value the UI reads. No command accepts a path or a raw message.
 The five payload-free messages have commands; `request_add_app`, `request_remove_app`, `confirm_remove_app` and `cancel_remove_app` carry
 payloads and come with `desktop.custom-app-panel`. The shared vectors live in `apps/desktop/src-tauri/tests/vectors/`.
+
+### desktop.adopt-daemon-ipc
+
+<!-- step: desktop.adopt-daemon-ipc -->
+
+Decision: [daemon-ipc-and-process-model.md](../../decisions/daemon-ipc-and-process-model.md) (3, 5, 6).
+
+`link.rs` drives the `daemon-ipc` crate's `Session` instead of its own framing: `hello()` is the first frame, `receive`
+yields events, `tick` closes on the crate's deadlines, and the 64 KiB inbound cap toward the panel comes from the crate's
+`Limits`. `frame.rs` and `tests/vectors/daemon-ipc-framing.json` are removed once the crate carries the vectors. The panel
+depends on the crate directly, with no FFI. Needs `daemon-ipc.core` and `daemon-ipc.limits` first.
 
 ### desktop.socket-hardening
 
 <!-- step: desktop.socket-hardening -->
 
-Found reviewing `desktop.daemon-socket`; none blocks it, because the agent's side of decision 5 owns the peer check.
+Found reviewing `desktop.daemon-socket`, re-scoped by
+[daemon-ipc-and-process-model.md](../../decisions/daemon-ipc-and-process-model.md) (2, 4, 5). The socket is no longer in
+`$HOME`: the root daemon serves it from a root-owned directory whose path `mac-daemon.root-policy-store` sets.
 
-- After connect, check the peer uid (`LOCAL_PEERCRED`) and refuse a socket that is not owned by the user or not mode 0600, or a `$HOME` that is empty or relative.
-- `Connected` only after the first valid frame, plus a read deadline, so a silent or trickling peer cannot hold the status at connected.
+- After connect, read the peer's audit token and check the daemon's code signature against a requirement pinned to the
+  Developer ID team and the daemon's bundle id; refuse a socket whose directory is not root-owned. The `$HOME` checks are dropped.
+- `Connected` only after the daemon's `hello` arrives with a protocol in range, plus a read deadline, so a silent or
+  trickling peer cannot hold the status at connected. On a version mismatch the status is "updating" and the link retries
+  with backoff; the daemon, not the panel, records a tamper event after repeated mismatches.
 - Reset the backoff only after a connection has lasted, so a peer that sends one frame and closes does not cause a reconnect every 500 ms.
 - Write through a channel to a writer thread instead of holding the writer lock across a blocking write; recover from a poisoned lock.
 - `Drop` rechecks `stop` after the writer is installed.
 
-Needs the agent's socket (`mac-daemon.panel-socket`) to settle the connect-time contract first.
+Needs `mac-daemon.panel-socket` and `mac-daemon.peer-auth` to settle the connect-time contract first.
 
 ### desktop.e2e-panel
 
@@ -104,7 +123,7 @@ Layers: pure framing and cooldown logic at unit level, the socket at integration
 
 ### desktop.protection-view
 
-Decision: [tauri-desktop-panel.md](../../decisions/tauri-desktop-panel.md) (2, 3). The cooldown is the agent's; this view displays its state and sends request, confirm or cancel.
+Decision: [tauri-desktop-panel.md](../../decisions/tauri-desktop-panel.md) (2, 3). The cooldown is the root daemon's; this view displays its state and sends request, confirm or cancel.
 No full/warn switch and no threshold editor. Closing the view or the app changes nothing about a pending request.
 
 ### desktop.release-guard
@@ -117,7 +136,7 @@ allowlist. Add the macOS case to `engineering.dev-build-release-guard-macos`'s r
 
 ### desktop.status-view
 
-Decision: [tauri-desktop-panel.md](../../decisions/tauri-desktop-panel.md) (2, 6). Shows what the agent reports and persists nothing itself. No titles, scores, histograms or per-app rows.
+Decision: [tauri-desktop-panel.md](../../decisions/tauri-desktop-panel.md) (2, 6). Shows what the root daemon reports and persists nothing itself. No titles, scores, histograms or per-app rows.
 Verdict-and-time events are held in memory only.
 
 ### desktop.tauri-shell
@@ -149,5 +168,6 @@ build on macOS 26 with Xcode 27, stop and report; do not continue on an unverifi
 - **The voice gate.** `desktop.voice-adapter` and `desktop.override-gate-view` wait for `voice-gate.desktop-adapter`, which re-plans
   recognition as on-device only.
 - **The tray menu.** Its old items included a gate-free mode switch and a quit; it needs the same rules before it is built.
-- Proxy configuration UI, rule bundle management, packaging, signing and auto-update.
+- Proxy configuration UI, rule bundle management and auto-update. Packaging and signing of the bundle belong to
+  `mac-daemon.install` and `engineering.release-signing-workflow`.
 - The Android companion app (`apps/mobile`).

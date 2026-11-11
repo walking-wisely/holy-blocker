@@ -6,7 +6,7 @@
 | **Date** | 2026-10-05 |
 | **Owner** | Ivan Dutov |
 | **Supersedes** | — |
-| **Superseded by** | — |
+| **Superseded by** | In part, 2026-11-11: owner answers 4 and 5 as to macOS signing and updates, by [daemon-ipc-and-process-model.md](daemon-ipc-and-process-model.md) decision 8 |
 
 Tier: product decision, owner-decided. It touches the tamper model, so the red-team is tier 2
 (three lenses) under [decision-tiers-and-red-teaming.md](decision-tiers-and-red-teaming.md); the
@@ -116,10 +116,18 @@ that does.
    cooldown. The remaining design goes through `plan-inception` in the two custom-app steps.
 4. **The MVP is working builds on the owner's own devices, not store releases.** Release builds are
    signed with a local keystore (Android) and a local identity (macOS), both different from the
-   development build's.
+   development build's. *Amended 2026-11-11 by
+   [daemon-ipc-and-process-model.md](daemon-ipc-and-process-model.md) decision 8: the macOS release
+   bundle is signed with the Developer ID Application identity, notarized, installed in
+   `/Applications` and registered through `SMAppService` with admin approval; a development build
+   keeps the self-signed identity and the dispatcher's legacy plists. Android is unchanged.*
 5. **The domain list is bundled in each build.** Updates come from a new build. Fetching updates from
    the project's own source is permitted and is a later step that passes through `plan-inception`
-   first: it adds a capability and a trust boundary, and no host exists yet.
+   first: it adds a capability and a trust boundary, and no host exists yet. *Amended 2026-11-11 by
+   [daemon-ipc-and-process-model.md](daemon-ipc-and-process-model.md) decision 8: on macOS a new
+   build arrives as a notarized bundle an admin installs; there is no updater in the panel or the
+   daemon, and the daemon refuses a `CFBundleVersion` not above the installed one and records a
+   version decrease as tamper.*
 
 ## Open question
 
@@ -146,6 +154,12 @@ scoped to a standard account.
 | `mac-daemon.custom-app-domains` | `mitm-proxy.keyword-rule`, which follows `mitm-proxy.domain-blocklist` |
 | `engineering.dev-build-release-guard` | `mobile.dev-kill-switch`, `mobile.release-signing` |
 | `engineering.dev-build-release-guard-macos` | `mac-daemon.dev-kill-switch`, `mac-daemon.release-identity` |
+| `mac-daemon.adopt-daemon-ipc-ffi` | `daemon-ipc.ffi` (added 2026-11-11, [daemon-ipc-and-process-model.md](daemon-ipc-and-process-model.md)) |
+| `mac-daemon.panel-socket`, `mac-daemon.heartbeat-liveness` | `daemon-ipc.limits`, through `mac-daemon.adopt-daemon-ipc-ffi` |
+| `desktop.adopt-daemon-ipc` | `daemon-ipc.core`, `daemon-ipc.limits` |
+| `desktop.socket-hardening` | `mac-daemon.panel-socket`, `mac-daemon.peer-auth` |
+| `mac-daemon.install` | `engineering.release-signing-workflow` for the release path; `engineering.privilege-dispatcher` for the development fallback |
+| `win-daemon.ipc` | `daemon-ipc.c-abi`, which starts with it |
 
 ## Rejected alternatives
 

@@ -1,0 +1,8 @@
+id = "mac-daemon.adopt-daemon-ipc-ffi"
+title = "Replace DaemonIPC.swift's codec with the daemon-ipc-ffi wrapper: every call handles a thrown Result, no try!, config_update removed"
+status = "pending"
+evidence = ""
+acceptance = "code"
+verify = "./scripts/test.sh from native-modules/mac-daemon; grep finds no try! on a daemon-ipc-ffi call and no config_update in Sources/MacDaemon"
+group = "panel"
+milestone = "mvp"

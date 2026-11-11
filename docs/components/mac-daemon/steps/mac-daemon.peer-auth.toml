@@ -1,0 +1,9 @@
+id = "mac-daemon.peer-auth"
+title = "Peer authentication on the root daemon's socket: LOCAL_PEERTOKEN audit token, code-signature requirement pinned to the Developer ID team and the role's bundle id, one slot per role"
+status = "pending"
+evidence = ""
+acceptance = "observation"
+depends_on = ["mac-daemon.root-policy-store"]
+verify = "./scripts/test.sh from native-modules/mac-daemon; then observed: the signed panel and agent connect, an unsigned same-uid client and a client signed by another team are refused without occupying a slot"
+group = "tamper"
+milestone = "mvp"

@@ -698,6 +698,108 @@ than building it.
 
 ---
 
+## Root policy daemon and shared IPC
+
+Decision: [daemon-ipc-and-process-model.md](../../decisions/daemon-ipc-and-process-model.md). It moves the
+list, the cooldown clock, the tamper log, the block counts and the panel socket from the user-level agent to
+the root LaunchDaemon, replaces `DaemonIPC.swift`'s codec with the shared `packages/daemon-ipc` crate, and
+moves the release build to Developer ID with `SMAppService`. The agent keeps capture, AX, the overlay and app
+termination; a standard user can still stop it, so the root store protects the policy state, not the
+blocking. Cross-component edges (`daemon-ipc.ffi`, `daemon-ipc.limits`, `engineering.release-signing-workflow`)
+are in the build-order table of [mvp-scope.md](../../decisions/mvp-scope.md).
+
+### Root policy store <!-- step: mac-daemon.root-policy-store -->
+
+Decision (2). The root daemon owns the store; the agent and the panel are clients and never open it.
+
+- Store directory `/Library/Application Support/holy-blocker/`, `root:wheel`, mode `0700`, files `0600`,
+  excluded from Time Machine, never in iCloud. Readable by an admin and by no standard account; every place
+  that claims this posture states that scope. Uninstall removes the directory, the log included.
+- The panel socket is served by this daemon. Its path and directory mode are set here and written into
+  module 19: the directory is root-owned, and it is **not** the `0700` store directory, because a user-level
+  client cannot traverse a `0700` root directory to reach a socket in it. Socket permissions only keep the
+  endpoint from being squatted; who may talk is decided by `mac-daemon.peer-auth`.
+- stdout and stderr go to `/dev/null`. No frame body, app identity or host is formatted into an error, a
+  log call, a panic message or a crash report; types carrying an app identity do not derive a debug
+  description. A test fails on an `os_log`, `NSLog` or `print` that names a bundle id.
+- The data-classes row "Root policy store and tamper log — macOS" is the privacy inventory for this store.
+- Test first against a temporary directory: posture, the Time Machine exclusion attribute, and removal.
+  Whether a standard user can read or edit the store is observed by `mac-daemon.standard-user-tamper`.
+
+### Peer authentication <!-- step: mac-daemon.peer-auth -->
+
+Decision (4). Two roles, `panel` and `agent`, each with its own slot; an unauthenticated connection never
+occupies one.
+
+- Read the peer's audit token with `getsockopt(LOCAL_PEERTOKEN)`, never the pid, and check its code
+  signature against a requirement pinned to the Developer ID team and the role's bundle identifier. Agent
+  messages are accepted only from the signed agent, panel messages only from the signed panel.
+- A development build pins the development identity and bundle ids, so a development panel can never drive
+  a release daemon.
+- Falsify first: that a `SecCode` for the peer can be obtained from the audit token and checked against a
+  requirement. The SDK symbol is probed; the check itself is **unverified** until this step observes an
+  unsigned same-uid client being refused.
+
+Reference documents: Apple's Code Signing Services reference for `SecCodeCopyGuestWithAttributes` (with
+`kSecGuestAttributeAudit`) and `SecCodeCheckValidity`, and the Code Signing Requirement Language; the step
+links the exact pages after reading them. `LOCAL_PEERTOKEN` is declared in `<sys/un.h>` of the macOS SDK.
+
+### Adopt the shared IPC core <!-- step: mac-daemon.adopt-daemon-ipc-ffi -->
+
+Decision (3). `DaemonIPC.swift`'s framing and decoder are replaced by the `daemon-ipc-ffi` wrapper that
+`daemon-ipc.ffi` builds. Every wrapper call returns a `Result` and is handled; no call site uses `try!`, so a
+decoder fault cannot kill the root daemon that also hosts the proxy. `config_update` with `protection_mode`
+leaves the codec. The `ts` encoding question recorded under Layer 2 item 5 is settled by the crate's schema.
+The transport half of `mac-daemon.daemon-ipc` is now `mac-daemon.panel-socket`.
+
+### Panel socket, re-pointed
+
+`mac-daemon.panel-socket` ([module 19](modules/19-panel-socket.md)) is served by the root daemon over the
+shared `Session`, with the `hello` handshake, the per-role slots of `mac-daemon.peer-auth` and the limits of
+decision 6. The message set is unchanged. Lowering requests are answered by the daemon's own schedule and
+custom-app cooldown.
+
+### Tamper log tiers
+
+`mac-daemon.tamper-log` is built severity-tiered (decision 6). Low-severity entries (requests, cancels,
+throttles) are coalesced into one counted entry per window, held in memory until written, and carry a count
+and a window, never a peer, path or message text. They can never evict `agent_stopped`, `disarm_confirmed`, a
+version decrease or a permission revocation. The step states a size bound for each tier and tests it; a
+repeated request while one is pending writes nothing.
+
+### Cooldown stamps across reboots
+
+`mac-daemon.protection-schedule` and `mac-daemon.custom-app-core` store every monotonic stamp with
+`kern.bootsessionuuid` (decision 7). A mismatch voids and purges the stamp, and voiding returns to the most
+protective state. At each start the daemon checks whether the previous boot was a safe mode and records it
+in the tamper log; how that is read is falsified in `mac-daemon.protection-schedule` before it is coded.
+
+### Heartbeat liveness <!-- step: mac-daemon.heartbeat-liveness -->
+
+Decision (9). A SIGSTOP'd agent keeps its socket open (probed), so a closed connection is not the signal.
+The agent sends a heartbeat; when it stops, the daemon records `agent_stopped` once and keeps blocking at the
+proxy, while text and app blocking pause until the agent returns. Liveness timing comes from
+`daemon-ipc.limits`. Observed on the installed bundle with `kill -STOP` and `kill -CONT`.
+
+### Install through `SMAppService`
+
+`mac-daemon.install` is amended (decision 8). Release: the bundle is signed with the Developer ID
+Application identity, notarized with the hardened runtime by `engineering.release-signing-workflow`, and
+installed in `/Applications`; the agent registers with `SMAppService.agent(plistName:)` and the root daemon
+with `SMAppService.daemon(plistName:)`, and the daemon starts only after an admin approves it in System
+Settings. Development: a self-signed build cannot be notarized, so it keeps the legacy plists in
+`/Library/LaunchDaemons` through the dispatcher ([agent-privilege-boundary.md](../../decisions/agent-privilege-boundary.md)).
+The daemon refuses a `CFBundleVersion` not above the installed one and records a version decrease or a
+missing app as tamper; that protects against a casual downgrade only. End to end, approval and notarization
+are **unverified**. Whether a standard user can disable the approved daemon in Login Items is observed by
+`mac-daemon.standard-user-tamper`, which now measures the result of the move rather than gating it.
+
+Reference documents:
+[`SMAppService`](https://developer.apple.com/documentation/servicemanagement/smappservice),
+[Notarizing macOS software before distribution](https://developer.apple.com/documentation/security/notarizing-macos-software-before-distribution).
+
+---
+
 ## What this package does not cover
 
 - **Classification** — text-policy, OCR, and image ML stay in their own packages. The daemon calls

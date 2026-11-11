@@ -1,0 +1,9 @@
+id = "desktop.adopt-daemon-ipc"
+title = "link.rs drives the daemon-ipc crate's Session: hello handshake, limits and framing from the shared crate, frame.rs and its local vectors removed"
+status = "pending"
+evidence = ""
+acceptance = "code"
+depends_on = ["desktop.daemon-socket"]
+verify = "pnpm --filter @holy-blocker/desktop build && cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml"
+group = "panel"
+milestone = "mvp"
