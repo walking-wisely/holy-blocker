@@ -22,7 +22,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-THRESHOLD = 100_000
+THRESHOLD = 300_000
 USAGE_KEYS = ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")
 SYNTHETIC_MODEL = "<synthetic>"
 PROJECTS = Path.home() / ".claude" / "projects"

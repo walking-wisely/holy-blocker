@@ -59,7 +59,7 @@ it is the loop's handle for every gate after this.
 python -m tools.plan.context
 ```
 
-Exit 0 means under 100,000 tokens: continue. Exit 1 means over: **stop, do not implement**,
+Exit 0 means under 300,000 tokens: continue. Exit 1 means over: **stop, do not implement**,
 and write a handoff brief instead, then tell the owner to continue in a fresh session:
 
 - step id

@@ -79,14 +79,14 @@ class LastAssistantTokensTest(unittest.TestCase):
 
 
 class VerdictTest(unittest.TestCase):
-    def test_threshold_is_100k_absolute(self):
-        self.assertEqual(context.THRESHOLD, 100_000)
+    def test_threshold_is_300k_absolute(self):
+        self.assertEqual(context.THRESHOLD, 300_000)
 
     def test_at_threshold_is_under(self):
-        self.assertEqual(context.verdict(100_000), "under")
+        self.assertEqual(context.verdict(300_000), "under")
 
     def test_above_threshold_is_over(self):
-        self.assertEqual(context.verdict(100_001), "over")
+        self.assertEqual(context.verdict(300_001), "over")
 
 
 class ProjectSlugTest(unittest.TestCase):
@@ -174,14 +174,14 @@ class MainTest(unittest.TestCase):
         self.assertEqual((code, out.split()[:2]), (0, ["50000", "under"]))
 
     def test_over_exits_one(self):
-        code, out = self._run(150_000)
-        self.assertEqual((code, out.split()[:2]), (1, ["150000", "over"]))
+        code, out = self._run(350_000)
+        self.assertEqual((code, out.split()[:2]), (1, ["350000", "over"]))
 
     def test_session_id_from_environment_pins_the_transcript(self):
         with tempfile.TemporaryDirectory() as tmp:
             mine = Path(tmp, "slug", "mine.jsonl")
             mine.parent.mkdir()
-            mine.write_text(_line("assistant", input_tokens=150_000) + "\n")
+            mine.write_text(_line("assistant", input_tokens=350_000) + "\n")
             os.utime(mine, (1, 1))
             Path(tmp, "slug", "other.jsonl").write_text(_line("assistant", input_tokens=5) + "\n")
             out = io.StringIO()
@@ -189,7 +189,7 @@ class MainTest(unittest.TestCase):
                 context, "PROJECTS", Path(tmp)
             ), contextlib.redirect_stdout(out):
                 code = context.main([])
-            self.assertEqual((code, out.getvalue().split()[:2]), (1, ["150000", "over"]))
+            self.assertEqual((code, out.getvalue().split()[:2]), (1, ["350000", "over"]))
 
     def test_set_but_unmatched_session_id_exits_two_without_falling_back(self):
         with tempfile.TemporaryDirectory() as tmp:

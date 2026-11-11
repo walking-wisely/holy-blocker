@@ -551,10 +551,10 @@ Acceptance: `code`. Verify: `python -m unittest discover -s tools/plan/tests -t 
 
 <!-- step: engineering.context-budget-gate -->
 
-Sessions that run a step past roughly 100k tokens degrade, and the remembered rule to hand off
+Sessions that run a step past roughly 100k tokens degrade at the margin; the gate fires at 300k (see Context threshold), and the remembered rule to hand off
 is what drops first. `python -m tools.plan.context` adapts `~/.claude/hooks/context-nudge.sh`: it
 sums `input_tokens + cache_creation_input_tokens + cache_read_input_tokens` of the last
-main-thread assistant line in a transcript (sidechain and synthetic lines are skipped, and a zero total is no data) and compares it to an absolute 100,000-token threshold, not a
+main-thread assistant line in a transcript (sidechain and synthetic lines are skipped, and a zero total is no data) and compares it to an absolute 300,000-token threshold, not a
 percentage of the window. With no path it finds `$CLAUDE_CODE_SESSION_ID.jsonl` in any directory under
 `~/.claude/projects/`; a set id with no matching file is exit 2, and only an unset id falls back
 to the newest `.jsonl` for the current directory or the main checkout. Exit 0 is under, 1
@@ -873,5 +873,18 @@ proxy daemon and a CA in the system trust store, which the unattended driver can
 
 Not covered: Windows (`fcntl`, `killpg`), Docker Compose, and WKWebView over HTTPS, which is no longer
 exercised in dev.
+
+Acceptance: `code`. Verify: `python3 -m unittest discover -s tools/plan/tests -t .`.
+
+### Context threshold
+
+**Done.**
+
+<!-- step: engineering.context-threshold-300k -->
+
+The context-budget gate fired at 100,000 tokens, which stopped real steps (a Tauri shell, a socket
+client) before they could be implemented in one session. The owner set the limit at 300,000, which
+suits real-world tasks better. `THRESHOLD` in `tools/plan/context.py`, its tests and the step-loop
+gate 2a text move together; `difficulty = "hard"` still skips the gate.
 
 Acceptance: `code`. Verify: `python3 -m unittest discover -s tools/plan/tests -t .`.

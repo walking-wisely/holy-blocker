@@ -53,7 +53,7 @@ class ContextBudgetGateTest(unittest.TestCase):
         self.assertLess(SKILL.index("python -m tools.plan.context"), SKILL.index("## 3. Implement"))
 
     def test_gate_writes_a_handoff_brief_and_honours_hard_steps(self):
-        for needle in ("handoff brief", "100,000", 'difficulty = "hard"'):
+        for needle in ("handoff brief", "300,000", 'difficulty = "hard"'):
             self.assertIn(needle, SKILL)
 
 
