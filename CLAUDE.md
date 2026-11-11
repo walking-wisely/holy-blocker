@@ -131,10 +131,11 @@ is the default way to run anything that binds a local TCP port:
   even started and set the variable — so it silently resolves to an empty string. Single-quote
   any segment that needs `$PORTLESS_URL`/`$PORT` so expansion is deferred to the child shell
   `concurrently` (or whatever wraps it) spawns later, once Portless has actually set the env var.
-- **Verified live 2026-09-19 on the Electron shell, not re-observed on Tauri:** the dev window loaded from
+- **Verified live 2026-09-19 on the Electron shell, not re-observed under Portless on Tauri:** the dev window loaded from
   `https://<worktree>.desktop.localhost:1355` with no certificate warning. `pnpm dev:desktop` now
-  runs `tauri dev` with `build.devUrl` passed through `--config`, so the committed `tauri.conf.json`
-  carries no `devUrl`; WKWebView's trust of the Portless CA is unobserved.
+  runs `tauri dev` with `build.devUrl` passed through `--config` and Vite started by `beforeDevCommand`,
+  so the committed `tauri.conf.json` carries no `devUrl`. Observed 2026-11-11 with a plain `PORT` and
+  http URL; WKWebView's trust of the Portless CA is unobserved.
 - Portless is macOS/Linux only. `native-modules/win-daemon`/`win-network` will need a different
   mechanism (e.g. binding port 0 and passing the OS-assigned port through env/config) once they
   grow a local TCP listener.
