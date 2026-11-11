@@ -1,0 +1,6 @@
+id = "engineering.context-threshold-300k"
+title = "raise the step-loop context-budget gate from 100,000 to 300,000 tokens"
+status = "done"
+evidence = "docs/engineering/plan.md: engineering.context-threshold-300k Done"
+acceptance = "code"
+verify = "python3 -m unittest discover -s tools/plan/tests -t ."
