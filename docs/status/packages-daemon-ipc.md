@@ -9,7 +9,7 @@ Language: Rust
 - `frame`: a streaming decoder that reads only what the current frame needs, so the buffer never exceeds the 4-byte prefix plus the cap; the cap is `Limits::max_frame`, not a constant.
 - `msg`: `ToDaemon` and `ToPanel` (snake_case `type` tag), `AppIdentity` (validated, `Debug` prints nothing of it), the `hello` handshake with `MIN_PROTO..=PROTO` (both 1), unknown type reported as `Unsupported` and a malformed body of a known type as `Malformed`.
 - `session`: a `Session` per connection for four ends (daemon facing a panel, daemon facing an agent, panel, agent). Closes on a pre-`hello` message, a protocol outside the range, a second `hello`, a malformed or oversized frame and a message from the wrong role. No clock, caps, rate limits or liveness yet: those are `daemon-ipc.limits`, and the default 4 KiB and 64 KiB caps arrive with them.
-- Tests: hand-written vectors replayed whole and in 1- and 3-byte chunks, proptest properties (any chunking gives the same events, arbitrary bytes never panic or over-buffer), redaction, and `panic = unwind` asserted.
+- Tests: hand-written vectors replayed whole and in 1- and 3-byte chunks, proptest properties (any chunking gives the same events, arbitrary bytes never panic or over-buffer), redaction, and `panic = unwind` asserted for the test profile only: a consumer's release profile can still set `abort`, so `daemon-ipc.ffi` asserts it again in its own build.
 
 ## Not yet
 

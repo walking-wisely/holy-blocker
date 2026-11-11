@@ -16,16 +16,21 @@ impl fmt::Display for InvalidIdentity {
     }
 }
 
-/// An Android package name or a macOS bundle identifier. `Debug` never prints it, and no error
-/// built from one carries it.
+/// An Android package name or a macOS bundle identifier. The charset and shape keep it from
+/// ever being a path traversal or an option flag, but consumers must still never use it as a
+/// path or argv element. `Debug` never prints it, and no error built from one carries it.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct AppIdentity(String);
 
 impl AppIdentity {
     pub fn new(raw: &str) -> Result<Self, InvalidIdentity> {
-        let ok = !raw.is_empty()
-            && raw.len() <= MAX_IDENTITY_LEN
+        let ok = raw.len() <= MAX_IDENTITY_LEN
+            && raw
+                .bytes()
+                .next()
+                .is_some_and(|b| b.is_ascii_alphanumeric())
+            && !raw.contains("..")
             && raw
                 .bytes()
                 .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_'));

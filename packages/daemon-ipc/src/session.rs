@@ -54,8 +54,8 @@ impl Session {
         }
     }
 
-    pub fn hello(&self, outbound: Limits) -> Vec<u8> {
-        frame::encode(&msg::hello_body(), outbound).expect("a hello is far below any frame cap")
+    pub fn hello(&self, outbound: Limits) -> Result<Vec<u8>, frame::TooLarge> {
+        frame::encode(&msg::hello_body(), outbound)
     }
 
     pub fn is_closed(&self) -> bool {

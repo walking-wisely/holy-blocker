@@ -485,6 +485,91 @@
         "hello:1",
         "close:oversized"
       ]
+    },
+    {
+      "name": "panel_end_reads_apps_scan_refused",
+      "end": "panel",
+      "max_frame": 65536,
+      "stream": [
+        {
+          "frame": "{\"type\":\"hello\",\"proto\":1}"
+        },
+        {
+          "frame": "{\"type\":\"apps\",\"apps\":[{\"identity\":\"com.example.app\",\"removal\":{\"state\":\"cooling\",\"remaining_ms\":5}}]}"
+        },
+        {
+          "frame": "{\"type\":\"scan\",\"verdict\":\"blocked\",\"at_ms\":7}"
+        },
+        {
+          "frame": "{\"type\":\"refused\",\"reason\":\"protected\"}"
+        }
+      ],
+      "expect": [
+        "hello:1",
+        "msg:apps",
+        "msg:scan",
+        "msg:refused"
+      ]
+    },
+    {
+      "name": "pre_hello_message_closes_panel_end",
+      "end": "panel",
+      "max_frame": 65536,
+      "stream": [
+        {
+          "frame": "{\"type\":\"status\"}"
+        }
+      ],
+      "expect": [
+        "close:pre_hello"
+      ]
+    },
+    {
+      "name": "pre_hello_message_closes_agent_end",
+      "end": "agent",
+      "max_frame": 4096,
+      "stream": [
+        {
+          "frame": "{\"type\":\"anything\"}"
+        }
+      ],
+      "expect": [
+        "close:pre_hello"
+      ]
+    },
+    {
+      "name": "dot_dot_identity_closes",
+      "end": "daemon_panel",
+      "max_frame": 4096,
+      "stream": [
+        {
+          "frame": "{\"type\":\"hello\",\"proto\":1}"
+        },
+        {
+          "frame": "{\"type\":\"request_add_app\",\"identity\":\"..\"}"
+        }
+      ],
+      "expect": [
+        "hello:1",
+        "close:malformed"
+      ]
+    },
+    {
+      "name": "option_like_identity_closes",
+      "end": "daemon_panel",
+      "max_frame": 4096,
+      "stream": [
+        {
+          "frame": "{\"type\":\"hello\",\"proto\":1}"
+        },
+        {
+          "frame": "{\"type\":\"request_add_app\",\"identity\":\"-rf\"}"
+        }
+      ],
+      "expect": [
+        "hello:1",
+        "close:malformed"
+      ]
     }
   ]
 }

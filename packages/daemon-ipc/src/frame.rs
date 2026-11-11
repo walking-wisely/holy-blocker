@@ -24,16 +24,27 @@ pub fn encode(body: &[u8], limits: Limits) -> Result<Vec<u8>, TooLarge> {
     Ok(frame)
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(PartialEq, Eq)]
 pub enum Next {
     NeedMore,
     Frame(Vec<u8>),
     Oversized(u32),
 }
 
+impl std::fmt::Debug for Next {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NeedMore => f.write_str("NeedMore"),
+            Self::Frame(body) => write!(f, "Frame(<{} bytes>)", body.len()),
+            Self::Oversized(declared) => write!(f, "Oversized({declared})"),
+        }
+    }
+}
+
 pub struct FrameDecoder {
     limits: Limits,
     buf: Vec<u8>,
+    oversized: Option<u32>,
 }
 
 impl FrameDecoder {
@@ -41,6 +52,7 @@ impl FrameDecoder {
         Self {
             limits,
             buf: Vec::new(),
+            oversized: None,
         }
     }
 
@@ -51,6 +63,9 @@ impl FrameDecoder {
     /// Consumes from `input` only what the current frame needs, so the buffer never exceeds
     /// `LENGTH_PREFIX + max_frame` however large a single read is.
     pub fn next(&mut self, input: &mut &[u8]) -> Next {
+        if let Some(declared) = self.oversized {
+            return Next::Oversized(declared);
+        }
         if self.buf.len() < LENGTH_PREFIX {
             self.take(input, LENGTH_PREFIX - self.buf.len());
             if self.buf.len() < LENGTH_PREFIX {
@@ -60,9 +75,10 @@ impl FrameDecoder {
         let declared = u32::from_be_bytes([self.buf[0], self.buf[1], self.buf[2], self.buf[3]]);
         if declared > self.limits.max_frame {
             self.buf.clear();
+            self.oversized = Some(declared);
             return Next::Oversized(declared);
         }
-        let total = LENGTH_PREFIX + declared as usize;
+        let total = LENGTH_PREFIX.saturating_add(declared as usize);
         self.take(input, total - self.buf.len());
         if self.buf.len() < total {
             return Next::NeedMore;
