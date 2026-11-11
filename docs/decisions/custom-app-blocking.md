@@ -8,6 +8,12 @@
 | **Supersedes** | — |
 | **Superseded by** | — |
 
+*Amended 2026-11-11 by [tauri-desktop-panel.md](tauri-desktop-panel.md): the macOS panel is a view in the
+Tauri app, not in the agent. The list store, the protected-set check and the removal cooldown stay in the
+agent; the panel sends `request_add_app`, `request_remove_app`, `confirm_remove_app` and
+`cancel_remove_app` over the socket and never opens the store file. `mac-daemon.custom-app-panel` is
+replaced by `desktop.custom-app-panel` and `mac-daemon.panel-socket`.*
+
 Tier: product decision extending [mvp-scope.md](mvp-scope.md), which already records the owner's
 answers on the panel and the cooldown. Its per-app modes are narrowed by this record to block only. It touches protection modes and the tamper model, so
 the red-team is tier 2 (three lenses) under

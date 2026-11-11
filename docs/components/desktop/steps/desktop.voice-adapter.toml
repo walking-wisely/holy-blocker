@@ -1,4 +1,5 @@
 id = "desktop.voice-adapter"
-title = "voice-adapter-electron — VoiceAdapter over IPC and override:attempt wiring"
+title = "Tauri voice adapter over voice-gate.desktop-adapter, after the daemon owns the gate"
 status = "pending"
 evidence = ""
+depends_on = ["desktop.tauri-shell"]

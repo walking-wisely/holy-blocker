@@ -1,8 +1,0 @@
-id = "mac-daemon.custom-app-panel"
-title = "Native searchable app list in the agent to choose the apps to block, with name tokens confirmed"
-status = "pending"
-evidence = ""
-acceptance = "observation"
-depends_on = ["mac-daemon.custom-app-core"]
-group = "custom-apps"
-milestone = "mvp"

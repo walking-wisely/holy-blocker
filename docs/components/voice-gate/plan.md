@@ -59,7 +59,7 @@ type RecordingResult = {
 ```
 
 Platform implementations live outside this package:
-- **Electron**: `apps/desktop/src/main/voice-adapter-electron.ts` — uses Node.js `node-record-lpcm16` or the renderer's `MediaRecorder` API bridged via IPC; speech recognition via the renderer's Web Speech API.
+- **Desktop (Tauri)**: an adapter in `apps/desktop` — microphone capture with on-device recognition only; the audio buffer stays in memory and is never written or logged. The Web Speech API is rejected ([tauri-desktop-panel.md](../../decisions/tauri-desktop-panel.md)); the recognizer and its word-timestamp source are chosen in `voice-gate.desktop-adapter`.
 - **React Native (future)**: `apps/mobile/src/voice-adapter-rn.ts` — uses `@react-native-voice/voice` and `react-native-audio-record`.
 
 ## Modules to add
@@ -187,9 +187,9 @@ The ONNX model is not loaded in unit tests — the runtime is always injected as
 <!-- step: voice-gate.liveness-classifier -->
 5. `voice-gate.ts` — orchestrator; integration test with mock adapter and mock classifier.
 <!-- step: voice-gate.voice-gate -->
-6. `voice-adapter-electron.ts` in `apps/desktop` — wire `MediaRecorder` + Web Speech API;
-   manual smoke test in the running app.
-<!-- step: voice-gate.electron-adapter -->
+6. Desktop adapter in `apps/desktop` (Tauri) — microphone capture, on-device recognition only,
+   in-memory audio buffer; manual smoke test in the running app.
+<!-- step: voice-gate.desktop-adapter -->
 
 ## What this does not cover
 

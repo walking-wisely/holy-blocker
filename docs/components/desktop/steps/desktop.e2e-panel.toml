@@ -1,0 +1,8 @@
+id = "desktop.e2e-panel"
+title = "macOS e2e scenario for the panel on a standard account: status shown, lowering refused until the cooldown elapses, a chosen app listed, panel quit changes nothing"
+status = "pending"
+evidence = ""
+acceptance = "observation"
+depends_on = ["desktop.status-view", "desktop.protection-view", "desktop.custom-app-panel", "desktop.release-guard"]
+group = "panel"
+milestone = "mvp"

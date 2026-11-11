@@ -1,0 +1,9 @@
+id = "desktop.daemon-socket"
+title = "Rust client for the agent's Unix socket: length-prefixed JSON, reconnect with backoff, one Tauri command per message"
+status = "pending"
+evidence = ""
+acceptance = "code"
+depends_on = ["desktop.tauri-shell"]
+verify = "cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml"
+group = "panel"
+milestone = "mvp"

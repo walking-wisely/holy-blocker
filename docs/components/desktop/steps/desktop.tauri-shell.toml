@@ -1,0 +1,8 @@
+id = "desktop.tauri-shell"
+title = "Replace Electron with a Tauri 2 shell in apps/desktop, keep the React renderer, delete the Electron and Windows-pipe code, sweep the docs that name Electron"
+status = "pending"
+evidence = ""
+acceptance = "code"
+verify = "pnpm --filter @holy-blocker/desktop typecheck && cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml"
+group = "shell"
+milestone = "mvp"

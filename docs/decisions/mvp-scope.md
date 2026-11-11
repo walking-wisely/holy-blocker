@@ -47,7 +47,7 @@ that does.
 
 2. **Out of the MVP**, by name: explicit imagery (the classifier head, the LiteRT backbone, the
    macOS image scanner's first real frame), SNI/IP filtering, DoH and DoT coverage, Windows, iOS,
-   the desktop control panel, usage nudges, the voice gate and partner notification, a liveness
+   the Windows desktop panel and the tray menu, usage nudges, the voice gate and partner notification, a liveness
    signal ("know that protection is actually running"), and a false-positive recourse beyond what
    exists today. The MVP runs protection mode `full` only; a false positive has no in-product
    remedy yet, and that cost is accepted and recorded here rather than left unmentioned. They keep their steps and their place in
@@ -110,8 +110,9 @@ that does.
    per-app modes (block, hide, unblocked) are dropped; an app is blocked or it is not, and hiding
    text and images stays app-wide ([custom-app-blocking.md](custom-app-blocking.md)).* Block
    terminates the app where the platform allows it. Android cannot terminate another app under plain Device Admin (unverified), so
-   there block sends the user home and covers the app. The macOS panel is native in the agent, not
-   the Electron control panel, which stays out of the MVP. Removing an app follows the disarm
+   there block sends the user home and covers the app. *Amended 2026-11-11: the macOS panel is the list
+   view of the Tauri control panel, which enters the MVP ([tauri-desktop-panel.md](tauri-desktop-panel.md));
+   the agent still holds the list and enforces the cooldown.* Removing an app follows the disarm
    cooldown. The remaining design goes through `plan-inception` in the two custom-app steps.
 4. **The MVP is working builds on the owner's own devices, not store releases.** Release builds are
    signed with a local keystore (Android) and a local identity (macOS), both different from the
@@ -137,6 +138,10 @@ scoped to a standard account.
 | `mac-daemon.proxy-blocklist-wiring` | `mitm-proxy.domain-blocklist` |
 | `mobile.e2e-android-scenario`, `mac-daemon.e2e-macos-scenario` | `engineering.e2e-contract`, `engineering.e2e-runner` |
 | `mac-daemon.install` and the two macOS tamper observations | `engineering.privilege-dispatcher` |
+| `desktop.custom-app-panel` | `mac-daemon.custom-app-core`, `mac-daemon.panel-socket` |
+| `desktop.protection-view` | `mac-daemon.protection-schedule`, `mac-daemon.panel-socket` |
+| `desktop.status-view` | `mac-daemon.block-counts`, `mac-daemon.panel-socket` |
+| `mac-daemon.e2e-macos-scenario` | `desktop.custom-app-panel`, replacing `mac-daemon.custom-app-panel` |
 | `mobile.custom-app-domains` | `net-shield.keyword-rule` |
 | `mac-daemon.custom-app-domains` | `mitm-proxy.keyword-rule`, which follows `mitm-proxy.domain-blocklist` |
 | `engineering.dev-build-release-guard` | `mobile.dev-kill-switch`, `mobile.release-signing` |

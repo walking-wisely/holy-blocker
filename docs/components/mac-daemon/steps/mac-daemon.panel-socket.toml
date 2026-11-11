@@ -1,0 +1,8 @@
+id = "mac-daemon.panel-socket"
+title = "Unix socket server in the agent: peer-uid check, enumerated request messages for the panel, no raw mode set"
+status = "pending"
+evidence = ""
+acceptance = "code"
+depends_on = ["mac-daemon.custom-app-core", "mac-daemon.protection-schedule"]
+group = "panel"
+milestone = "mvp"
