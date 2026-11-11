@@ -27,7 +27,7 @@ cli = ["dep:clap", "dep:reqwest", "dep:tar", "dep:flate2", "dep:serde_json", "de
 
 [dependencies]
 anyhow = "1"
-bincode = "1"
+bincode = "3"
 clap = { version = "4", features = ["derive"], optional = true }
 domain-normalize = { path = "../domain-normalize" }
 ed25519-dalek = { version = "3.0.0", features = ["rand_core"] }
