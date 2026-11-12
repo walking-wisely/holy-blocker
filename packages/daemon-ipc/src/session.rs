@@ -26,6 +26,7 @@ pub enum CloseReason {
     Idle,
     HeartbeatLost,
     UnsupportedFlood,
+    Flood,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -89,6 +90,7 @@ pub struct Session {
     last_heartbeat_ms: u64,
     frame_started_ms: Option<u64>,
     unsupported_run: u32,
+    drop_run: u32,
     buckets: Buckets,
     disarm_pending: bool,
     removals_pending: Vec<AppIdentity>,
@@ -109,6 +111,7 @@ impl Session {
             last_heartbeat_ms: now_ms,
             frame_started_ms: None,
             unsupported_run: 0,
+            drop_run: 0,
             buckets: Buckets {
                 messages: Bucket::new(limits.messages_per_sec, now_ms),
                 state_changes: Bucket::new(limits.state_changes_per_sec, now_ms),
@@ -298,33 +301,45 @@ impl Session {
             return self.close(CloseReason::UnsupportedFlood);
         }
         if rate_limited && !self.buckets.admit(false, now_ms) {
-            return self.throttle();
+            self.throttled += 1;
+            return self.dropped(Event::Throttled);
         }
         Event::Unsupported
     }
 
-    fn throttle(&mut self) -> Event {
-        self.throttled += 1;
-        Event::Throttled
+    fn dropped(&mut self, event: Event) -> Event {
+        self.drop_run += 1;
+        if self.drop_run > self.limits.dropped_budget {
+            return self.close(CloseReason::Flood);
+        }
+        event
     }
 
     fn admit(&mut self, message: ToDaemon, now_ms: u64) -> Event {
-        self.unsupported_run = 0;
         if message == ToDaemon::Heartbeat {
             self.last_heartbeat_ms = self.last_heartbeat_ms.max(now_ms);
         }
-        if !message.is_exempt_from_limits()
-            && !self.buckets.admit(message.is_state_changing(), now_ms)
-        {
-            return self.throttle();
+        let exempt = message.is_exempt_from_limits();
+        if !exempt && !self.buckets.admit(message.is_state_changing(), now_ms) {
+            self.throttled += 1;
+            return self.dropped(Event::Throttled);
         }
         match self.track_pending(&message) {
-            Pending::New => Event::Message(Inbound::ToDaemon(message)),
+            Pending::New => {
+                if !exempt {
+                    self.unsupported_run = 0;
+                    self.drop_run = 0;
+                }
+                Event::Message(Inbound::ToDaemon(message))
+            }
             Pending::Repeated => {
                 self.duplicates += 1;
-                Event::Duplicate
+                self.dropped(Event::Duplicate)
             }
-            Pending::Full => self.throttle(),
+            Pending::Full => {
+                self.throttled += 1;
+                self.dropped(Event::Throttled)
+            }
         }
     }
 

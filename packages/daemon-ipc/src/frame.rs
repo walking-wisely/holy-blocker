@@ -7,6 +7,7 @@ pub const PRE_HELLO_DEADLINE_MS: u64 = 5_000;
 pub const IDLE_MS: u64 = 60_000;
 pub const HEARTBEAT_WINDOW_MS: u64 = 15_000;
 pub const UNSUPPORTED_BUDGET: u32 = 8;
+pub const DROPPED_BUDGET: u32 = 64;
 pub const MESSAGES_PER_SEC: u32 = 10;
 pub const STATE_CHANGES_PER_SEC: u32 = 1;
 
@@ -18,6 +19,7 @@ pub struct Limits {
     pub idle_ms: u64,
     pub heartbeat_window_ms: u64,
     pub unsupported_budget: u32,
+    pub dropped_budget: u32,
     pub messages_per_sec: u32,
     pub state_changes_per_sec: u32,
 }
@@ -31,6 +33,7 @@ impl Limits {
             idle_ms: IDLE_MS,
             heartbeat_window_ms: HEARTBEAT_WINDOW_MS,
             unsupported_budget: UNSUPPORTED_BUDGET,
+            dropped_budget: DROPPED_BUDGET,
             messages_per_sec: MESSAGES_PER_SEC,
             state_changes_per_sec: STATE_CHANGES_PER_SEC,
         }

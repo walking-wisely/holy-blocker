@@ -42,6 +42,7 @@ fn describe(event: &Event) -> String {
             CloseReason::Idle => "close:idle".to_owned(),
             CloseReason::HeartbeatLost => "close:heartbeat_lost".to_owned(),
             CloseReason::UnsupportedFlood => "close:unsupported_flood".to_owned(),
+            CloseReason::Flood => "close:flood".to_owned(),
         },
     }
 }

@@ -6,12 +6,12 @@ The crate does no I/O. The transport (Unix socket on macOS, named pipe on Window
 
 ## Current state
 
-`daemon-ipc.core` is done: `packages/daemon-ipc` holds the frame decoder, the `ToDaemon` and `ToPanel` enums, the handshake and a minimal `Session`, tested against hand-written vectors in `packages/daemon-ipc/tests/vectors/`. The old framing still lives twice, in `native-modules/mac-daemon/Sources/MacDaemon/DaemonIPC.swift` and `apps/desktop/src-tauri/src/frame.rs`, until `desktop.adopt-daemon-ipc` and `mac-daemon.adopt-daemon-ipc-ffi` replace them; the Tauri test now reads the shared framing vectors. No Swift test reads them yet.
+`daemon-ipc.core` and `daemon-ipc.limits` are done: `packages/daemon-ipc` holds the frame decoder, the `ToDaemon` and `ToPanel` enums, the handshake and a `Session` on an injected clock with caps, deadlines, a rate limiter and liveness, tested against hand-written vectors in `packages/daemon-ipc/tests/vectors/`. The old framing still lives twice, in `native-modules/mac-daemon/Sources/MacDaemon/DaemonIPC.swift` and `apps/desktop/src-tauri/src/frame.rs`, until `desktop.adopt-daemon-ipc` and `mac-daemon.adopt-daemon-ipc-ffi` replace them; the Tauri test now reads the shared framing vectors. No Swift test reads them yet.
 
 ## Implementation order
 
 1. ~~`daemon-ipc.core` — frames, messages, handshake, vectors, property tests.~~ **Done.** <!-- step: daemon-ipc.core -->
-2. `daemon-ipc.limits` — the session state machine on an injected clock: caps, deadlines, rate limiter, liveness. <!-- step: daemon-ipc.limits -->
+2. ~~`daemon-ipc.limits` — the session state machine on an injected clock: caps, deadlines, rate limiter, liveness.~~ **Done.** <!-- step: daemon-ipc.limits -->
 3. `daemon-ipc.ffi` — the UniFFI wrapper for Swift, every export returning `Result`. <!-- step: daemon-ipc.ffi -->
 4. `daemon-ipc.c-abi` — a cbindgen C ABI for the Windows daemon, when `win-daemon.ipc` starts. <!-- step: daemon-ipc.c-abi -->
 
@@ -39,7 +39,9 @@ Decision (6, 9). `Session::new(role, limits, now_ms)`, `receive`, `tick`, with t
 - A repeated request while one is pending is an `Event::Duplicate` that writes nothing.
 - A pre-`hello` deadline, a partial-frame deadline, and a budget of consecutive `Unsupported` frames after which the session closes, so a peer cannot hold a connection or send unknown tags forever. The caller adds the connection cap.
 - Liveness: an agent-role session that sends no heartbeat within its window yields `CloseReason::HeartbeatLost`, independent of the connection staying open.
-- Counters are memory only and carry a count and a window, never a peer, path or message text; a test asserts the event types hold no string from a frame body.
+- Counters are memory only and carry a count and a window, never a peer, path or message text; a test asserts no `Debug` output of the events, counters or close reasons carries text from a frame body. A delivered message still holds its `AppIdentity`, which only `Debug` redacts, so a consumer must not log it.
+
+Values the decision does not give, chosen here and all `Limits` fields: 5 s pre-hello deadline, 15 s heartbeat window (the agent should send about every 5 s), 8 consecutive `Unsupported` frames (reset only by a delivered non-exempt message), 64 consecutive throttled or duplicate frames before `CloseReason::Flood`, and 16 pending removal requests per connection. A heartbeat window that elapses closes the session, because the daemon kills and restarts a stopped agent anyway. The session cannot see how the server resolves a request, so the server calls `settle_disarm` or `settle_removal` when it refuses or expires one; confirm and cancel resolve it on their own. The 60 s idle rule applies to every end, so a panel that stays connected must send something at least once a minute.
 
 ### daemon-ipc.ffi
 

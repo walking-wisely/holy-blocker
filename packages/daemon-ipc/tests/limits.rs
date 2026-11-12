@@ -405,3 +405,67 @@ fn an_ordinary_message_in_late_bytes_is_not_delivered() {
     let events = session.receive(&framed(r#"{"type":"list_apps"}"#), 61_000);
     assert_eq!(events, vec![Event::Close(CloseReason::Idle)]);
 }
+
+#[test]
+fn unknown_types_interleaved_with_protective_messages_still_exhaust_the_budget() {
+    let mut session = panel(0);
+    let unknown = framed(r#"{"type":"from_the_future"}"#);
+    let cancel = framed(r#"{"type":"cancel_disarm"}"#);
+    for i in 0..200u64 {
+        session.receive(&cancel, i);
+        session.receive(&unknown, i);
+        if session.is_closed() {
+            return;
+        }
+    }
+    panic!("an alternating unknown-type stream was never closed");
+}
+
+#[test]
+fn a_flood_that_is_always_throttled_is_closed() {
+    let mut session = panel(0);
+    let list = framed(r#"{"type":"list_apps"}"#);
+    let mut closed_at = None;
+    for i in 0..1000 {
+        let events = session.receive(&list, 0);
+        if events == vec![Event::Close(CloseReason::Flood)] {
+            closed_at = Some(i);
+            break;
+        }
+    }
+    let closed_at = closed_at.expect("the flood was never closed");
+    assert_eq!(closed_at, 10 + Limits::new(0).dropped_budget);
+}
+
+#[test]
+fn repeated_duplicates_without_progress_are_closed() {
+    let mut session = panel(0);
+    let request = framed(r#"{"type":"request_disarm"}"#);
+    session.receive(&request, 0);
+    let mut closed = false;
+    for i in 1..2000u64 {
+        let events = session.receive(&request, i * 1000);
+        if events == vec![Event::Close(CloseReason::Flood)] {
+            closed = true;
+            break;
+        }
+    }
+    assert!(closed);
+}
+
+#[test]
+fn a_delivered_ordinary_message_resets_the_drop_run() {
+    let mut session = panel(0);
+    let list = framed(r#"{"type":"list_apps"}"#);
+    let budget = u64::from(Limits::new(0).dropped_budget);
+    for round in 0..4u64 {
+        let base = round * 10_000;
+        for _ in 0..10 {
+            session.receive(&list, base);
+        }
+        for _ in 0..budget {
+            assert_eq!(session.receive(&list, base), vec![Event::Throttled]);
+        }
+        assert!(delivered(&session.receive(&list, base + 5000)));
+    }
+}
