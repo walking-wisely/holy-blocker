@@ -469,3 +469,15 @@ fn a_delivered_ordinary_message_resets_the_drop_run() {
         assert!(delivered(&session.receive(&list, base + 5000)));
     }
 }
+
+#[test]
+fn a_clock_that_steps_back_and_recovers_does_not_refill_the_bucket() {
+    let mut session = panel(10_000);
+    let list = framed(r#"{"type":"list_apps"}"#);
+    for _ in 0..10 {
+        session.receive(&list, 10_000);
+    }
+    assert_eq!(session.receive(&list, 5_000), vec![Event::Throttled]);
+    assert!(delivered(&session.receive(&list, 10_100)));
+    assert_eq!(session.receive(&list, 10_100), vec![Event::Throttled]);
+}
