@@ -28,6 +28,8 @@ fn describe(event: &Event) -> String {
         Event::Message(Inbound::ToDaemon(m)) => format!("msg:{}", m.tag()),
         Event::Message(Inbound::ToPanel(m)) => format!("msg:{}", m.tag()),
         Event::Unsupported => "unsupported".to_owned(),
+        Event::Throttled => "throttled".to_owned(),
+        Event::Duplicate => "duplicate".to_owned(),
         Event::Close(reason) => match reason {
             CloseReason::PreHello => "close:pre_hello".to_owned(),
             CloseReason::ProtoMismatch(n) => format!("close:proto_mismatch:{n}"),
@@ -35,6 +37,11 @@ fn describe(event: &Event) -> String {
             CloseReason::Malformed => "close:malformed".to_owned(),
             CloseReason::Oversized => "close:oversized".to_owned(),
             CloseReason::WrongRole => "close:wrong_role".to_owned(),
+            CloseReason::PreHelloTimeout => "close:pre_hello_timeout".to_owned(),
+            CloseReason::FrameTimeout => "close:frame_timeout".to_owned(),
+            CloseReason::Idle => "close:idle".to_owned(),
+            CloseReason::HeartbeatLost => "close:heartbeat_lost".to_owned(),
+            CloseReason::UnsupportedFlood => "close:unsupported_flood".to_owned(),
         },
     }
 }
@@ -53,10 +60,15 @@ fn stream_bytes(segments: &[Value]) -> Vec<u8> {
 }
 
 fn replay(end: End, max_frame: u32, bytes: &[u8], chunk: usize) -> Vec<String> {
-    let mut session = Session::new(end, Limits::new(max_frame));
+    let limits = Limits {
+        messages_per_sec: 1000,
+        state_changes_per_sec: 1000,
+        ..Limits::new(max_frame)
+    };
+    let mut session = Session::new(end, limits, 0);
     let mut events = Vec::new();
     for piece in bytes.chunks(chunk) {
-        events.extend(session.receive(piece).iter().map(describe));
+        events.extend(session.receive(piece, 0).iter().map(describe));
     }
     events
 }

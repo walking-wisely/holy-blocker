@@ -34,12 +34,12 @@ fn debug_output_of_identity_carrying_messages_hides_the_identity() {
 
 #[test]
 fn events_and_close_reasons_hold_no_text_from_the_body() {
-    let mut session = Session::new(End::Daemon(ClientRole::Panel), Limits::new(4096));
+    let mut session = Session::new(End::Daemon(ClientRole::Panel), Limits::new(4096), 0);
     let limits = Limits::new(4096);
     let mut input = frame::encode(br#"{"type":"hello","proto":1}"#, limits).unwrap();
     let body = format!(r#"{{"type":"request_add_app","identity":"{SECRET}!"}}"#);
     input.extend(frame::encode(body.as_bytes(), limits).unwrap());
-    let events = session.receive(&input);
+    let events = session.receive(&input, 0);
     let dump = format!("{events:?}");
     assert!(!dump.contains("secret"), "{dump}");
 }

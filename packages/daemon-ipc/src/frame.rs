@@ -1,13 +1,47 @@
 pub const LENGTH_PREFIX: usize = 4;
 
+pub const TO_DAEMON_MAX_FRAME: u32 = 4 * 1024;
+pub const TO_PANEL_MAX_FRAME: u32 = 64 * 1024;
+pub const FRAME_DEADLINE_MS: u64 = 5_000;
+pub const PRE_HELLO_DEADLINE_MS: u64 = 5_000;
+pub const IDLE_MS: u64 = 60_000;
+pub const HEARTBEAT_WINDOW_MS: u64 = 15_000;
+pub const UNSUPPORTED_BUDGET: u32 = 8;
+pub const MESSAGES_PER_SEC: u32 = 10;
+pub const STATE_CHANGES_PER_SEC: u32 = 1;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Limits {
     pub max_frame: u32,
+    pub frame_deadline_ms: u64,
+    pub pre_hello_deadline_ms: u64,
+    pub idle_ms: u64,
+    pub heartbeat_window_ms: u64,
+    pub unsupported_budget: u32,
+    pub messages_per_sec: u32,
+    pub state_changes_per_sec: u32,
 }
 
 impl Limits {
     pub const fn new(max_frame: u32) -> Self {
-        Self { max_frame }
+        Self {
+            max_frame,
+            frame_deadline_ms: FRAME_DEADLINE_MS,
+            pre_hello_deadline_ms: PRE_HELLO_DEADLINE_MS,
+            idle_ms: IDLE_MS,
+            heartbeat_window_ms: HEARTBEAT_WINDOW_MS,
+            unsupported_budget: UNSUPPORTED_BUDGET,
+            messages_per_sec: MESSAGES_PER_SEC,
+            state_changes_per_sec: STATE_CHANGES_PER_SEC,
+        }
+    }
+
+    pub const fn to_daemon() -> Self {
+        Self::new(TO_DAEMON_MAX_FRAME)
+    }
+
+    pub const fn to_panel() -> Self {
+        Self::new(TO_PANEL_MAX_FRAME)
     }
 }
 

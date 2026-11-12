@@ -18,8 +18,8 @@ fn stream() -> Vec<u8> {
 }
 
 fn run(chunks: &[&[u8]]) -> Vec<Event> {
-    let mut session = Session::new(End::Daemon(ClientRole::Panel), Limits::new(MAX));
-    chunks.iter().flat_map(|c| session.receive(c)).collect()
+    let mut session = Session::new(End::Daemon(ClientRole::Panel), Limits::new(MAX), 0);
+    chunks.iter().flat_map(|c| session.receive(c, 0)).collect()
 }
 
 proptest! {
@@ -44,28 +44,46 @@ proptest! {
         data in proptest::collection::vec(any::<u8>(), 0..4096),
         step in 1usize..64,
     ) {
-        let mut session = Session::new(End::Daemon(ClientRole::Agent), Limits::new(MAX));
+        let mut session = Session::new(End::Daemon(ClientRole::Agent), Limits::new(MAX), 0);
         for piece in data.chunks(step) {
-            session.receive(piece);
+            session.receive(piece, 0);
             prop_assert!(session.buffered() <= frame::LENGTH_PREFIX + MAX as usize);
         }
     }
 
     #[test]
     fn arbitrary_bodies_after_hello_never_panic(body in proptest::collection::vec(any::<u8>(), 0..200)) {
-        let mut session = Session::new(End::Daemon(ClientRole::Panel), Limits::new(MAX));
+        let mut session = Session::new(End::Daemon(ClientRole::Panel), Limits::new(MAX), 0);
         let mut input = frame::encode(br#"{"type":"hello","proto":1}"#, Limits::new(MAX)).unwrap();
         input.extend(frame::encode(&body, Limits::new(MAX)).unwrap());
-        session.receive(&input);
+        session.receive(&input, 0);
         prop_assert!(session.buffered() <= frame::LENGTH_PREFIX + MAX as usize);
     }
 
     #[test]
     fn one_huge_read_still_buffers_at_most_one_frame(declared in 0u32..2_000_000) {
-        let mut session = Session::new(End::Daemon(ClientRole::Panel), Limits::new(MAX));
+        let mut session = Session::new(End::Daemon(ClientRole::Panel), Limits::new(MAX), 0);
         let mut input = declared.to_be_bytes().to_vec();
         input.resize(4 + 100_000, b'x');
-        session.receive(&input);
+        session.receive(&input, 0);
         prop_assert!(session.buffered() <= frame::LENGTH_PREFIX + MAX as usize);
+    }
+
+    #[test]
+    fn arbitrary_times_never_panic_and_a_closed_session_stays_closed(
+        steps in proptest::collection::vec((any::<u64>(), proptest::collection::vec(any::<u8>(), 0..64)), 0..40),
+    ) {
+        let mut session = Session::new(End::Daemon(ClientRole::Agent), Limits::new(MAX), 0);
+        let mut input = frame::encode(br#"{"type":"hello","proto":1}"#, Limits::new(MAX)).unwrap();
+        input.extend(frame::encode(br#"{"type":"heartbeat"}"#, Limits::new(MAX)).unwrap());
+        session.receive(&input, 0);
+        let mut was_closed = false;
+        for (now, piece) in &steps {
+            session.receive(piece, *now);
+            session.tick(*now);
+            prop_assert!(session.buffered() <= frame::LENGTH_PREFIX + MAX as usize);
+            prop_assert!(!was_closed || session.is_closed());
+            was_closed = session.is_closed();
+        }
     }
 }
