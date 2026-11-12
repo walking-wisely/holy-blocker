@@ -1,6 +1,7 @@
 use daemon_ipc::msg::Wire;
 use daemon_ipc::{
-    AppIdentity, ClientRole, CloseReason, End, Event, Inbound, Limits, Session, ToDaemon, frame,
+    AppIdentity, ClientRole, CloseReason, End, Event, Inbound, Limits, LimitsError, Session,
+    ToDaemon, frame,
 };
 
 fn framed(json: &str) -> Vec<u8> {
@@ -122,12 +123,34 @@ fn a_completed_frame_restarts_the_frame_clock_for_the_next_one() {
 }
 
 #[test]
-fn sixty_idle_seconds_close_and_activity_resets_the_clock() {
+fn a_panel_may_stay_quiet_for_five_minutes_and_activity_resets_the_clock() {
     let mut session = panel(0);
+    assert_eq!(session.tick(299_999), None);
+    session.receive(&framed(r#"{"type":"list_apps"}"#), 150_000);
+    assert_eq!(session.tick(449_999), None);
+    assert_eq!(session.tick(450_000), Some(CloseReason::Idle));
+}
+
+#[test]
+fn a_session_facing_an_agent_uses_the_sixty_second_idle() {
+    let limits = Limits {
+        heartbeat_window_ms: 600_000,
+        ..Limits::new(4096)
+    };
+    let mut session = Session::new(End::Daemon(ClientRole::Agent), limits, 0);
+    session.receive(&hello(), 0);
     assert_eq!(session.tick(59_999), None);
-    session.receive(&framed(r#"{"type":"list_apps"}"#), 30_000);
-    assert_eq!(session.tick(89_999), None);
-    assert_eq!(session.tick(90_000), Some(CloseReason::Idle));
+    assert_eq!(session.tick(60_000), Some(CloseReason::Idle));
+}
+
+#[test]
+fn the_client_ends_use_the_long_idle() {
+    for end in [End::Panel, End::Agent] {
+        let mut session = Session::new(end, Limits::new(4096), 0);
+        session.receive(&hello(), 0);
+        assert_eq!(session.tick(299_999), None);
+        assert_eq!(session.tick(300_000), Some(CloseReason::Idle));
+    }
 }
 
 #[test]
@@ -359,7 +382,7 @@ fn a_clock_that_runs_backwards_never_panics_or_closes() {
 
 #[test]
 fn the_message_kinds_the_limiter_treats_specially_are_the_documented_ones() {
-    let exempt: Vec<_> = ["cancel_disarm", "raise_protection"].to_vec();
+    let exempt: Vec<_> = ["cancel_disarm", "raise_protection", "cancel_remove_app"].to_vec();
     for tag in <ToDaemon as Wire>::TAGS {
         let protective = exempt.contains(tag);
         let state_changing = matches!(
@@ -392,7 +415,7 @@ fn a_protective_message_in_late_bytes_is_delivered_before_the_close() {
         r#"{"type":"raise_protection"}"#,
     ] {
         let mut session = panel(0);
-        let events = session.receive(&framed(body), 61_000);
+        let events = session.receive(&framed(body), 301_000);
         assert_eq!(events.len(), 2, "{events:?}");
         assert!(matches!(&events[0], Event::Message(Inbound::ToDaemon(_))));
         assert_eq!(events[1], Event::Close(CloseReason::Idle));
@@ -402,7 +425,7 @@ fn a_protective_message_in_late_bytes_is_delivered_before_the_close() {
 #[test]
 fn an_ordinary_message_in_late_bytes_is_not_delivered() {
     let mut session = panel(0);
-    let events = session.receive(&framed(r#"{"type":"list_apps"}"#), 61_000);
+    let events = session.receive(&framed(r#"{"type":"list_apps"}"#), 301_000);
     assert_eq!(events, vec![Event::Close(CloseReason::Idle)]);
 }
 
@@ -438,19 +461,30 @@ fn a_flood_that_is_always_throttled_is_closed() {
 }
 
 #[test]
-fn repeated_duplicates_without_progress_are_closed() {
+fn repeated_drops_in_quick_succession_are_closed() {
     let mut session = panel(0);
     let request = framed(r#"{"type":"request_disarm"}"#);
     session.receive(&request, 0);
     let mut closed = false;
-    for i in 1..2000u64 {
-        let events = session.receive(&request, i * 1000);
+    for i in 1..200u64 {
+        let events = session.receive(&request, i * 100);
         if events == vec![Event::Close(CloseReason::Flood)] {
             closed = true;
             break;
         }
     }
     assert!(closed);
+}
+
+#[test]
+fn slow_repeats_of_a_stuck_request_are_never_closed_as_a_flood() {
+    let mut session = panel(0);
+    let request = framed(r#"{"type":"request_disarm"}"#);
+    session.receive(&request, 0);
+    for i in 1..300u64 {
+        let events = session.receive(&request, i * 1000);
+        assert_eq!(events, vec![Event::Duplicate], "repeat {i}");
+    }
 }
 
 #[test]
@@ -480,4 +514,139 @@ fn a_clock_that_steps_back_and_recovers_does_not_refill_the_bucket() {
     assert_eq!(session.receive(&list, 5_000), vec![Event::Throttled]);
     assert!(delivered(&session.receive(&list, 10_100)));
     assert_eq!(session.receive(&list, 10_100), vec![Event::Throttled]);
+}
+
+#[test]
+fn cancelling_a_removal_is_never_dropped() {
+    let mut session = panel(0);
+    let list = framed(r#"{"type":"list_apps"}"#);
+    for _ in 0..10 {
+        session.receive(&list, 0);
+    }
+    let cancel = framed(r#"{"type":"cancel_remove_app","identity":"com.example.a"}"#);
+    for _ in 0..20 {
+        assert!(delivered(&session.receive(&cancel, 0)));
+    }
+}
+
+#[test]
+fn confirming_a_removal_is_still_rate_limited() {
+    let mut session = panel(0);
+    let confirm = framed(r#"{"type":"confirm_remove_app","identity":"com.example.a"}"#);
+    assert!(delivered(&session.receive(&confirm, 0)));
+    assert_eq!(session.receive(&confirm, 1), vec![Event::Throttled]);
+}
+
+#[test]
+fn the_default_limits_are_valid() {
+    assert_eq!(Limits::to_daemon().validate(), Ok(()));
+    assert_eq!(Limits::to_panel().validate(), Ok(()));
+}
+
+#[test]
+fn limits_that_contradict_each_other_are_rejected() {
+    let base = Limits::new(4096);
+    let cases = [
+        (
+            Limits {
+                max_frame: 0,
+                ..base
+            },
+            LimitsError::ZeroFrameCap,
+        ),
+        (
+            Limits {
+                frame_deadline_ms: 0,
+                ..base
+            },
+            LimitsError::ZeroDeadline,
+        ),
+        (
+            Limits {
+                pre_hello_deadline_ms: 0,
+                ..base
+            },
+            LimitsError::ZeroDeadline,
+        ),
+        (
+            Limits {
+                heartbeat_window_ms: 0,
+                ..base
+            },
+            LimitsError::ZeroDeadline,
+        ),
+        (
+            Limits {
+                heartbeat_window_ms: base.idle_ms,
+                ..base
+            },
+            LimitsError::HeartbeatNotBelowIdle,
+        ),
+        (
+            Limits {
+                idle_ms: base.quiet_idle_ms + 1,
+                ..base
+            },
+            LimitsError::IdleOrdering,
+        ),
+        (
+            Limits {
+                frame_deadline_ms: base.idle_ms,
+                ..base
+            },
+            LimitsError::DeadlineNotBelowIdle,
+        ),
+        (
+            Limits {
+                pre_hello_deadline_ms: base.idle_ms,
+                ..base
+            },
+            LimitsError::DeadlineNotBelowIdle,
+        ),
+        (
+            Limits {
+                messages_per_sec: 0,
+                ..base
+            },
+            LimitsError::ZeroRate,
+        ),
+        (
+            Limits {
+                state_changes_per_sec: 0,
+                ..base
+            },
+            LimitsError::ZeroRate,
+        ),
+        (
+            Limits {
+                state_changes_per_sec: base.messages_per_sec + 1,
+                ..base
+            },
+            LimitsError::StateRateAboveMessageRate,
+        ),
+        (
+            Limits {
+                unsupported_budget: 0,
+                ..base
+            },
+            LimitsError::ZeroBudget,
+        ),
+        (
+            Limits {
+                dropped_budget: 0,
+                ..base
+            },
+            LimitsError::ZeroBudget,
+        ),
+        (
+            Limits {
+                drop_window_ms: 0,
+                ..base
+            },
+            LimitsError::ZeroDeadline,
+        ),
+    ];
+    for (limits, expected) in cases {
+        assert_eq!(limits.validate(), Err(expected), "{limits:?}");
+    }
 }

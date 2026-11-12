@@ -91,6 +91,7 @@ pub struct Session {
     frame_started_ms: Option<u64>,
     unsupported_run: u32,
     drop_run: u32,
+    drop_window_started_ms: u64,
     buckets: Buckets,
     disarm_pending: bool,
     removals_pending: Vec<AppIdentity>,
@@ -112,6 +113,7 @@ impl Session {
             frame_started_ms: None,
             unsupported_run: 0,
             drop_run: 0,
+            drop_window_started_ms: now_ms,
             buckets: Buckets {
                 messages: Bucket::new(limits.messages_per_sec, now_ms),
                 state_changes: Bucket::new(limits.state_changes_per_sec, now_ms),
@@ -214,7 +216,7 @@ impl Session {
         {
             return Some(CloseReason::FrameTimeout);
         }
-        if since(self.last_activity_ms) >= limits.idle_ms {
+        if since(self.last_activity_ms) >= self.idle_limit() {
             return Some(CloseReason::Idle);
         }
         let watches_heartbeat =
@@ -223,6 +225,13 @@ impl Session {
             return Some(CloseReason::HeartbeatLost);
         }
         None
+    }
+
+    fn idle_limit(&self) -> u64 {
+        match self.end {
+            End::Daemon(ClientRole::Agent) => self.limits.idle_ms,
+            _ => self.limits.quiet_idle_ms,
+        }
     }
 
     fn close(&mut self, reason: CloseReason) -> Event {
@@ -302,12 +311,16 @@ impl Session {
         }
         if rate_limited && !self.buckets.admit(false, now_ms) {
             self.throttled += 1;
-            return self.dropped(Event::Throttled);
+            return self.dropped(Event::Throttled, now_ms);
         }
         Event::Unsupported
     }
 
-    fn dropped(&mut self, event: Event) -> Event {
+    fn dropped(&mut self, event: Event, now_ms: u64) -> Event {
+        if now_ms.saturating_sub(self.drop_window_started_ms) >= self.limits.drop_window_ms {
+            self.drop_window_started_ms = now_ms;
+            self.drop_run = 0;
+        }
         self.drop_run += 1;
         if self.drop_run > self.limits.dropped_budget {
             return self.close(CloseReason::Flood);
@@ -322,7 +335,7 @@ impl Session {
         let exempt = message.is_exempt_from_limits();
         if !exempt && !self.buckets.admit(message.is_state_changing(), now_ms) {
             self.throttled += 1;
-            return self.dropped(Event::Throttled);
+            return self.dropped(Event::Throttled, now_ms);
         }
         match self.track_pending(&message) {
             Pending::New => {
@@ -334,11 +347,11 @@ impl Session {
             }
             Pending::Repeated => {
                 self.duplicates += 1;
-                self.dropped(Event::Duplicate)
+                self.dropped(Event::Duplicate, now_ms)
             }
             Pending::Full => {
                 self.throttled += 1;
-                self.dropped(Event::Throttled)
+                self.dropped(Event::Throttled, now_ms)
             }
         }
     }

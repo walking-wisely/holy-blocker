@@ -212,9 +212,12 @@ impl ToDaemon {
         )
     }
 
-    /// Dropping either of these would fail open, so the rate limiter never sees them.
+    /// Dropping any of these would fail open, so the rate limiter never sees them.
     pub fn is_exempt_from_limits(&self) -> bool {
-        matches!(self, Self::CancelDisarm | Self::RaiseProtection)
+        matches!(
+            self,
+            Self::CancelDisarm | Self::RaiseProtection | Self::CancelRemoveApp { .. }
+        )
     }
 
     pub fn allowed_for(&self, role: ClientRole) -> bool {

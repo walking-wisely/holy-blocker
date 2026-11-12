@@ -3,7 +3,7 @@ mod limiter;
 pub mod msg;
 pub mod session;
 
-pub use frame::{FrameDecoder, Limits, Next, TooLarge};
+pub use frame::{FrameDecoder, Limits, LimitsError, Next, TooLarge};
 pub use msg::{AppIdentity, ClientRole, MIN_PROTO, PROTO, ToDaemon, ToPanel};
 pub use session::{CloseReason, Counters, End, Event, Inbound, Session};
 
