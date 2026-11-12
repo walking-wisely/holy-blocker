@@ -650,3 +650,27 @@ fn limits_that_contradict_each_other_are_rejected() {
         assert_eq!(limits.validate(), Err(expected), "{limits:?}");
     }
 }
+
+#[test]
+fn a_flood_is_closed_however_old_the_session_is() {
+    let mut session = panel(0);
+    let list = framed(r#"{"type":"list_apps"}"#);
+    let mut closed_at = None;
+    for i in 0..1000 {
+        if session.receive(&list, 50_000) == vec![Event::Close(CloseReason::Flood)] {
+            closed_at = Some(i);
+            break;
+        }
+    }
+    assert_eq!(closed_at, Some(10 + Limits::new(0).dropped_budget));
+}
+
+#[test]
+fn a_late_cancel_of_a_removal_is_delivered_before_the_close() {
+    let mut session = panel(0);
+    let cancel = framed(r#"{"type":"cancel_remove_app","identity":"com.example.a"}"#);
+    let events = session.receive(&cancel, 301_000);
+    assert_eq!(events.len(), 2, "{events:?}");
+    assert!(matches!(&events[0], Event::Message(Inbound::ToDaemon(_))));
+    assert_eq!(events[1], Event::Close(CloseReason::Idle));
+}
