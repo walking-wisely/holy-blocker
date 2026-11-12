@@ -166,7 +166,8 @@ impl Session {
         if self.state == State::Closed {
             return events;
         }
-        if let Some(reason) = self.expired(now_ms) {
+        let late = self.expired(now_ms);
+        if let Some(reason) = late.filter(|_| self.state != State::Open) {
             events.push(self.close(reason));
             return events;
         }
@@ -180,9 +181,12 @@ impl Session {
                 Next::Oversized(_) => events.push(self.close(CloseReason::Oversized)),
                 Next::Frame(body) => {
                     self.frame_started_ms = None;
-                    events.push(self.on_frame(&body, now_ms));
+                    events.extend(self.on_frame(&body, now_ms, late.is_some()));
                 }
             }
+        }
+        if let Some(reason) = late.filter(|_| self.state != State::Closed) {
+            events.push(self.close(reason));
         }
         if self.decoder.buffered() > 0 && self.frame_started_ms.is_none() {
             self.frame_started_ms = Some(now_ms);
@@ -223,10 +227,11 @@ impl Session {
         Event::Close(reason)
     }
 
-    fn on_frame(&mut self, body: &[u8], now_ms: u64) -> Event {
+    fn on_frame(&mut self, body: &[u8], now_ms: u64, late: bool) -> Option<Event> {
         match self.state {
-            State::AwaitingHello => self.on_first_frame(body, now_ms),
-            State::Open => self.on_open_frame(body, now_ms),
+            State::AwaitingHello => Some(self.on_first_frame(body, now_ms)),
+            State::Open if late => self.on_late_frame(body),
+            State::Open => Some(self.on_open_frame(body, now_ms)),
             State::Closed => unreachable!("receive stops once closed"),
         }
     }
@@ -244,6 +249,20 @@ impl Session {
                 Err(_) => self.close(CloseReason::Malformed),
             },
             Some(_) => self.close(CloseReason::PreHello),
+        }
+    }
+
+    /// Bytes that arrive after a deadline passed deliver only what dropping would fail open on.
+    fn on_late_frame(&mut self, body: &[u8]) -> Option<Event> {
+        let End::Daemon(role) = self.end else {
+            return None;
+        };
+        match msg::parse::<ToDaemon>(body) {
+            Parsed::Message(m) if m.allowed_for(role) && m.is_exempt_from_limits() => {
+                self.track_pending(&m);
+                Some(Event::Message(Inbound::ToDaemon(m)))
+            }
+            _ => None,
         }
     }
 

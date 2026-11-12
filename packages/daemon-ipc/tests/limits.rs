@@ -384,3 +384,24 @@ fn the_message_kinds_the_limiter_treats_specially_are_the_documented_ones() {
         assert_eq!(parsed.is_state_changing(), state_changing, "{tag}");
     }
 }
+
+#[test]
+fn a_protective_message_in_late_bytes_is_delivered_before_the_close() {
+    for body in [
+        r#"{"type":"cancel_disarm"}"#,
+        r#"{"type":"raise_protection"}"#,
+    ] {
+        let mut session = panel(0);
+        let events = session.receive(&framed(body), 61_000);
+        assert_eq!(events.len(), 2, "{events:?}");
+        assert!(matches!(&events[0], Event::Message(Inbound::ToDaemon(_))));
+        assert_eq!(events[1], Event::Close(CloseReason::Idle));
+    }
+}
+
+#[test]
+fn an_ordinary_message_in_late_bytes_is_not_delivered() {
+    let mut session = panel(0);
+    let events = session.receive(&framed(r#"{"type":"list_apps"}"#), 61_000);
+    assert_eq!(events, vec![Event::Close(CloseReason::Idle)]);
+}
