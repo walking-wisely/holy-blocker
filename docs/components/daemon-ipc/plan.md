@@ -41,7 +41,13 @@ Decision (6, 9). `Session::new(role, limits, now_ms)`, `receive`, `tick`, with t
 - Liveness: an agent-role session that sends no heartbeat within its window yields `CloseReason::HeartbeatLost`, independent of the connection staying open.
 - Counters are memory only and carry a count and a window, never a peer, path or message text; a test asserts no `Debug` output of the events, counters or close reasons carries text from a frame body. A delivered message still holds its `AppIdentity`, which only `Debug` redacts, so a consumer must not log it.
 
-Values the decision does not give, chosen here and all `Limits` fields: 5 s pre-hello deadline, 15 s heartbeat window (the agent should send about every 5 s), 8 consecutive `Unsupported` frames (reset only by a delivered non-exempt message), 64 consecutive throttled or duplicate frames before `CloseReason::Flood`, and 16 pending removal requests per connection. A heartbeat window that elapses closes the session, because the daemon kills and restarts a stopped agent anyway. The session cannot see how the server resolves a request, so the server calls `settle_disarm` or `settle_removal` when it refuses or expires one; confirm and cancel resolve it on their own. The 60 s idle rule applies to every end, so a panel that stays connected must send something at least once a minute.
+Values the decision does not give, chosen here and all `Limits` fields: 5 s pre-hello deadline, 15 s heartbeat window (the agent should send about every 5 s), 8 consecutive `Unsupported` frames (reset only by a delivered non-exempt message), 64 consecutive throttled or duplicate frames before `CloseReason::Flood`, and 16 pending removal requests per connection. A heartbeat window that elapses closes the session, because the daemon kills and restarts a stopped agent anyway. The session cannot see how the server resolves a request, so the server calls `settle_disarm` or `settle_removal` when it refuses or expires one; confirm and cancel resolve it on their own. The host owns the clock and must feed a monotonic `now_ms` to `receive` and `tick`, and must call `tick` at least about once a second: the session has no timer of its own, so a silent connection is closed only by a `tick` or by its next bytes. The 60 s idle rule applies to every end, so a panel that stays connected must send something at least once a minute.
+
+### daemon-ipc.protective-flood
+
+<!-- step: daemon-ipc.protective-flood -->
+
+Bug against `daemon-ipc.limits`. `cancel_disarm` and `raise_protection` skip the rate limiter, so one connection can send them at wire speed and every one reaches the server as a message. Give them a separate, generous ceiling above which the session closes with `CloseReason::Flood`; they are still never dropped while under it.
 
 ### daemon-ipc.ffi
 
