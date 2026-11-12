@@ -1,0 +1,10 @@
+id = "daemon-ipc.scan-burst"
+title = "a burst of legitimate scan_event frames from the agent is throttled and then closed as a flood, losing the in-flight events"
+status = "pending"
+evidence = ""
+kind = "bug"
+regressed_step = "daemon-ipc.limits"
+acceptance = "code"
+depends_on = ["daemon-ipc.limits"]
+milestone = "mvp"
+verify = "cargo test --manifest-path packages/daemon-ipc/Cargo.toml"

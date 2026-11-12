@@ -49,6 +49,18 @@ Values the decision does not give, chosen here and all `Limits` fields: 5 s pre-
 
 Bug against `daemon-ipc.limits`. `cancel_disarm` and `raise_protection` skip the rate limiter, so one connection can send them at wire speed and every one reaches the server as a message. Give them a separate, generous ceiling above which the session closes with `CloseReason::Flood`; they are still never dropped while under it.
 
+### daemon-ipc.scan-burst
+
+<!-- step: daemon-ipc.scan-burst -->
+
+Bug against `daemon-ipc.limits`. 75 `scan_event` frames sent at one instant (a backlog flushed after a reconnect) throttle past the first ten and the 65th consecutive drop closes the agent with `CloseReason::Flood`. Give the agent role a bucket sized for a scan burst, or count drops against elapsed time, so a backlog is delivered or dropped without closing.
+
+### daemon-ipc.close-flush
+
+<!-- step: daemon-ipc.close-flush -->
+
+Bug against `daemon-ipc.limits`. When one read holds a closing frame (flood, oversized, malformed, wrong role, duplicate hello) followed by `cancel_disarm` or `raise_protection`, the receive loop stops at the close and the protective message is never delivered. Deliver protective messages that follow the close in the same buffer, as the deadline path does.
+
 ### daemon-ipc.ffi
 
 Decision (3). `packages/daemon-ipc-ffi` wraps `Session` as a `uniffi::Object` with `Mutex` state, following `packages/text-policy-ffi`. Every export returns `Result`; the first test makes a Rust panic and proves it arrives in Swift as a thrown error, which settles the unverified claim in the decision. Wire the crate into `build-ffi.sh` and `Package.swift`, generate the Swift bindings and typecheck them. No Swift call site uses `try!`.
