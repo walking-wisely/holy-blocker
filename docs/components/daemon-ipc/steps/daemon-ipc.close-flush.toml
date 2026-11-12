@@ -1,0 +1,10 @@
+id = "daemon-ipc.close-flush"
+title = "a protective message that follows a closing frame in the same read is discarded"
+status = "pending"
+evidence = ""
+kind = "bug"
+regressed_step = "daemon-ipc.limits"
+acceptance = "code"
+depends_on = ["daemon-ipc.limits"]
+milestone = "mvp"
+verify = "cargo test --manifest-path packages/daemon-ipc/Cargo.toml"

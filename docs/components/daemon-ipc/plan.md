@@ -6,12 +6,12 @@ The crate does no I/O. The transport (Unix socket on macOS, named pipe on Window
 
 ## Current state
 
-`daemon-ipc.core` is done: `packages/daemon-ipc` holds the frame decoder, the `ToDaemon` and `ToPanel` enums, the handshake and a minimal `Session`, tested against hand-written vectors in `packages/daemon-ipc/tests/vectors/`. The old framing still lives twice, in `native-modules/mac-daemon/Sources/MacDaemon/DaemonIPC.swift` and `apps/desktop/src-tauri/src/frame.rs`, until `desktop.adopt-daemon-ipc` and `mac-daemon.adopt-daemon-ipc-ffi` replace them; the Tauri test now reads the shared framing vectors. No Swift test reads them yet.
+`daemon-ipc.core` and `daemon-ipc.limits` are done: `packages/daemon-ipc` holds the frame decoder, the `ToDaemon` and `ToPanel` enums, the handshake and a `Session` on an injected clock with caps, deadlines, a rate limiter and liveness, tested against hand-written vectors in `packages/daemon-ipc/tests/vectors/`. The old framing still lives twice, in `native-modules/mac-daemon/Sources/MacDaemon/DaemonIPC.swift` and `apps/desktop/src-tauri/src/frame.rs`, until `desktop.adopt-daemon-ipc` and `mac-daemon.adopt-daemon-ipc-ffi` replace them; the Tauri test now reads the shared framing vectors. No Swift test reads them yet.
 
 ## Implementation order
 
 1. ~~`daemon-ipc.core` — frames, messages, handshake, vectors, property tests.~~ **Done.** <!-- step: daemon-ipc.core -->
-2. `daemon-ipc.limits` — the session state machine on an injected clock: caps, deadlines, rate limiter, liveness. <!-- step: daemon-ipc.limits -->
+2. ~~`daemon-ipc.limits` — the session state machine on an injected clock: caps, deadlines, rate limiter, liveness.~~ **Done.** <!-- step: daemon-ipc.limits -->
 3. `daemon-ipc.ffi` — the UniFFI wrapper for Swift, every export returning `Result`. <!-- step: daemon-ipc.ffi -->
 4. `daemon-ipc.c-abi` — a cbindgen C ABI for the Windows daemon, when `win-daemon.ipc` starts. <!-- step: daemon-ipc.c-abi -->
 
@@ -34,12 +34,32 @@ Decision (3, 5). Write the message enumeration and the vectors first, from the d
 
 Decision (6, 9). `Session::new(role, limits, now_ms)`, `receive`, `tick`, with time injected so every rule is deterministic.
 
-- Caps: 4 KiB toward the daemon, 64 KiB toward the panel; 5 s to finish a frame; 60 s idle; close on the first invalid frame.
-- Token bucket per connection, 10 messages per second and 1 state-changing message per second; over-limit messages are dropped and counted. `cancel_disarm` and `raise_protection` are exempt.
+- Caps: 4 KiB toward the daemon, 64 KiB toward the panel; 5 s to finish a frame; 60 s idle toward an agent and 300 s for the other ends, whose peer speaks only when the user acts; close on the first invalid frame.
+- Token bucket per connection, 10 messages per second and 1 state-changing message per second; over-limit messages are dropped and counted. `cancel_disarm`, `raise_protection` and `cancel_remove_app` are exempt.
 - A repeated request while one is pending is an `Event::Duplicate` that writes nothing.
 - A pre-`hello` deadline, a partial-frame deadline, and a budget of consecutive `Unsupported` frames after which the session closes, so a peer cannot hold a connection or send unknown tags forever. The caller adds the connection cap.
 - Liveness: an agent-role session that sends no heartbeat within its window yields `CloseReason::HeartbeatLost`, independent of the connection staying open.
-- Counters are memory only and carry a count and a window, never a peer, path or message text; a test asserts the event types hold no string from a frame body.
+- Counters are memory only and carry a count and a window, never a peer, path or message text; a test asserts no `Debug` output of the events, counters or close reasons carries text from a frame body. A delivered message still holds its `AppIdentity`, which only `Debug` redacts, so a consumer must not log it.
+
+Values the decision does not give, chosen here and all `Limits` fields: 5 s pre-hello deadline, 15 s heartbeat window (the agent should send about every 5 s), 8 consecutive `Unsupported` frames (reset only by a delivered non-exempt message), 64 throttled or duplicate frames within 10 s and with no delivered ordinary message in between before `CloseReason::Flood`, so a slow stream of repeats never closes. The window is fixed, so up to about twice the budget can land across a boundary and a trickle under 64 per window is never closed by this rule; the rate limiter still bounds its pace, and the host's per-user slot cap bounds how many connections can do it, and 16 pending removal requests per connection. `request_add_app` is not tracked as pending: it resolves immediately and the server must treat a repeat as idempotent. A heartbeat window that elapses closes the session, because the daemon kills and restarts a stopped agent anyway. The session cannot see how the server resolves a request, so the server calls `settle_disarm` or `settle_removal` when it refuses or expires one; confirm and cancel resolve it on their own. The host owns the clock and must feed a monotonic `now_ms` to `receive` and `tick`, and must call `tick` at least about once a second: the session has no timer of its own, so a silent connection is closed only by a `tick` or by its next bytes. `Limits::validate` rejects values that contradict each other (a heartbeat window at or above the idle limit, a deadline at or above it, a zero rate or budget) and every host calls it once at construction; `Session::new` accepts anything. A server that never calls `settle_disarm` leaves later `request_disarm` frames as silent duplicates, so settling is part of the server's contract.
+
+### daemon-ipc.protective-flood
+
+<!-- step: daemon-ipc.protective-flood -->
+
+Bug against `daemon-ipc.limits`. `cancel_disarm` and `raise_protection` skip the rate limiter, so one connection can send them at wire speed and every one reaches the server as a message. Give them a separate, generous ceiling above which the session closes with `CloseReason::Flood`; they are still never dropped while under it.
+
+### daemon-ipc.scan-burst
+
+<!-- step: daemon-ipc.scan-burst -->
+
+Bug against `daemon-ipc.limits`. 75 `scan_event` frames sent at one instant (a backlog flushed after a reconnect) throttle past the first ten and the 65th consecutive drop closes the agent with `CloseReason::Flood`. Give the agent role a bucket sized for a scan burst, or count drops against elapsed time, so a backlog is delivered or dropped without closing.
+
+### daemon-ipc.close-flush
+
+<!-- step: daemon-ipc.close-flush -->
+
+Bug against `daemon-ipc.limits`. When one read holds a closing frame (flood, oversized, malformed, wrong role, duplicate hello) followed by `cancel_disarm` or `raise_protection`, the receive loop stops at the close and the protective message is never delivered. Deliver protective messages that follow the close in the same buffer, as the deadline path does.
 
 ### daemon-ipc.ffi
 

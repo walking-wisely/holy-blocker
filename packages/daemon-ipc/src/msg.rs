@@ -200,6 +200,26 @@ impl Wire for ToDaemon {
 }
 
 impl ToDaemon {
+    pub fn is_state_changing(&self) -> bool {
+        matches!(
+            self,
+            Self::RequestDisarm
+                | Self::ConfirmDisarm
+                | Self::RequestAddApp { .. }
+                | Self::RequestRemoveApp { .. }
+                | Self::ConfirmRemoveApp { .. }
+                | Self::CancelRemoveApp { .. }
+        )
+    }
+
+    /// Dropping any of these would fail open, so the rate limiter never sees them.
+    pub fn is_exempt_from_limits(&self) -> bool {
+        matches!(
+            self,
+            Self::CancelDisarm | Self::RaiseProtection | Self::CancelRemoveApp { .. }
+        )
+    }
+
     pub fn allowed_for(&self, role: ClientRole) -> bool {
         let agent_only = matches!(self, Self::Heartbeat | Self::ScanEvent { .. });
         match role {

@@ -1,10 +1,11 @@
 pub mod frame;
+mod limiter;
 pub mod msg;
 pub mod session;
 
-pub use frame::{FrameDecoder, Limits, Next, TooLarge};
+pub use frame::{FrameDecoder, Limits, LimitsError, Next, TooLarge};
 pub use msg::{AppIdentity, ClientRole, MIN_PROTO, PROTO, ToDaemon, ToPanel};
-pub use session::{CloseReason, End, Event, Inbound, Session};
+pub use session::{CloseReason, Counters, End, Event, Inbound, Session};
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum EncodeError {

@@ -1,14 +1,106 @@
 pub const LENGTH_PREFIX: usize = 4;
 
+pub const TO_DAEMON_MAX_FRAME: u32 = 4 * 1024;
+pub const TO_PANEL_MAX_FRAME: u32 = 64 * 1024;
+pub const FRAME_DEADLINE_MS: u64 = 5_000;
+pub const PRE_HELLO_DEADLINE_MS: u64 = 5_000;
+pub const IDLE_MS: u64 = 60_000;
+pub const QUIET_IDLE_MS: u64 = 300_000;
+pub const DROP_WINDOW_MS: u64 = 10_000;
+pub const HEARTBEAT_WINDOW_MS: u64 = 15_000;
+pub const UNSUPPORTED_BUDGET: u32 = 8;
+pub const DROPPED_BUDGET: u32 = 64;
+pub const MESSAGES_PER_SEC: u32 = 10;
+pub const STATE_CHANGES_PER_SEC: u32 = 1;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Limits {
     pub max_frame: u32,
+    pub frame_deadline_ms: u64,
+    pub pre_hello_deadline_ms: u64,
+    pub idle_ms: u64,
+    pub quiet_idle_ms: u64,
+    pub heartbeat_window_ms: u64,
+    pub unsupported_budget: u32,
+    pub dropped_budget: u32,
+    pub drop_window_ms: u64,
+    pub messages_per_sec: u32,
+    pub state_changes_per_sec: u32,
 }
 
 impl Limits {
     pub const fn new(max_frame: u32) -> Self {
-        Self { max_frame }
+        Self {
+            max_frame,
+            frame_deadline_ms: FRAME_DEADLINE_MS,
+            pre_hello_deadline_ms: PRE_HELLO_DEADLINE_MS,
+            idle_ms: IDLE_MS,
+            quiet_idle_ms: QUIET_IDLE_MS,
+            heartbeat_window_ms: HEARTBEAT_WINDOW_MS,
+            unsupported_budget: UNSUPPORTED_BUDGET,
+            dropped_budget: DROPPED_BUDGET,
+            drop_window_ms: DROP_WINDOW_MS,
+            messages_per_sec: MESSAGES_PER_SEC,
+            state_changes_per_sec: STATE_CHANGES_PER_SEC,
+        }
     }
+
+    pub const fn to_daemon() -> Self {
+        Self::new(TO_DAEMON_MAX_FRAME)
+    }
+
+    pub const fn to_panel() -> Self {
+        Self::new(TO_PANEL_MAX_FRAME)
+    }
+
+    /// Hosts call this once at construction; `Session` itself accepts any values.
+    pub fn validate(&self) -> Result<(), LimitsError> {
+        if self.max_frame == 0 {
+            return Err(LimitsError::ZeroFrameCap);
+        }
+        let deadlines = [
+            self.frame_deadline_ms,
+            self.pre_hello_deadline_ms,
+            self.heartbeat_window_ms,
+            self.drop_window_ms,
+            self.idle_ms,
+            self.quiet_idle_ms,
+        ];
+        if deadlines.contains(&0) {
+            return Err(LimitsError::ZeroDeadline);
+        }
+        if self.messages_per_sec == 0 || self.state_changes_per_sec == 0 {
+            return Err(LimitsError::ZeroRate);
+        }
+        if self.state_changes_per_sec > self.messages_per_sec {
+            return Err(LimitsError::StateRateAboveMessageRate);
+        }
+        if self.unsupported_budget == 0 || self.dropped_budget == 0 {
+            return Err(LimitsError::ZeroBudget);
+        }
+        if self.idle_ms > self.quiet_idle_ms {
+            return Err(LimitsError::IdleOrdering);
+        }
+        if self.heartbeat_window_ms >= self.idle_ms {
+            return Err(LimitsError::HeartbeatNotBelowIdle);
+        }
+        if self.frame_deadline_ms >= self.idle_ms || self.pre_hello_deadline_ms >= self.idle_ms {
+            return Err(LimitsError::DeadlineNotBelowIdle);
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LimitsError {
+    ZeroFrameCap,
+    ZeroDeadline,
+    ZeroRate,
+    StateRateAboveMessageRate,
+    ZeroBudget,
+    IdleOrdering,
+    HeartbeatNotBelowIdle,
+    DeadlineNotBelowIdle,
 }
 
 #[derive(Debug, PartialEq, Eq)]
